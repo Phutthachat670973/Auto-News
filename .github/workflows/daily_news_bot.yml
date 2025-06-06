@@ -3,7 +3,7 @@ name: Daily News Bot
 # กำหนดให้รันทุกวัน เวลา 01:00 UTC (08:00 ไทย)
 on:
   schedule:
-    - cron: '0 1 * * *'  
+    - cron: '0 23 * * *'  # ใหม่: 23:00 UTC = 06:00 ไทย
   workflow_dispatch:  # รันเองได้ด้วยปุ่ม Run workflow ใน GitHub
 
 jobs:
