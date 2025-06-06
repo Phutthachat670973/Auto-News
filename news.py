@@ -226,4 +226,4 @@ if all_news:
 else:
     print("ไม่พบข่าวใหม่ที่เกี่ยวข้อง")
 
-!pip install feedparser pytz requests transformers beautifulsoup4
+
