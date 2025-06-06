@@ -24,9 +24,9 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirement.txt
 
-    - name: Run daily_news_bot.py
+    - name: news.py
       env:
         DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
         LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
       run: |
-        python daily_news_bot.py
+        python news.py
