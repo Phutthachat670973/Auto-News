@@ -27,7 +27,7 @@ yesterday_thai = today_thai - timedelta(days=1)
 summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
 
 # ------------------- DeepL API -------------------
-DEEPL_API_KEY = os.getenv("DEEPL_API_KEY")
+DEEPL_API_KEY = "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"  
 def deepl_translate(text, target_lang="TH", source_lang="EN"):
     url = "https://api-free.deepl.com/v2/translate"
     params = {
@@ -47,7 +47,7 @@ def translate_en_to_th(text):
     return deepl_translate(text, target_lang="TH", source_lang="EN")
 
 # ------------------- Line Channel Token -------------------
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_ACCESS_TOKEN = 'tI3xxzlIq2sD6pg1ukIabWAnuxxoCgc68Bv0vDcvHZNCUnUYGk15EafVqLi3A6pDlyBiUwECDzwxLHtwzIfpoieIO5BIWVRHtfVa7uIy9XYuWwZpybcV/UmwOvhxySqTb4wOXdKRX8Gpo9N91VIOzAdB04t89/1O/w1cDnyilFU='
 
 # ------------------- RSS URLs -------------------
 feed_urls = {
