@@ -9,14 +9,49 @@ from bs4 import BeautifulSoup
 from collections import Counter
 import os
 from dateutil import parser as dateutil_parser
+from pathlib import Path
 
-# ------------------- โมเดลวิเคราะห์ข่าว และจัดหมวดหมู่ -------------------
+# ------------------- ตั้งค่าโมเดล -------------------
 summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
-# ------------------- DeepL Translate -------------------
-DEEPL_API_KEY = "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"  # 🔑 แทนที่ด้วย API Key ของคุณ
+# ------------------- ตั้งค่า API -------------------
+DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "'tI3xxzlIq2sD6pg1ukIabWAnuxxoCgc68Bv0vDcvHZNCUnUYGk15EafVqLi3A6pDlyBiUwECDzwxLHtwzIfpoieIO5BIWVRHtfVa7uIy9XYuWwZpybcV/UmwOvhxySqTb4wOXdKRX8Gpo9N91VIOzAdB04t89/1O/w1cDnyilFU="
 
+# ------------------- ตั้งค่า Timezone -------------------
+bangkok_tz = pytz.timezone("Asia/Bangkok")
+now_thai = datetime.now(bangkok_tz)
+today_thai = now_thai.date()
+yesterday_thai = today_thai - timedelta(days=1)
+
+# ------------------- ฟังก์ชันลบไฟล์ข่าวเก่า -------------------
+def cleanup_old_sent_links(folder="sent_links", keep_days=5):
+    cutoff_date = today_thai - timedelta(days=keep_days)
+    if not os.path.exists(folder):
+        return
+    for filename in os.listdir(folder):
+        if filename.endswith(".txt"):
+            try:
+                file_date = datetime.strptime(filename.replace(".txt", ""), "%Y-%m-%d").date()
+                if file_date < cutoff_date:
+                    os.remove(os.path.join(folder, filename))
+                    print(f"🧹 ลบไฟล์ข่าวเก่า: {filename}")
+            except Exception as e:
+                print(f"⚠️ ไม่สามารถประมวลผล {filename}: {e}")
+
+# ------------------- แหล่งข่าว -------------------
+news_sources = {
+    "BBC Economy": {"type": "rss", "url": "http://feeds.bbci.co.uk/news/business/economy/rss.xml"},
+    "CNBC": {"type": "rss", "url": "https://www.cnbc.com/id/15839135/device/rss/rss.html"},
+    "NYT": {"type": "rss", "url": "https://rss.nytimes.com/services/xml/rss/nyt/Economy.xml"},
+    "Al Jazeera Middle East": {"type": "html", "url": "https://www.aljazeera.com/middle-east/"}
+}
+
+# ------------------- คำค้นหาหลัก -------------------
+keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
+
+# ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
     url = "https://api-free.deepl.com/v2/translate"
     params = {
@@ -33,43 +68,17 @@ def translate_en_to_th(text):
     except Exception as e:
         return f"แปลไม่สำเร็จ: {e}"
 
-# ------------------- ตั้งค่า Timezone -------------------
-bangkok_tz = pytz.timezone("Asia/Bangkok")
-now_thai = datetime.now(bangkok_tz)
-today_thai = now_thai.date()
-yesterday_thai = today_thai - timedelta(days=1)
-
-# ------------------- Line Channel Token -------------------
-LINE_CHANNEL_ACCESS_TOKEN = 'tI3xxzlIq2sD6pg1ukIabWAnuxxoCgc68Bv0vDcvHZNCUnUYGk15EafVqLi3A6pDlyBiUwECDzwxLHtwzIfpoieIO5BIWVRHtfVa7uIy9XYuWwZpybcV/UmwOvhxySqTb4wOXdKRX8Gpo9N91VIOzAdB04t89/1O/w1cDnyilFU='
-
-# ------------------- RSS URLs -------------------
-feed_urls_filtered = {
-    "BBC Economy": "http://feeds.bbci.co.uk/news/business/economy/rss.xml",
-    "CNBC": "https://www.cnbc.com/id/15839135/device/rss/rss.html",
-    "NYT": "https://rss.nytimes.com/services/xml/rss/nyt/Economy.xml"
-}
-
-keywords = [
-    "economy", "economic", "recession", "inflation", "deflation", "gdp", "interest rate",
-    "fiscal policy", "monetary policy", "stimulus", "unemployment", "debt", "deficit", "growth",
-    "macroeconomics", "financial crisis", "energy", "oil", "gas", "natural gas", "crude", "power",
-    "electricity", "renewable", "solar", "wind", "nuclear", "hydropower", "geothermal", "fuel",
-    "petroleum", "coal", "biofuel", "emissions", "carbon", "carbon footprint", "energy market",
-    "energy price", "energy policy", "energy crisis", "energy transition", "green energy",
-    "clean energy", "fossil fuels", "climate", "net zero"
-]
-
+# ------------------- ประมวลผล RSS -------------------
 def parse_date(entry):
     try:
         if hasattr(entry, 'published_parsed') and entry.published_parsed:
             return datetime(*entry.published_parsed[:6], tzinfo=pytz.utc)
         elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
             return datetime(*entry.updated_parsed[:6], tzinfo=pytz.utc)
-        elif hasattr(entry, 'published') and entry.published:
+        elif hasattr(entry, 'published'):
             return dateutil_parser.parse(entry.published)
     except:
         return None
-    return None
 
 def is_relevant(entry):
     text = (entry.title + " " + getattr(entry, 'summary', "")).lower()
@@ -85,48 +94,71 @@ def extract_image(entry):
         if imgs:
             return imgs[0]
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(entry.link, headers=headers, timeout=10)
+        response = requests.get(entry.link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, "html.parser")
             og_image = soup.find("meta", property="og:image")
             if og_image and og_image.get("content"):
                 return og_image["content"]
-    except Exception as e:
-        print(f"โหลดรูปไม่สำเร็จ: {e}")
+    except:
+        pass
     return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
+# ------------------- ข่าวจาก Al Jazeera -------------------
+def fetch_aljazeera_articles():
+    articles = []
+    try:
+        resp = requests.get("https://www.aljazeera.com/middle-east/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        soup = BeautifulSoup(resp.content, "html.parser")
+        for a in soup.select('a.u-clickable-card__link')[:5]:
+            title = a.get_text(strip=True)
+            link = "https://www.aljazeera.com" + a['href']
+            image = extract_image_from_aljazeera(link)
+            articles.append({
+                "source": "Al Jazeera",
+                "title": title,
+                "summary": "",
+                "link": link,
+                "image": image,
+                "published": now_thai,
+                "category": "Middle East"
+            })
+    except Exception as e:
+        print(f"⚠️ ดึงข่าว Al Jazeera ไม่สำเร็จ: {e}")
+    return articles
+
+def extract_image_from_aljazeera(link):
+    try:
+        res = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        soup = BeautifulSoup(res.content, "html.parser")
+        meta_img = soup.find("meta", property="og:image")
+        if meta_img and meta_img.get("content"):
+            return meta_img["content"]
+    except:
+        pass
+    return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
+
+# ------------------- สรุป + แปล -------------------
 def summarize_and_translate(title, summary):
-    text = f"วิเคราะห์ข่าวนี้:\n\n{title}\n{summary}"
+    text = f"{title}\n{summary}"
     try:
         result = summarizer(text, max_length=100, min_length=20, do_sample=False)
-        english_summary = result[0]['summary_text']
-        return translate_en_to_th(english_summary)
+        return translate_en_to_th(result[0]['summary_text'])
     except Exception as e:
-        return f"วิเคราะห์ไม่ได้: {e}"
+        return f"สรุปข่าวไม่ได้: {e}"
 
-candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Other"]
-category_mapping = {
-    "Oil": "Energy",
-    "Gas": "Energy",
-    "Renewable": "Energy",
-    "Economy": "Economy",
-    "Energy": "Energy",
-    "Environment": "Environment",
-    "Politics": "Politics",
-    "Technology": "Technology"
-}
-
+# ------------------- จัดหมวดหมู่ -------------------
+candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
 def classify_category(entry):
-    text = (entry.title + " " + getattr(entry, 'summary', "")).strip()
+    text = (entry.title + " " + entry.get('summary', '')).strip()
     try:
-        result = classifier(text, candidate_labels + list(category_mapping.keys()))
-        best_label = result['labels'][0]
-        return category_mapping.get(best_label, best_label if best_label in candidate_labels else "Other")
+        result = classifier(text, candidate_labels)
+        return result['labels'][0]
     except Exception as e:
         print(f"❗️จัดหมวดหมู่ไม่ได้: {e}")
         return "Other"
 
+# ------------------- Flex Message -------------------
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
@@ -171,10 +203,11 @@ def create_flex_message(news_items):
 
     return [ {
         "type": "flex",
-        "altText": "ข่าวเศรษฐกิจและพลังงาน",  
+        "altText": f"ข่าวประจำวันที่ {now_thai.strftime('%d/%m/%Y')}",
         "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
-    } for i in range(0, len(bubbles), 10) ]
+    } for i in range(0, len(bubbles), 10)]
 
+# ------------------- ส่งเข้า LINE -------------------
 def send_text_and_flex_to_line(header_text, flex_messages):
     url = 'https://api.line.me/v2/bot/message/broadcast'
     headers = {
@@ -182,79 +215,62 @@ def send_text_and_flex_to_line(header_text, flex_messages):
         'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}'
     }
 
-    safe_header_text = header_text
-    text_payload = {"messages": [{"type": "text", "text": safe_header_text}]}
-    res1 = requests.post(url, headers=headers, json=text_payload)
+    res1 = requests.post(url, headers=headers, json={"messages": [{"type": "text", "text": header_text}]})
     print(f"📢 ส่งหัวข้อ: {res1.status_code}, {res1.text}")
 
     for i, msg in enumerate(flex_messages):
-        print(f"📦 ส่ง Flex {i+1}/{len(flex_messages)} ข่าว {len(msg['contents']['contents'])} เรื่อง")
         res2 = requests.post(url, headers=headers, json={"messages": [msg]})
-        print(f"LINE Response: {res2.status_code}, {res2.text}")
+        print(f"📦 ส่ง Flex {i+1}/{len(flex_messages)} ข่าว {len(msg['contents']['contents'])} เรื่อง | {res2.status_code}")
 
-# ------------------- ป้องกันข่าวซ้ำ -------------------
-sent_file = "sent_links.txt"
-if os.path.exists(sent_file):
-    with open(sent_file, "r", encoding="utf-8") as f:
-        sent_links = set(f.read().splitlines())
-else:
-    sent_links = set()
+# ------------------- เริ่มต้นหลัก -------------------
+cleanup_old_sent_links()
 
-# ------------------- ดึงข่าวจากทุกแหล่ง -------------------
+sent_dir = Path("sent_links")
+sent_dir.mkdir(exist_ok=True)
+
+today_file = sent_dir / f"{today_thai}.txt"
+yesterday_file = sent_dir / f"{yesterday_thai}.txt"
+
+sent_links = set()
+for f in [today_file, yesterday_file]:
+    if f.exists():
+        sent_links.update(f.read_text(encoding="utf-8").splitlines())
+
 all_news = []
 
-for source, url in feed_urls_filtered.items():
-    print(f"🌐 โหลดฟีดจาก: {source}")
-    feed = feedparser.parse(url)
-    print(f"🔎 {source} พบ {len(feed.entries)} ข่าว")
-
-    for entry in feed.entries:
-        pub_date = parse_date(entry)
-        if not pub_date:
-            print(f"⛔️ {source} - ไม่มีวันที่")
-            continue
-        local_date = pub_date.astimezone(bangkok_tz).date()
-
-        print(f"🔍 {source} | {entry.title[:60]}... | วันที่: {local_date}")
-
-        if entry.link in sent_links:
-            print("⏩ ข่าวนี้ส่งไปแล้ว")
-            continue
-
-        if source in ["BBC Economy", "NYT"]:
+for source, info in news_sources.items():
+    if info["type"] == "rss":
+        feed = feedparser.parse(info["url"])
+        for entry in feed.entries:
+            pub_date = parse_date(entry)
+            if not pub_date:
+                continue
+            local_date = pub_date.astimezone(bangkok_tz).date()
+            if entry.link in sent_links:
+                continue
             if local_date in [today_thai, yesterday_thai]:
-                print("✅ เก็บข่าว BBC/NYT")
-                all_news.append({
-                    "source": source,
-                    "title": entry.title,
-                    "summary": getattr(entry, 'summary', ''),
-                    "link": entry.link,
-                    "image": extract_image(entry),
-                    "published": pub_date.astimezone(bangkok_tz),
-                    "category": classify_category(entry)
-                })
-                sent_links.add(entry.link)
-        else:
-            if local_date in [today_thai, yesterday_thai] and is_relevant(entry):
-                print("✅ เก็บข่าวที่เกี่ยวข้อง")
-                all_news.append({
-                    "source": source,
-                    "title": entry.title,
-                    "summary": getattr(entry, 'summary', ''),
-                    "link": entry.link,
-                    "image": extract_image(entry),
-                    "published": pub_date.astimezone(bangkok_tz),
-                    "category": classify_category(entry)
-                })
-                sent_links.add(entry.link)
+                if source in ["BBC Economy", "NYT"] or is_relevant(entry):
+                    all_news.append({
+                        "source": source,
+                        "title": entry.title,
+                        "summary": getattr(entry, 'summary', ''),
+                        "link": entry.link,
+                        "image": extract_image(entry),
+                        "published": pub_date.astimezone(bangkok_tz),
+                        "category": classify_category(entry)
+                    })
+                    sent_links.add(entry.link)
+    elif source == "Al Jazeera Middle East":
+        for item in fetch_aljazeera_articles():
+            if item['link'] in sent_links:
+                continue
+            all_news.append(item)
+            sent_links.add(item['link'])
 
-# ------------------- ส่งข่าว -------------------
+# ------------------- ส่งข่าว + บันทึก -------------------
 if all_news:
-    preferred_order = ["Energy", "Politics", "Economy", "Environment", "Tecnology", "Other"]
-    all_news = sorted(all_news, key=lambda item: preferred_order.index(item["category"]) if item["category"] in preferred_order else len(preferred_order))
+    preferred_order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
+    all_news = sorted(all_news, key=lambda x: preferred_order.index(x["category"]) if x["category"] in preferred_order else len(preferred_order))
     flex_messages = create_flex_message(all_news)
-    send_text_and_flex_to_line("📊 ข่าวเศรษฐกิจและพลังงานประจำวันที่วันนี้", flex_messages)
-
-# ------------------- บันทึกลิงก์ที่ส่งแล้ว -------------------
-with open(sent_file, "w", encoding="utf-8") as f:
-    f.write("\n".join(sent_links))
+    send_text_and_flex_to_line("📊 ข่าวประจำวันที่วันนี้", flex_messages)
+    today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
