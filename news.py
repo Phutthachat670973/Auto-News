@@ -166,7 +166,15 @@ def classify_category(entry):
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
+        # ✅ บังคับหมวดหมู่ Middle East ถ้าเป็น Al Jazeera
+        if item["source"] == "Al Jazeera":
+            item["category"] = "Middle East"
+
+        # ✅ ถ้าไม่มี category ให้ใช้ Uncategorized
+        category = item.get("category", "Uncategorized")
+
         summary_th = summarize_and_translate(item['title'], item['summary'])
+
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -183,7 +191,7 @@ def create_flex_message(news_items):
                 "contents": [
                     {"type": "text", "text": item['title'], "weight": "bold", "size": "md", "wrap": True},
                     {"type": "text", "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}", "size": "xs", "color": "#888888", "margin": "sm"},
-                    {"type": "text", "text": f"📌 {item['category']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
+                    {"type": "text", "text": f"📌 {category}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
                     {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
                     {"type": "text", "text": summary_th, "size": "sm", "wrap": True, "margin": "md"},
                 ]
@@ -197,7 +205,7 @@ def create_flex_message(news_items):
                         "type": "button",
                         "style": "link",
                         "height": "sm",
-                        "action": {"type": "uri", "label": "อ่านต่อ", "uri": item['link']}
+                        "action": {"type": "uri", "label": "Read more", "uri": item['link']}
                     }
                 ]
             }
@@ -205,9 +213,9 @@ def create_flex_message(news_items):
         if bubble["hero"]["url"].startswith("http"):
             bubbles.append(bubble)
 
-    return [ {
+    return [{
         "type": "flex",
-        "altText": f"ข่าวประจำวันที่ {now_thai.strftime('%d/%m/%Y')}",
+        "altText": f"News for {now_thai.strftime('%d/%m/%Y')}",
         "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
     } for i in range(0, len(bubbles), 10)]
 
