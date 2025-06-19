@@ -16,8 +16,12 @@ summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
 # ------------------- ตั้งค่า API -------------------
-DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "8uoRm9++VvpXup6GsgDr+G8jZPwjHQ2riVK2VGvpcMTqa2ApnuUlb/4zs/7p+/m2CA5uvTO8ueeMBQvThfvNF3A9YCUR6aDGxSWt07nuGDwO2gDxhkXdtPUU8HEIQZn1aOLmx/F5dWCIBr3IfYuCTgdB04t89/1O/w1cDnyilFU="
+# ------------------- ตั้งค่า API -------------------
+DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"  # ✅ ปล่อยไว้ได้ถ้ายังไม่มี Secrets
+
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+if not LINE_CHANNEL_ACCESS_TOKEN:
+    raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN. Please set it as an environment variable.")
 
 # ------------------- ตั้งค่า Timezone -------------------
 bangkok_tz = pytz.timezone("Asia/Bangkok")
