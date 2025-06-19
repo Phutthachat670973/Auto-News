@@ -17,7 +17,7 @@ classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnl
 
 # ------------------- ตั้งค่า API -------------------
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "'tI3xxzlIq2sD6pg1ukIabWAnuxxoCgc68Bv0vDcvHZNCUnUYGk15EafVqLi3A6pDlyBiUwECDzwxLHtwzIfpoieIO5BIWVRHtfVa7uIy9XYuWwZpybcV/UmwOvhxySqTb4wOXdKRX8Gpo9N91VIOzAdB04t89/1O/w1cDnyilFU="
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "8uoRm9++VvpXup6GsgDr+G8jZPwjHQ2riVK2VGvpcMTqa2ApnuUlb/4zs/7p+/m2CA5uvTO8ueeMBQvThfvNF3A9YCUR6aDGxSWt07nuGDwO2gDxhkXdtPUU8HEIQZn1aOLmx/F5dWCIBr3IfYuCTgdB04t89/1O/w1cDnyilFU="
 
 # ------------------- ตั้งค่า Timezone -------------------
 bangkok_tz = pytz.timezone("Asia/Bangkok")
