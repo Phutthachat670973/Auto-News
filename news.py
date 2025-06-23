@@ -39,7 +39,7 @@ def cleanup_old_sent_links(folder="sent_links", keep_days=5):
                     os.remove(os.path.join(folder, filename))
                     print(f"🪝 ลบไฟล์ข่าวเก่า: {filename}")
             except Exception as e:
-                print(f"⚠️ ไม่สามารถรรมผล {filename}: {e}")
+                print(f"⚠️ ไม่สามารรมผล {filename}: {e}")
 
 # ------------------- แหล่งข่าว -------------------
 news_sources = {
@@ -101,7 +101,7 @@ def extract_image(entry):
             if 'url' in media:
                 return media['url']
     if 'img' in getattr(entry, 'summary', ''):
-        imgs = re.findall(r'<img[^>]+src="([^">]+)"', entry.summary)
+        imgs = re.findall(r'<img[^>]+src="([^"]+)">', entry.summary)
         if imgs:
             return imgs[0]
     try:
@@ -263,14 +263,14 @@ for source, info in news_sources.items():
                 })
                 sent_links.add(entry.link)
 
-# ✅ ดึงจาก Al Jazeera
+# ✅ ดึงจาก Al Jazeera (ไม่กรองวันที่เพื่อให้ Middle East แสดงแน่)
 aljazeera_news = fetch_aljazeera_articles()
 for item in aljazeera_news:
     if item["link"] not in sent_links:
         all_news.append(item)
         sent_links.add(item["link"])
 
-# 🔍 กรองพเพาะ Politics, Economy, Energy
+# 🔍 กรองเพาะ Politics, Economy, Energy, Middle East
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [news for news in all_news if news['category'] in allowed_categories]
 
