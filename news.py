@@ -49,6 +49,9 @@ news_sources = {
     "BBC Economy": {"type": "rss", "url": "http://feeds.bbci.co.uk/news/business/economy/rss.xml"},
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
+# ------------------- คำค้นหาหลัก -------------------
+keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
+
 # ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
     url = "https://api-free.deepl.com/v2/translate"
