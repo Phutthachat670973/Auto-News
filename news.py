@@ -112,14 +112,14 @@ def extract_image(entry):
 def fetch_aljazeera_articles():
     articles = []
     try:
-        resp = requests.get("https://www.aljazeera.com/middle-east/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        resp = requests.get("reuters.com/world/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         soup = BeautifulSoup(resp.content, "html.parser")
         for a in soup.select('a.u-clickable-card__link')[:5]:
             title = a.get_text(strip=True)
-            link = "https://www.aljazeera.com" + a['href']
+            link = "reuters.com/world/" + a['href']
             image = extract_image_from_aljazeera(link)
             articles.append({
-                "source": "Al Jazeera",
+                "source": "reuters",
                 "title": title,
                 "summary": "",
                 "link": link,
