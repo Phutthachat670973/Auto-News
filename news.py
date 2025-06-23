@@ -47,9 +47,6 @@ news_sources = {
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
 
-# ------------------- คำค้นหาหลัก -------------------
-keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
-
 # ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
     url = "https://api-free.deepl.com/v2/translate"
@@ -95,10 +92,6 @@ def parse_date(entry):
     except:
         return None
 
-def is_relevant(entry):
-    text = (entry.title + " " + getattr(entry, 'summary', "")).lower()
-    return any(k in text for k in keywords)
-
 def extract_image(entry):
     if hasattr(entry, 'media_content'):
         for media in entry.media_content:
@@ -129,6 +122,40 @@ def classify_category(entry):
     except Exception as e:
         print(f"❗️จัดหมวดหมู่ไม่ได้: {e}")
         return "Other"
+
+# ------------------- ข่าวจาก Al Jazeera -------------------
+def fetch_aljazeera_articles():
+    articles = []
+    try:
+        resp = requests.get("https://www.aljazeera.com/middle-east/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        soup = BeautifulSoup(resp.content, "html.parser")
+        for a in soup.select('a.u-clickable-card__link')[:5]:
+            title = a.get_text(strip=True)
+            link = "https://www.aljazeera.com" + a['href']
+            image = extract_image_from_aljazeera(link)
+            articles.append({
+                "source": "Al Jazeera",
+                "title": title,
+                "summary": "",
+                "link": link,
+                "image": image,
+                "published": now_thai,
+                "category": "Middle East"
+            })
+    except Exception as e:
+        print(f"⚠️ ดึงข่าว Al Jazeera ไม่สำเร็จ: {e}")
+    return articles
+
+def extract_image_from_aljazeera(link):
+    try:
+        res = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        soup = BeautifulSoup(res.content, "html.parser")
+        meta_img = soup.find("meta", property="og:image")
+        if meta_img and meta_img.get("content"):
+            return meta_img["content"]
+    except:
+        pass
+    return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
 # ------------------- Flex Message -------------------
 def create_flex_message(news_items):
@@ -210,6 +237,7 @@ for f in [today_file, yesterday_file]:
 
 all_news = []
 
+# ✅ ดึงจาก RSS
 for source, info in news_sources.items():
     if info["type"] == "rss":
         feed = feedparser.parse(info["url"])
@@ -221,17 +249,23 @@ for source, info in news_sources.items():
             if entry.link in sent_links:
                 continue
             if local_date in [today_thai, yesterday_thai]:
-                if source in ["BBC Economy", "NYT"] or is_relevant(entry):
-                    all_news.append({
-                        "source": source,
-                        "title": entry.title,
-                        "summary": getattr(entry, 'summary', ''),
-                        "link": entry.link,
-                        "image": extract_image(entry),
-                        "published": pub_date.astimezone(bangkok_tz),
-                        "category": classify_category(entry)
-                    })
-                    sent_links.add(entry.link)
+                all_news.append({
+                    "source": source,
+                    "title": entry.title,
+                    "summary": getattr(entry, 'summary', ''),
+                    "link": entry.link,
+                    "image": extract_image(entry),
+                    "published": pub_date.astimezone(bangkok_tz),
+                    "category": classify_category(entry)
+                })
+                sent_links.add(entry.link)
+
+# ✅ ดึงจาก Al Jazeera
+aljazeera_news = fetch_aljazeera_articles()
+for item in aljazeera_news:
+    if item["link"] not in sent_links:
+        all_news.append(item)
+        sent_links.add(item["link"])
 
 # ------------------- ส่งข่าว + บันทึก -------------------
 if all_news:
