@@ -47,14 +47,8 @@ def cleanup_old_sent_links(folder="sent_links", keep_days=5):
 # ------------------- แหล่งข่าว -------------------
 news_sources = {
     "BBC Economy": {"type": "rss", "url": "http://feeds.bbci.co.uk/news/business/economy/rss.xml"},
-    "CNBC": {"type": "rss", "url": "https://www.cnbc.com/id/15839135/device/rss/rss.html"},
-    "NYT": {"type": "rss", "url": "https://rss.nytimes.com/services/xml/rss/nyt/Economy.xml"},
-    "Al Jazeera Middle East": {"type": "html", "url": "https://www.aljazeera.com/middle-east/"}
+    "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
-
-# ------------------- คำค้นหาหลัก -------------------
-keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
-
 # ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
     url = "https://api-free.deepl.com/v2/translate"
@@ -107,49 +101,14 @@ def extract_image(entry):
     except:
         pass
     return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
-
-# ------------------- ข่าวจาก Al Jazeera -------------------
-def fetch_aljazeera_articles():
-    articles = []
+# ------------------- ฟังก์ชันสรุปข่าวด้วย Pegasus -------------------
+def summarize_news(title, summary_text):
+    text = f"{title}\n{summary_text}"
     try:
-        resp = requests.get("reuters.com/world/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        soup = BeautifulSoup(resp.content, "html.parser")
-        for a in soup.select('a.u-clickable-card__link')[:5]:
-            title = a.get_text(strip=True)
-            link = "reuters.com/world/" + a['href']
-            image = extract_image_from_aljazeera(link)
-            articles.append({
-                "source": "reuters",
-                "title": title,
-                "summary": "",
-                "link": link,
-                "image": image,
-                "published": now_thai,
-                "category": "Middle East"
-            })
+        result = summarizer(text, max_length=80, min_length=20, do_sample=False)
+        return result[0]['summary_text']
     except Exception as e:
-        print(f"⚠️ ดึงข่าว Al Jazeera ไม่สำเร็จ: {e}")
-    return articles
-
-def extract_image_from_aljazeera(link):
-    try:
-        res = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        soup = BeautifulSoup(res.content, "html.parser")
-        meta_img = soup.find("meta", property="og:image")
-        if meta_img and meta_img.get("content"):
-            return meta_img["content"]
-    except:
-        pass
-    return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
-
-# ------------------- สรุป + แปล -------------------
-def summarize_and_translate(title, summary):
-    text = f"{title}\n{summary}"
-    try:
-        result = summarizer(text, max_length=100, min_length=20, do_sample=False)
-        return translate_en_to_th(result[0]['summary_text'])
-    except Exception as e:
-        return f"สรุปข่าวไม่ได้: {e}"
+        return f"[สรุปไม่ได้] {e}"
 
 # ------------------- จัดหมวดหมู่ -------------------
 candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
