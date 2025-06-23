@@ -15,7 +15,7 @@ summarizer = pipeline("summarization", model="google/pegasus-xsum")
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
 # ------------------- ตั้งค่า API -------------------
-DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"  # 🛡 สำหรับทดสอบ
+DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN. Please set it as an environment variable.")
@@ -37,9 +37,9 @@ def cleanup_old_sent_links(folder="sent_links", keep_days=5):
                 file_date = datetime.strptime(filename.replace(".txt", ""), "%Y-%m-%d").date()
                 if file_date < cutoff_date:
                     os.remove(os.path.join(folder, filename))
-                    print(f"🧹 ลบไฟล์ข่าวเก่า: {filename}")
+                    print(f"🪝 ลบไฟล์ข่าวเก่า: {filename}")
             except Exception as e:
-                print(f"⚠️ ไม่สามารถประมวลผล {filename}: {e}")
+                print(f"⚠️ ไม่สามารถรรมผล {filename}: {e}")
 
 # ------------------- แหล่งข่าว -------------------
 news_sources = {
@@ -49,6 +49,7 @@ news_sources = {
 
 # ------------------- คำค้นหาหลัก -------------------
 keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
+
 # ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
     url = "https://api-free.deepl.com/v2/translate"
@@ -122,7 +123,7 @@ def classify_category(entry):
         result = classifier(text, candidate_labels)
         return result['labels'][0]
     except Exception as e:
-        print(f"❗️จัดหมวดหมู่ไม่ได้: {e}")
+        print(f"❗️จัดหมวดหม่ได้: {e}")
         return "Other"
 
 # ------------------- ข่าวจาก Al Jazeera -------------------
@@ -269,10 +270,14 @@ for item in aljazeera_news:
         all_news.append(item)
         sent_links.add(item["link"])
 
+# 🔍 กรองพเพาะ Politics, Economy, Energy
+allowed_categories = {"Politics", "Economy", "Energy"}
+all_news = [news for news in all_news if news['category'] in allowed_categories]
+
 # ------------------- ส่งข่าว + บันทึก -------------------
 if all_news:
-    preferred_order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
+    preferred_order = ["Politics", "Economy", "Energy"]
     all_news = sorted(all_news, key=lambda x: preferred_order.index(x["category"]) if x["category"] in preferred_order else len(preferred_order))
     flex_messages = create_flex_message(all_news)
-    send_text_and_flex_to_line("📊 ข่าวประจำวันที่วันนี้", flex_messages)
+    send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_messages)
     today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
