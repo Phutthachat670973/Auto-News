@@ -6,19 +6,16 @@ import requests
 from transformers import pipeline
 import re
 from bs4 import BeautifulSoup
-from collections import Counter
 import os
 from dateutil import parser as dateutil_parser
 from pathlib import Path
 
 # ------------------- ตั้งค่าโมเดล -------------------
-summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
+summarizer = pipeline("summarization", model="google/pegasus-xsum")
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
 # ------------------- ตั้งค่า API -------------------
-# ------------------- ตั้งค่า API -------------------
-DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"  # ✅ ปล่อยไว้ได้ถ้ายังไม่มี Secrets
-
+DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"  # 🛡 สำหรับทดสอบ
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN. Please set it as an environment variable.")
@@ -49,6 +46,7 @@ news_sources = {
     "BBC Economy": {"type": "rss", "url": "http://feeds.bbci.co.uk/news/business/economy/rss.xml"},
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
+
 # ------------------- คำค้นหาหลัก -------------------
 keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
 
@@ -68,6 +66,22 @@ def translate_en_to_th(text):
         return result["translations"][0]["text"]
     except Exception as e:
         return f"แปลไม่สำเร็จ: {e}"
+
+# ------------------- ฟังก์ชันสรุป + แปล -------------------
+def summarize_and_translate(title, summary_text):
+    text = f"{title}\n{summary_text}"
+    try:
+        result = summarizer(text, max_length=100, min_length=20, do_sample=False)
+        summary_en = result[0]['summary_text']
+    except Exception as e:
+        summary_en = f"[สรุปไม่ได้] {e}"
+
+    try:
+        translated = translate_en_to_th(summary_en)
+    except Exception as e:
+        translated = f"[แปลไม่ได้] {e}"
+
+    return translated
 
 # ------------------- ประมวลผล RSS -------------------
 def parse_date(entry):
@@ -104,14 +118,6 @@ def extract_image(entry):
     except:
         pass
     return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
-# ------------------- ฟังก์ชันสรุปข่าวด้วย Pegasus -------------------
-def summarize_news(title, summary_text):
-    text = f"{title}\n{summary_text}"
-    try:
-        result = summarizer(text, max_length=80, min_length=20, do_sample=False)
-        return result[0]['summary_text']
-    except Exception as e:
-        return f"[สรุปไม่ได้] {e}"
 
 # ------------------- จัดหมวดหมู่ -------------------
 candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
@@ -226,12 +232,6 @@ for source, info in news_sources.items():
                         "category": classify_category(entry)
                     })
                     sent_links.add(entry.link)
-    elif source == "Al Jazeera Middle East":
-        for item in fetch_aljazeera_articles():
-            if item['link'] in sent_links:
-                continue
-            all_news.append(item)
-            sent_links.add(item['link'])
 
 # ------------------- ส่งข่าว + บันทึก -------------------
 if all_news:
