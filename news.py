@@ -43,7 +43,7 @@ def cleanup_old_sent_links(folder="sent_links", keep_days=5):
 
 # ------------------- แหล่งข่าว -------------------
 news_sources = {
-    "BBC Economy": {"type": "rss", "url": "http://feeds.bbci.co.uk/news/business/economy/rss.xml"},
+    "BBC Economy": {"type": "rss", "url": "https://feeds.bbci.co.uk/news/rss.xml"},
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
 
