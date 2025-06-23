@@ -28,18 +28,7 @@ yesterday_thai = today_thai - timedelta(days=1)
 
 # ------------------- ฟังก์ชันลบไฟล์ข่าวเก่า -------------------
 def cleanup_old_sent_links(folder="sent_links", keep_days=5):
-    cutoff_date = today_thai - timedelta(days=keep_days)
-    if not os.path.exists(folder):
-        return
-    for filename in os.listdir(folder):
-        if filename.endswith(".txt"):
-            try:
-                file_date = datetime.strptime(filename.replace(".txt", ""), "%Y-%m-%d").date()
-                if file_date < cutoff_date:
-                    os.remove(os.path.join(folder, filename))
-                    print(f"🪝 ลบไฟล์ข่าวเก่า: {filename}")
-            except Exception as e:
-                print(f"⚠️ ไม่สามารรมผล {filename}: {e}")
+    pass  # ปิดการใช้งานการลบไฟล์
 
 # ------------------- แหล่งข่าว -------------------
 news_sources = {
@@ -225,18 +214,11 @@ def send_text_and_flex_to_line(header_text, flex_messages):
         print(f"📦 ส่ง Flex {i+1}/{len(flex_messages)} ข่าว {len(msg['contents']['contents'])} เรื่อง | {res2.status_code}")
 
 # ------------------- เริ่มต้นหลัก -------------------
-cleanup_old_sent_links()
-
-sent_dir = Path("sent_links")
-sent_dir.mkdir(exist_ok=True)
-
-today_file = sent_dir / f"{today_thai}.txt"
-yesterday_file = sent_dir / f"{yesterday_thai}.txt"
-
 sent_links = set()
-for f in [today_file, yesterday_file]:
-    if f.exists():
-        sent_links.update(f.read_text(encoding="utf-8").splitlines())
+sent_dir = Path("sent_links")
+today_file = sent_dir / f"{today_thai}.txt"
+if today_file.exists():
+    sent_links.update(today_file.read_text(encoding="utf-8").splitlines())
 
 all_news = []
 
@@ -263,21 +245,20 @@ for source, info in news_sources.items():
                 })
                 sent_links.add(entry.link)
 
-# ✅ ดึงจาก Al Jazeera (ไม่กรองวันที่เพื่อให้ Middle East แสดงแน่)
+# ✅ ดึงจาก Al Jazeera
 aljazeera_news = fetch_aljazeera_articles()
 for item in aljazeera_news:
     if item["link"] not in sent_links:
         all_news.append(item)
         sent_links.add(item["link"])
 
-# 🔍 กรองเพาะ Politics, Economy, Energy, Middle East
+# 🔍 กรองเฉพาะ Politics, Economy, Energy, Middle East
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [news for news in all_news if news['category'] in allowed_categories]
 
-# ------------------- ส่งข่าว + บันทึก -------------------
+# ------------------- ส่งข่าว -------------------
 if all_news:
     preferred_order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
     all_news = sorted(all_news, key=lambda x: preferred_order.index(x["category"]) if x["category"] in preferred_order else len(preferred_order))
     flex_messages = create_flex_message(all_news)
     send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_messages)
-    today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
