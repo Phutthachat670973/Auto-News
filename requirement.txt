@@ -1,5 +1,6 @@
 transformers
 torch
+sentencepiece
 feedparser
 pytz
 requests
