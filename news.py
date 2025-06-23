@@ -271,12 +271,12 @@ for item in aljazeera_news:
         sent_links.add(item["link"])
 
 # 🔍 กรองพเพาะ Politics, Economy, Energy
-allowed_categories = {"Politics", "Economy", "Energy"}
+allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [news for news in all_news if news['category'] in allowed_categories]
 
 # ------------------- ส่งข่าว + บันทึก -------------------
 if all_news:
-    preferred_order = ["Politics", "Economy", "Energy"]
+    preferred_order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
     all_news = sorted(all_news, key=lambda x: preferred_order.index(x["category"]) if x["category"] in preferred_order else len(preferred_order))
     flex_messages = create_flex_message(all_news)
     send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_messages)
