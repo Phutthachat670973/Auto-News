@@ -189,7 +189,7 @@ def extract_image_from_aljazeera(link):
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
-        summary_th = summarize_and_translate(item['title'], item['summary'])
+        summary_th = summarize_and_translate(item['title'], item['link'])
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -266,6 +266,11 @@ for f in [today_file, yesterday_file]:
 all_news = []
 
 # ✅ ดึงจาก RSS
+news_sources = {
+    "BBC Economy": {"type": "rss", "url": "https://feeds.bbci.co.uk/news/rss.xml"},
+    "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
+}
+
 for source, info in news_sources.items():
     if info["type"] == "rss":
         feed = feedparser.parse(info["url"])
@@ -299,10 +304,9 @@ for item in aljazeera_news:
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [news for news in all_news if news['category'] in allowed_categories]
 
-# ------------------- ส่งข่าว + บันทึก -------------------
+# ------------------- ส่งข่าว -------------------
 if all_news:
     preferred_order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
     all_news = sorted(all_news, key=lambda x: preferred_order.index(x["category"]) if x["category"] in preferred_order else len(preferred_order))
     flex_messages = create_flex_message(all_news)
     send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_messages)
-    today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
