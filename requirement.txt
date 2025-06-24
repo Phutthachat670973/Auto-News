@@ -6,3 +6,4 @@ pytz
 requests
 beautifulsoup4
 python-dateutil
+newspaper3k
