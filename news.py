@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 import os
 from dateutil import parser as dateutil_parser
 from pathlib import Path
+from newspaper import Article
 
 # ------------------- ตั้งค่าโมเดล -------------------
 summarizer = pipeline("summarization", model="google/pegasus-xsum")
@@ -18,15 +19,15 @@ classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnl
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN. Please set it as an environment variable.")
+    raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN")
 
-# ------------------- ตั้งค่า Timezone -------------------
+# ------------------- Timezone -------------------
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 now_thai = datetime.now(bangkok_tz)
 today_thai = now_thai.date()
 yesterday_thai = today_thai - timedelta(days=1)
 
-# ------------------- ฟังก์ชันลบไฟล์ข่าวเก่า -------------------
+# ------------------- ลบไฟล์ข่าวเก่า -------------------
 def cleanup_old_sent_links(folder="sent_links", keep_days=5):
     cutoff_date = today_thai - timedelta(days=keep_days)
     if not os.path.exists(folder):
@@ -37,18 +38,49 @@ def cleanup_old_sent_links(folder="sent_links", keep_days=5):
                 file_date = datetime.strptime(filename.replace(".txt", ""), "%Y-%m-%d").date()
                 if file_date < cutoff_date:
                     os.remove(os.path.join(folder, filename))
-                    print(f"🪝 ลบไฟล์ข่าวเก่า: {filename}")
-            except Exception as e:
-                print(f"⚠️ ไม่สามารรมผล {filename}: {e}")
+            except:
+                pass
 
-# ------------------- แหล่งข่าว -------------------
-news_sources = {
-    "BBC Economy": {"type": "rss", "url": "https://feeds.bbci.co.uk/news/rss.xml"},
-    "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
-}
+# ------------------- ดึงเนื้อหาข่าว -------------------
+def fallback_extract_text(url):
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        soup = BeautifulSoup(resp.content, "html.parser")
+        paras = [p.get_text() for p in soup.find_all("p")]
+        return "\n".join(paras).strip()
+    except:
+        return ""
 
-# ------------------- คำค้นหาหลัก -------------------
-keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
+def extract_article_text(url):
+    try:
+        article = Article(url)
+        article.download()
+        article.parse()
+        text = article.text
+        if not text or len(text.strip()) < 50:
+            text = fallback_extract_text(url)
+        return text
+    except:
+        return fallback_extract_text(url)
+
+# ------------------- สรุปแบบ hierarchical -------------------
+def hierarchical_summarize(text):
+    chunks = [text[i:i+1000] for i in range(0, len(text), 1000)]
+    partial_summaries = []
+    for chunk in chunks:
+        try:
+            result = summarizer(chunk, max_length=120, min_length=30, do_sample=False)
+            partial_summaries.append(result[0]['summary_text'])
+        except:
+            continue
+    if not partial_summaries:
+        return "[สรุปไม่ได้]"
+    combined = " ".join(partial_summaries)
+    try:
+        final_result = summarizer(combined, max_length=120, min_length=30, do_sample=False)
+        return final_result[0]['summary_text']
+    except:
+        return combined
 
 # ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
@@ -65,22 +97,15 @@ def translate_en_to_th(text):
         result = response.json()
         return result["translations"][0]["text"]
     except Exception as e:
-        return f"แปลไม่สำเร็จ: {e}"
+        return f"[แปลไม่สำเร็จ] {e}"
 
-# ------------------- ฟังก์ชันสรุป + แปล -------------------
-def summarize_and_translate(title, summary_text):
-    text = f"{title}\n{summary_text}"
-    try:
-        result = summarizer(text, max_length=100, min_length=20, do_sample=False)
-        summary_en = result[0]['summary_text']
-    except Exception as e:
-        summary_en = f"[สรุปไม่ได้] {e}"
-
-    try:
-        translated = translate_en_to_th(summary_en)
-    except Exception as e:
-        translated = f"[แปลไม่ได้] {e}"
-
+# ------------------- สรุป + แปล โดยใช้ลิงก์ -------------------
+def summarize_and_translate(title, link):
+    article_text = extract_article_text(link)
+    if not article_text or len(article_text.strip()) < 50:
+        article_text = title
+    summary_en = hierarchical_summarize(article_text)
+    translated = translate_en_to_th(summary_en)
     return translated
 
 # ------------------- ประมวลผล RSS -------------------
