@@ -7,7 +7,7 @@ from transformers import pipeline
 import re
 from bs4 import BeautifulSoup
 import os
-from dateutil imporAt parser as dateutil_parser
+from dateutil import parser as dateutil_parser
 from pathlib import Path
 
 # ------------------- ตั้งค่าโมเดล -------------------
