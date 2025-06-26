@@ -78,10 +78,16 @@ def extract_full_article(url):
 
 # ------------------- สรุป + แปล -------------------
 def summarize_and_translate(title, summary_text):
-    text = f"{title}\n{summary_text}"
+    text = f"{title}\n{summary_text or ''}".strip()
     try:
-        result = summarizer(text, max_length=100, min_length=20, do_sample=False)
-        summary_en = result[0]['summary_text']
+        if len(text.split()) < 30:
+            summary_en = "[สั้นเกินไป ไม่มีเนื้อหาสำหรับสรุป]"
+        else:
+            result = summarizer(text, max_length=100, min_length=20, do_sample=False)
+            if isinstance(result, list) and len(result) > 0 and 'summary_text' in result[0]:
+                summary_en = result[0]['summary_text']
+            else:
+                summary_en = "[สรุปไม่ได้] ไม่มีผลลัพธ์จากโมเดล"
     except Exception as e:
         summary_en = f"[สรุปไม่ได้] {e}"
 
@@ -91,6 +97,7 @@ def summarize_and_translate(title, summary_text):
         translated = f"[แปลไม่ได้] {e}"
 
     return translated
+
 
 # ------------------- ประมวลผล RSS -------------------
 def parse_date(entry):
