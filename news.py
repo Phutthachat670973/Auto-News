@@ -81,7 +81,17 @@ def summarize_and_translate(title, summary_text):
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
+    # 🔧 ตรงนี้คือส่วนเพิ่ม: แยกหัวข้อกับเนื้อหา
+    if "<n>" in translated:
+        parts = translated.split("<n>", 1)
+        title_th = parts[0].strip()
+        summary_th = parts[1].strip()
+        translated = f"{title_th}\n{summary_th}"  # จะได้หัวข้อ + ย่อหน้าเนื้อหา
+    else:
+        translated = translated.replace("<n>", "").strip()
+
     return translated
+
 
 # ------------------- ประมวลผล RSS -------------------
 def parse_date(entry):
