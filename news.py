@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 import os
 from dateutil import parser as dateutil_parser
 from pathlib import Path
+from newspaper import Article
 
 # ------------------- ตั้งค่าโมเดล -------------------
 summarizer = pipeline("summarization", model="google/pegasus-xsum")
@@ -47,9 +48,6 @@ news_sources = {
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
 
-# ------------------- คำค้นหาหลัก -------------------
-keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
-
 # ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
     url = "https://api-free.deepl.com/v2/translate"
@@ -67,7 +65,18 @@ def translate_en_to_th(text):
     except Exception as e:
         return f"แปลไม่สำเร็จ: {e}"
 
-# ------------------- ฟังก์ชันสรุป + แปล -------------------
+# ------------------- ดึงเนื้อหาบทความ -------------------
+def extract_full_article(url):
+    try:
+        article = Article(url)
+        article.download()
+        article.parse()
+        return article.text.strip()
+    except Exception as e:
+        print(f"⚠️ ดึงบทความไม่สำเร็จ (newspaper3k): {e}")
+        return ""
+
+# ------------------- สรุป + แปล -------------------
 def summarize_and_translate(title, summary_text):
     text = f"{title}\n{summary_text}"
     try:
@@ -240,7 +249,7 @@ for f in [today_file, yesterday_file]:
 
 all_news = []
 
-# ✅ ดึงจาก RSS
+# ✅ ดึงจาก RSS และใช้บทความเต็ม
 for source, info in news_sources.items():
     if info["type"] == "rss":
         feed = feedparser.parse(info["url"])
@@ -252,10 +261,12 @@ for source, info in news_sources.items():
             if entry.link in sent_links:
                 continue
             if local_date in [today_thai, yesterday_thai]:
+                full_article = extract_full_article(entry.link)
+                summary_source = full_article if len(full_article) > 200 else getattr(entry, 'summary', '')
                 all_news.append({
                     "source": source,
                     "title": entry.title,
-                    "summary": getattr(entry, 'summary', ''),
+                    "summary": summary_source,
                     "link": entry.link,
                     "image": extract_image(entry),
                     "published": pub_date.astimezone(bangkok_tz),
@@ -263,18 +274,18 @@ for source, info in news_sources.items():
                 })
                 sent_links.add(entry.link)
 
-# ✅ ดึงจาก Al Jazeera (ไม่กรองวันที่เพื่อให้ Middle East แสดงแน่)
+# ✅ ดึงจาก Al Jazeera (คงไว้)
 aljazeera_news = fetch_aljazeera_articles()
 for item in aljazeera_news:
     if item["link"] not in sent_links:
         all_news.append(item)
         sent_links.add(item["link"])
 
-# 🔍 กรองเพาะ Politics, Economy, Energy, Middle East
+# 🔍 กรองตามหมวด
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [news for news in all_news if news['category'] in allowed_categories]
 
-# ------------------- ส่งข่าว + บันทึก -------------------
+# ✅ สร้าง Flex แล้วส่ง
 if all_news:
     preferred_order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
     all_news = sorted(all_news, key=lambda x: preferred_order.index(x["category"]) if x["category"] in preferred_order else len(preferred_order))
