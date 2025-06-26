@@ -110,6 +110,7 @@ https://www.bbc.com/news/articles/cgrxn4x7yx2o
 https://www.bbc.com/news/articles/cgrxnlpln24o
 https://www.bbc.com/news/articles/cj0m2g0ylrmo
 https://www.bbc.com/news/articles/cj3rmjjgx6xo
+https://www.bbc.com/news/articles/cj4en5wjr2vo
 https://www.bbc.com/news/articles/cj615p5y5kko
 https://www.bbc.com/news/articles/cj617y6lzzeo
 https://www.bbc.com/news/articles/ckg3082d3ero
@@ -149,6 +150,7 @@ https://www.bbc.com/news/articles/cx2gp07yqnjo
 https://www.bbc.com/news/articles/cx2jn280dnxo
 https://www.bbc.com/news/articles/cx2kmgyx011o
 https://www.bbc.com/news/articles/cx2ny7yl097o
+https://www.bbc.com/news/articles/cy0w59r54w9o
 https://www.bbc.com/news/articles/cy0w94yj68xo
 https://www.bbc.com/news/articles/cy5wk716pzdo
 https://www.bbc.com/news/articles/cy5wkld3r0xo
@@ -190,6 +192,7 @@ https://www.bbc.com/sport/football/articles/cy7ng4vj8leo
 https://www.bbc.com/sport/football/videos/cy8ky8xrnnmo
 https://www.bbc.com/sport/golf/articles/cdx59pq4wwyo
 https://www.bbc.com/sport/rugby-union/articles/cly82887drxo
+https://www.bbc.com/sport/rugby-union/articles/cy0wd1ne039o
 https://www.bbc.com/sport/swimming/articles/cvgn96vp7yjo
 https://www.bbc.com/sport/tennis/articles/ce83y4zry0yo
 https://www.bbc.com/sport/tennis/articles/cly178zkkg5o
@@ -323,6 +326,7 @@ https://www.cnbc.com/2025/06/26/experts-sound-alarm-on-infostealer-malware-after
 https://www.cnbc.com/2025/06/26/hm-hmb-earnings-q2-fy25.html
 https://www.cnbc.com/2025/06/26/how-ikea-is-doubling-down-on-price-cuts-to-attract-cost-conscious-customers.html
 https://www.cnbc.com/2025/06/26/nvidia-shares-rally-overnight-lifts-asian-chip-stocks.html
+https://www.cnbc.com/2025/06/26/openai-flags-beijing-backed-zhipu-ai-as-a-top-rival.html
 https://www.cnbc.com/2025/06/26/southeast-asian-small-businesses-using-ai-to-stay-competitive.html
 https://www.cnbc.com/select/average-401k-balance-by-age/
 https://www.cnbc.com/select/chase-sapphire-reserve-for-business-card/
