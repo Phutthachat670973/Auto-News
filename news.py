@@ -140,15 +140,23 @@ def extract_image(entry):
     return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
 # ------------------- จัดหมวดหมู่ -------------------
+# ------------------- จัดหมวดหมู่ -------------------
 candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
 def classify_category(entry):
-    text = (entry.title + " " + entry.get('summary', '')).strip()
     try:
+        if isinstance(entry, dict):
+            title = entry.get('title', '')
+            summary = entry.get('summary', '')
+        else:
+            title = getattr(entry, 'title', '')
+            summary = getattr(entry, 'summary', '')
+        text = (title + " " + summary).strip()
         result = classifier(text, candidate_labels)
         return result['labels'][0]
     except Exception as e:
-        print(f"❗️จัดหมวดหม่ได้: {e}")
+        print(f"❗️จัดหมวดหมู่ไม่ได้: {e}")
         return "Other"
+
 
 # ------------------- ข่าวจาก Al Jazeera -------------------
 def fetch_aljazeera_articles():
