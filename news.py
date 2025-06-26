@@ -107,6 +107,11 @@ def summarize_and_translate(title, summary_text):
     else:
         translated = translated.replace("<n>", "").strip()
 
+    return translated
+
+# ------------------- เหลือฟังก์ชันอื่น ๆ ที่ไม่เปลี่ยน เดี๋ยวใส่ให้ต่อ -------------------
+
+
 # ------------------- ประมวลผล RSS -------------------
 def parse_date(entry):
     try:
