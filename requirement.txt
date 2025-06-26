@@ -8,3 +8,4 @@ beautifulsoup4
 python-dateutil
 newspaper3k
 lxml_html_clean
+bardapi
