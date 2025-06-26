@@ -3,22 +3,19 @@ import feedparser
 from datetime import datetime, timedelta
 import pytz
 import requests
+from transformers import pipeline
 import re
 from bs4 import BeautifulSoup
 import os
 from dateutil import parser as dateutil_parser
 from pathlib import Path
-from newspaper import Article
-from bardapi import Bard
 
-# ------------------- ตั้งค่า Bard API -------------------
-bard = Bard(token=os.getenv("BARD_API_KEY") or "g.a000ygh-PMci_5jB-3nZ0mctI5pL3EF2t53nJjvmjHYCBK-p4kbqIsleSYDSUx_8AHPOyaKVogACgYKAewSARYSFQHGX2Midg875BerQSpK1jXnn6-GzxoVAUF8yKpZ5ETV_AgnwRH8jX-Bs6hK0076")
-
-# ------------------- ตั้งค่าโมเดลจัดหมวดหมู่ -------------------
-from transformers import pipeline
+# ------------------- ตั้งค่าโมเดล -------------------
+summarizer = pipeline("summarization", model="google/pegasus-xsum")
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
 # ------------------- ตั้งค่า API -------------------
+DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN. Please set it as an environment variable.")
@@ -40,8 +37,9 @@ def cleanup_old_sent_links(folder="sent_links", keep_days=5):
                 file_date = datetime.strptime(filename.replace(".txt", ""), "%Y-%m-%d").date()
                 if file_date < cutoff_date:
                     os.remove(os.path.join(folder, filename))
+                    print(f"🪝 ลบไฟล์ข่าวเก่า: {filename}")
             except Exception as e:
-                print(f"⚠️ ไม่สามารถลบไฟล์ {filename}: {e}")
+                print(f"⚠️ ไม่สามารรมผล {filename}: {e}")
 
 # ------------------- แหล่งข่าว -------------------
 news_sources = {
@@ -49,32 +47,41 @@ news_sources = {
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
 
-# ------------------- ดึงเนื้อหาบทความ -------------------
-def extract_full_article(url):
-    try:
-        article = Article(url)
-        article.download()
-        article.parse()
-        return article.text.strip()
-    except Exception as e:
-        print(f"⚠️ ดึงบทความไม่สำเร็จ: {e}")
-        return ""
+# ------------------- คำค้นหาหลัก -------------------
+keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
 
-# ------------------- สรุปและแปลโดย Bard -------------------
-def summarize_and_translate(title, summary_text):
-    text = f"{title}\n{summary_text or ''}".strip()
+# ------------------- แปลภาษา -------------------
+def translate_en_to_th(text):
+    url = "https://api-free.deepl.com/v2/translate"
+    params = {
+        "auth_key": DEEPL_API_KEY,
+        "text": text,
+        "source_lang": "EN",
+        "target_lang": "TH"
+    }
     try:
-        prompt = f"""
-        สรุปข่าวนี้เป็นภาษาไทยให้กระชับ ชัดเจน และเข้าใจง่าย:
-        หัวข้อข่าว: {title}
-        เนื้อหาข่าว: {text}
-        
-        ตอบกลับเป็นภาษาไทย โดยไม่แปลหัวข้อ
-        """
-        response = bard.get_answer(prompt)
-        return response['content'].strip()
+        response = requests.post(url, data=params, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        return result["translations"][0]["text"]
     except Exception as e:
-        return f"[Bard Failed] {e}"
+        return f"แปลไม่สำเร็จ: {e}"
+
+# ------------------- ฟังก์ชันสรุป + แปล -------------------
+def summarize_and_translate(title, summary_text):
+    text = f"{title}\n{summary_text}"
+    try:
+        result = summarizer(text, max_length=100, min_length=20, do_sample=False)
+        summary_en = result[0]['summary_text']
+    except Exception as e:
+        summary_en = f"[สรุปไม่ได้] {e}"
+
+    try:
+        translated = translate_en_to_th(summary_en)
+    except Exception as e:
+        translated = f"[แปลไม่ได้] {e}"
+
+    return translated
 
 # ------------------- ประมวลผล RSS -------------------
 def parse_date(entry):
@@ -116,7 +123,7 @@ def classify_category(entry):
         result = classifier(text, candidate_labels)
         return result['labels'][0]
     except Exception as e:
-        print(f"❗️จัดหมวดหมู่ไม่สำเร็จ: {e}")
+        print(f"❗️จัดหมวดหม่ได้: {e}")
         return "Other"
 
 # ------------------- ข่าวจาก Al Jazeera -------------------
@@ -196,10 +203,10 @@ def create_flex_message(news_items):
         if bubble["hero"]["url"].startswith("http"):
             bubbles.append(bubble)
 
-    return [{
+    return [ {
         "type": "flex",
         "altText": f"ข่าวประจำวันที่ {now_thai.strftime('%d/%m/%Y')}",
-        "contents": {"type": "carousel", "contents": bubbles[i:i + 10]}
+        "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
     } for i in range(0, len(bubbles), 10)]
 
 # ------------------- ส่งเข้า LINE -------------------
@@ -215,7 +222,7 @@ def send_text_and_flex_to_line(header_text, flex_messages):
 
     for i, msg in enumerate(flex_messages):
         res2 = requests.post(url, headers=headers, json={"messages": [msg]})
-        print(f"📦 ส่ง Flex {i + 1}/{len(flex_messages)} ข่าว {len(msg['contents']['contents'])} เรื่อง | {res2.status_code}")
+        print(f"📦 ส่ง Flex {i+1}/{len(flex_messages)} ข่าว {len(msg['contents']['contents'])} เรื่อง | {res2.status_code}")
 
 # ------------------- เริ่มต้นหลัก -------------------
 cleanup_old_sent_links()
@@ -233,7 +240,7 @@ for f in [today_file, yesterday_file]:
 
 all_news = []
 
-# ✅ ดึงจาก RSS และใช้บทความเต็ม
+# ✅ ดึงจาก RSS
 for source, info in news_sources.items():
     if info["type"] == "rss":
         feed = feedparser.parse(info["url"])
@@ -245,12 +252,10 @@ for source, info in news_sources.items():
             if entry.link in sent_links:
                 continue
             if local_date in [today_thai, yesterday_thai]:
-                full_article = extract_full_article(entry.link)
-                summary_source = full_article if len(full_article) > 200 else getattr(entry, 'summary', '')
                 all_news.append({
                     "source": source,
                     "title": entry.title,
-                    "summary": summary_source,
+                    "summary": getattr(entry, 'summary', ''),
                     "link": entry.link,
                     "image": extract_image(entry),
                     "published": pub_date.astimezone(bangkok_tz),
@@ -258,18 +263,18 @@ for source, info in news_sources.items():
                 })
                 sent_links.add(entry.link)
 
-# ✅ ดึงจาก Al Jazeera
+# ✅ ดึงจาก Al Jazeera (ไม่กรองวันที่เพื่อให้ Middle East แสดงแน่)
 aljazeera_news = fetch_aljazeera_articles()
 for item in aljazeera_news:
     if item["link"] not in sent_links:
         all_news.append(item)
         sent_links.add(item["link"])
 
-# 🔍 กรองตามหมวด
+# 🔍 กรองเพาะ Politics, Economy, Energy, Middle East
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [news for news in all_news if news['category'] in allowed_categories]
 
-# ✅ สร้าง Flex แล้วส่ง
+# ------------------- ส่งข่าว + บันทึก -------------------
 if all_news:
     preferred_order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
     all_news = sorted(all_news, key=lambda x: preferred_order.index(x["category"]) if x["category"] in preferred_order else len(preferred_order))
