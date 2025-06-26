@@ -79,6 +79,7 @@ def extract_full_article(url):
 # ------------------- สรุป + แปล -------------------
 def summarize_and_translate(title, summary_text):
     text = f"{title}\n{summary_text or ''}".strip()
+
     try:
         if len(text.split()) < 30:
             summary_en = "[สั้นเกินไป ไม่มีเนื้อหาสำหรับสรุป]"
@@ -88,6 +89,8 @@ def summarize_and_translate(title, summary_text):
                 summary_en = result[0]['summary_text']
             else:
                 summary_en = "[สรุปไม่ได้] ไม่มีผลลัพธ์จากโมเดล"
+    except IndexError as e:
+        summary_en = f"[สรุปไม่ได้] IndexError: {e}"
     except Exception as e:
         summary_en = f"[สรุปไม่ได้] {e}"
 
@@ -95,6 +98,13 @@ def summarize_and_translate(title, summary_text):
         translated = translate_en_to_th(summary_en)
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
+
+    if "[สรุปไม่ได้" in summary_en or "[แปลไม่ได้" in translated:
+        print("❌ DEBUG: สรุป/แปลไม่ได้")
+        print("📰 TITLE:", title)
+        print("📄 TEXT:", text[:300].replace("\n", " ") + "...")
+        print("📉 SUMMARY:", summary_en)
+        print("🌐 TRANSLATED:", translated)
 
     return translated
 
