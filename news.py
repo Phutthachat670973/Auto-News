@@ -85,14 +85,11 @@ def summarize_and_translate(title, summary_text):
             summary_en = "[สั้นเกินไป ไม่มีเนื้อหาสำหรับสรุป]"
         else:
             result = summarizer(text, max_length=100, min_length=20, do_sample=False)
-            if isinstance(result, list) and len(result) > 0 and 'summary_text' in result[0]:
-                summary_en = result[0]['summary_text']
-            else:
-                summary_en = "[สรุปไม่ได้] ไม่มีผลลัพธ์จากโมเดล"
-    except IndexError as e:
-        summary_en = f"[สรุปไม่ได้] IndexError: {e}"
+            summary_en = result[0]['summary_text'] if result and isinstance(result, list) and 'summary_text' in result[0] else "[สรุปไม่ได้] ไม่มีผลลัพธ์จากโมเดล"
+    except (IndexError, ValueError, KeyError) as e:
+        summary_en = f"[สรุปไม่ได้] {type(e).__name__}: {e}"
     except Exception as e:
-        summary_en = f"[สรุปไม่ได้] {e}"
+        summary_en = f"[สรุปไม่ได้] Unknown error: {e}"
 
     try:
         translated = translate_en_to_th(summary_en)
@@ -107,6 +104,7 @@ def summarize_and_translate(title, summary_text):
         print("🌐 TRANSLATED:", translated)
 
     return translated
+
 
 
 # ------------------- ประมวลผล RSS -------------------
