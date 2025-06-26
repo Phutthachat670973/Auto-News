@@ -76,6 +76,24 @@ def extract_full_article(url):
         print(f"⚠️ ดึงบทความไม่สำเร็จ (newspaper3k): {e}")
         return ""
 
+# ------------------- หาบทความจาก Google -------------------
+def fallback_search_from_google(title):
+    try:
+        search_url = f"https://www.google.com/search?q={requests.utils.quote(title)}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(search_url, headers=headers, timeout=10)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for a in soup.select("a"):
+            href = a.get("href", "")
+            if "url?q=" in href and not "webcache" in href:
+                true_url = re.findall(r"url\?q=(.*?)&", href)
+                if true_url:
+                    print(f"🔁 Fallback URL: {true_url[0]}")
+                    return extract_full_article(true_url[0])
+    except Exception as e:
+        print(f"❗️ Google fallback failed: {e}")
+    return ""
+
 # ------------------- สรุป + แปล -------------------
 def summarize_and_translate(title, summary_text):
     text = f"{title}\n{summary_text or ''}".strip()
@@ -91,6 +109,17 @@ def summarize_and_translate(title, summary_text):
     except Exception as e:
         summary_en = f"[สรุปไม่ได้] Unknown error: {e}"
 
+    # fallback หากสรุปไม่ได้
+    if "[สรุปไม่ได้" in summary_en:
+        print("🔍 ใช้ fallback หาข่าวจาก Google")
+        fallback_text = fallback_search_from_google(title)
+        if fallback_text:
+            try:
+                result = summarizer(fallback_text, max_length=100, min_length=20, do_sample=False)
+                summary_en = result[0]['summary_text']
+            except Exception as e:
+                summary_en = f"[สรุปไม่ได้ (fallback)] {e}"
+
     try:
         translated = translate_en_to_th(summary_en)
     except Exception as e:
@@ -104,8 +133,6 @@ def summarize_and_translate(title, summary_text):
         print("🌐 TRANSLATED:", translated)
 
     return translated
-
-
 
 # ------------------- ประมวลผล RSS -------------------
 def parse_date(entry):
