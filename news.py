@@ -3,20 +3,22 @@ import feedparser
 from datetime import datetime, timedelta
 import pytz
 import requests
-from transformers import pipeline
 import re
 from bs4 import BeautifulSoup
 import os
 from dateutil import parser as dateutil_parser
 from pathlib import Path
 from newspaper import Article
+from bardapi import Bard
 
-# ------------------- ตั้งค่าโมเดล -------------------
-summarizer = pipeline("summarization", model="google/pegasus-xsum")
+# ------------------- ตั้งค่า Bard API -------------------
+bard = Bard(token=os.getenv("BARD_API_KEY") or "g.a000ygh-PMci_5jB-3nZ0mctI5pL3EF2t53nJjvmjHYCBK-p4kbqIsleSYDSUx_8AHPOyaKVogACgYKAewSARYSFQHGX2Midg875BerQSpK1jXnn6-GzxoVAUF8yKpZ5ETV_AgnwRH8jX-Bs6hK0076")
+
+# ------------------- ตั้งค่าโมเดลจัดหมวดหมู่ -------------------
+from transformers import pipeline
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
 # ------------------- ตั้งค่า API -------------------
-DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN. Please set it as an environment variable.")
@@ -38,32 +40,14 @@ def cleanup_old_sent_links(folder="sent_links", keep_days=5):
                 file_date = datetime.strptime(filename.replace(".txt", ""), "%Y-%m-%d").date()
                 if file_date < cutoff_date:
                     os.remove(os.path.join(folder, filename))
-                    print(f"🪝 ลบไฟล์ข่าวเก่า: {filename}")
             except Exception as e:
-                print(f"⚠️ ไม่สามารรมผล {filename}: {e}")
+                print(f"⚠️ ไม่สามารถลบไฟล์ {filename}: {e}")
 
 # ------------------- แหล่งข่าว -------------------
 news_sources = {
     "BBC Economy": {"type": "rss", "url": "https://feeds.bbci.co.uk/news/rss.xml"},
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
-
-# ------------------- แปลภาษา -------------------
-def translate_en_to_th(text):
-    url = "https://api-free.deepl.com/v2/translate"
-    params = {
-        "auth_key": DEEPL_API_KEY,
-        "text": text,
-        "source_lang": "EN",
-        "target_lang": "TH"
-    }
-    try:
-        response = requests.post(url, data=params, timeout=10)
-        response.raise_for_status()
-        result = response.json()
-        return result["translations"][0]["text"]
-    except Exception as e:
-        return f"แปลไม่สำเร็จ: {e}"
 
 # ------------------- ดึงเนื้อหาบทความ -------------------
 def extract_full_article(url):
@@ -73,74 +57,24 @@ def extract_full_article(url):
         article.parse()
         return article.text.strip()
     except Exception as e:
-        print(f"⚠️ ดึงบทความไม่สำเร็จ (newspaper3k): {e}")
+        print(f"⚠️ ดึงบทความไม่สำเร็จ: {e}")
         return ""
 
-# ------------------- หาบทความจาก Google -------------------
-def fallback_search_from_google(title):
-    try:
-        search_url = f"https://www.google.com/search?q={requests.utils.quote(title)}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(search_url, headers=headers, timeout=10)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for a in soup.select("a"):
-            href = a.get("href", "")
-            if "url?q=" in href and not "webcache" in href:
-                true_url = re.findall(r"url\\?q=(.*?)&", href)
-                if true_url:
-                    print(f"🔁 Fallback URL: {true_url[0]}")
-                    return extract_full_article(true_url[0])
-    except Exception as e:
-        print(f"❗️ Google fallback failed: {e}")
-    return ""
-
-# ------------------- ตัดข้อความยาวเกิน -------------------
-MAX_TOKENS = 500
-
-def trim_text_for_model(text, max_tokens=MAX_TOKENS):
-    words = text.split()
-    return " ".join(words[:max_tokens])
-
-# ------------------- สรุป + แปล -------------------
+# ------------------- สรุปและแปลโดย Bard -------------------
 def summarize_and_translate(title, summary_text):
     text = f"{title}\n{summary_text or ''}".strip()
-    trimmed_text = trim_text_for_model(text)
-
     try:
-        if len(trimmed_text.split()) < 30:
-            summary_en = "[สั้นเกินไป ไม่มีเนื้อหาสำหรับสรุป]"
-        else:
-            result = summarizer(trimmed_text, max_length=160, min_length=60, do_sample=False)
-            summary_en = result[0]['summary_text'] if result and isinstance(result, list) and 'summary_text' in result[0] else "[สรุปไม่ได้] ไม่มีผลลัพธ์จากโมเดล"
-    except (IndexError, ValueError, KeyError) as e:
-        summary_en = f"[สรุปไม่ได้] {type(e).__name__}: {e}"
+        prompt = f"""
+        สรุปข่าวนี้เป็นภาษาไทยให้กระชับ ชัดเจน และเข้าใจง่าย:
+        หัวข้อข่าว: {title}
+        เนื้อหาข่าว: {text}
+        
+        ตอบกลับเป็นภาษาไทย โดยไม่แปลหัวข้อ
+        """
+        response = bard.get_answer(prompt)
+        return response['content'].strip()
     except Exception as e:
-        summary_en = f"[สรุปไม่ได้] Unknown error: {e}"
-
-    if "[สรุปไม่ได้" in summary_en:
-        print("🔍 ใช้ fallback หาข่าวจาก Google")
-        fallback_text = fallback_search_from_google(title)
-        if fallback_text:
-            try:
-                trimmed_fallback = trim_text_for_model(fallback_text)
-                result = summarizer(trimmed_fallback, max_length=160, min_length=60, do_sample=False)
-                summary_en = result[0]['summary_text']
-            except Exception as e:
-                summary_en = f"[สรุปไม่ได้ (fallback)] {e}"
-
-    try:
-        translated = translate_en_to_th(summary_en)
-    except Exception as e:
-        translated = f"[แปลไม่ได้] {e}"
-
-    if "[สรุปไม่ได้" in summary_en or "[แปลไม่ได้" in translated:
-        print("❌ DEBUG: สรุป/แปลไม่ได้")
-        print("📰 TITLE:", title)
-        print("📄 TEXT:", text[:300].replace("\n", " ") + "...")
-        print("📉 SUMMARY:", summary_en)
-        print("🌐 TRANSLATED:", translated)
-
-    return translated
+        return f"[Bard Failed] {e}"
 
 # ------------------- ประมวลผล RSS -------------------
 def parse_date(entry):
@@ -182,7 +116,7 @@ def classify_category(entry):
         result = classifier(text, candidate_labels)
         return result['labels'][0]
     except Exception as e:
-        print(f"❗️จัดหมวดหม่ได้: {e}")
+        print(f"❗️จัดหมวดหมู่ไม่สำเร็จ: {e}")
         return "Other"
 
 # ------------------- ข่าวจาก Al Jazeera -------------------
@@ -262,10 +196,10 @@ def create_flex_message(news_items):
         if bubble["hero"]["url"].startswith("http"):
             bubbles.append(bubble)
 
-    return [ {
+    return [{
         "type": "flex",
         "altText": f"ข่าวประจำวันที่ {now_thai.strftime('%d/%m/%Y')}",
-        "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
+        "contents": {"type": "carousel", "contents": bubbles[i:i + 10]}
     } for i in range(0, len(bubbles), 10)]
 
 # ------------------- ส่งเข้า LINE -------------------
@@ -281,7 +215,7 @@ def send_text_and_flex_to_line(header_text, flex_messages):
 
     for i, msg in enumerate(flex_messages):
         res2 = requests.post(url, headers=headers, json={"messages": [msg]})
-        print(f"📦 ส่ง Flex {i+1}/{len(flex_messages)} ข่าว {len(msg['contents']['contents'])} เรื่อง | {res2.status_code}")
+        print(f"📦 ส่ง Flex {i + 1}/{len(flex_messages)} ข่าว {len(msg['contents']['contents'])} เรื่อง | {res2.status_code}")
 
 # ------------------- เริ่มต้นหลัก -------------------
 cleanup_old_sent_links()
@@ -324,7 +258,7 @@ for source, info in news_sources.items():
                 })
                 sent_links.add(entry.link)
 
-# ✅ ดึงจาก Al Jazeera (คงไว้)
+# ✅ ดึงจาก Al Jazeera
 aljazeera_news = fetch_aljazeera_articles()
 for item in aljazeera_news:
     if item["link"] not in sent_links:
