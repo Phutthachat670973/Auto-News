@@ -67,6 +67,24 @@ def translate_en_to_th(text):
     except Exception as e:
         return f"แปลไม่สำเร็จ: {e}"
 
+# ------------------- ดึงเนื้อหาข่าวเต็มจากเว็บ -------------------
+def fetch_full_article_text(link):
+    try:
+        res = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            paragraphs = soup.find_all('p')
+            full_text = "\n".join(p.get_text() for p in paragraphs if p.get_text())
+            return full_text.strip()
+    except Exception as e:
+        print(f"⚠️ ไม่สามารถึงเนื้อหาเต็มจาก {link}: {e}")
+    return ""
+
+# ------------------- จำกัดความยาวเนื้อหาสำหรับสรุป -------------------
+def clip_text(text, max_words=800):
+    words = text.split()
+    return " ".join(words[:max_words])
+
 # ------------------- ฟังก์ชันสรุป + แปล -------------------
 def summarize_and_translate(title, summary_text):
     text = f"{title}\n{summary_text}"
@@ -81,17 +99,13 @@ def summarize_and_translate(title, summary_text):
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
-    # 🔧 ตรงนี้คือส่วนเพิ่ม: แยกหัวข้อกับเนื้อหา
     if "<n>" in translated:
         parts = translated.split("<n>", 1)
         title_th = parts[0].strip()
         summary_th = parts[1].strip()
-        translated = f"{title_th}\n{summary_th}"  # จะได้หัวข้อ + ย่อหน้าเนื้อหา
+        translated = f"{title_th}\n{summary_th}"
     else:
         translated = translated.replace("<n>", "").strip()
-
-    return translated
-
 
 # ------------------- ประมวลผล RSS -------------------
 def parse_date(entry):
