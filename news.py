@@ -68,11 +68,16 @@ def translate_en_to_th(text):
         return f"แปลไม่สำเร็จ: {e}"
 
 # ------------------- ฟังก์ชันสรุป + แปล -------------------
+# ตั้งค่าโมเดลสรุปแบบสรุปยาวขึ้น
+summarizer = pipeline("summarization", model="google/pegasus-cnn_dailymail")
+
 def summarize_and_translate(title, summary_text):
     text = f"{title}\n{summary_text}"
+    
     try:
-        result = summarizer(text, max_length=100, min_length=20, do_sample=False)
+        result = summarizer(text, max_length=250, min_length=80, do_sample=False)
         summary_en = result[0]['summary_text']
+        summary_en = summary_en.replace(". ", ".\n\n")  # ทำให้อ่านง่ายขึ้น
     except Exception as e:
         summary_en = f"[สรุปไม่ได้] {e}"
 
@@ -81,16 +86,17 @@ def summarize_and_translate(title, summary_text):
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
-    # 🔧 ตรงนี้คือส่วนเพิ่ม: แยกหัวข้อกับเนื้อหา
+    # 🔧 แยกหัวข้อกับเนื้อหา
     if "<n>" in translated:
         parts = translated.split("<n>", 1)
         title_th = parts[0].strip()
         summary_th = parts[1].strip()
-        translated = f"{title_th}\n{summary_th}"  # จะได้หัวข้อ + ย่อหน้าเนื้อหา
+        translated = f"{title_th}\n{summary_th}"
     else:
         translated = translated.replace("<n>", "").strip()
 
     return translated
+
 
 
 # ------------------- ประมวลผล RSS -------------------
