@@ -102,7 +102,7 @@ def summarize_and_translate(title, summary_text):
         if len(text.split()) < 30:
             summary_en = "[สั้นเกินไป ไม่มีเนื้อหาสำหรับสรุป]"
         else:
-            result = summarizer(text, max_length=100, min_length=20, do_sample=False)
+            result = summarizer(text, max_length=160, min_length=60, do_sample=False)
             summary_en = result[0]['summary_text'] if result and isinstance(result, list) and 'summary_text' in result[0] else "[สรุปไม่ได้] ไม่มีผลลัพธ์จากโมเดล"
     except (IndexError, ValueError, KeyError) as e:
         summary_en = f"[สรุปไม่ได้] {type(e).__name__}: {e}"
@@ -115,7 +115,7 @@ def summarize_and_translate(title, summary_text):
         fallback_text = fallback_search_from_google(title)
         if fallback_text:
             try:
-                result = summarizer(fallback_text, max_length=100, min_length=20, do_sample=False)
+                result = summarizer(fallback_text, max_length=160, min_length=60, do_sample=False)
                 summary_en = result[0]['summary_text']
             except Exception as e:
                 summary_en = f"[สรุปไม่ได้ (fallback)] {e}"
@@ -133,7 +133,6 @@ def summarize_and_translate(title, summary_text):
         print("🌐 TRANSLATED:", translated)
 
     return translated
-
 # ------------------- ประมวลผล RSS -------------------
 def parse_date(entry):
     try:
