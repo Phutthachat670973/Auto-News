@@ -80,6 +80,7 @@ https://www.bbc.com/news/articles/c4g8xd4gjjdo
 https://www.bbc.com/news/articles/c4gd98qry6jo
 https://www.bbc.com/news/articles/c4gedxe7wnro
 https://www.bbc.com/news/articles/c4gkw04yze1o
+https://www.bbc.com/news/articles/c5y9mm333p2o
 https://www.bbc.com/news/articles/c5ygdqp922vo
 https://www.bbc.com/news/articles/c5yk942y437o
 https://www.bbc.com/news/articles/c6256wpn97ro
@@ -191,11 +192,13 @@ https://www.bbc.com/sport/golf/articles/cdx59pq4wwyo
 https://www.bbc.com/sport/rugby-union/articles/cly82887drxo
 https://www.bbc.com/sport/swimming/articles/cvgn96vp7yjo
 https://www.bbc.com/sport/tennis/articles/ce83y4zry0yo
+https://www.bbc.com/sport/tennis/articles/cly178zkkg5o
 https://www.bbc.com/sport/tennis/articles/cp3ljx2vw5wo
 https://www.bbc.com/sport/tennis/articles/cpqn22erd10o
 https://www.bbc.com/sport/tennis/articles/crk6e06vzrdo
 https://www.bbc.com/sport/tennis/articles/cvgnmd8v82mo
 https://www.bbc.com/sport/tennis/articles/cy4yv73919do
+https://www.bbc.com/sport/tennis/videos/cp3lyyxg94wo
 https://www.bbc.com/weather/articles/cj0mr0l5d9eo
 https://www.bbc.com/weather/articles/cx2g8vw8v0jo
 https://www.cnbc.com/2025/06/21/trump-pledged-to-be-a-peacemaker-in-the-middle-east-now-the-united-states-is-entering-a-new-war.html
@@ -305,6 +308,7 @@ https://www.cnbc.com/2025/06/25/primary-win-by-pro-rent-freeze-mamdani-knocks-sh
 https://www.cnbc.com/2025/06/25/rfk-jr-acip-cdc-vaccine-panel-holds-first-meeting.html
 https://www.cnbc.com/2025/06/25/schumer-hospital-dehydration-office-says.html
 https://www.cnbc.com/2025/06/25/southwest-airport-lounges-europe-flights-ceo-bob-jordan.html
+https://www.cnbc.com/2025/06/25/stock-market-today-live-updates.html
 https://www.cnbc.com/2025/06/25/stocks-making-the-biggest-moves-midday-avav-bp-flg-qs-more.html
 https://www.cnbc.com/2025/06/25/teslas-european-car-sales-fall-as-customers-switch-to-chinese-evs.html
 https://www.cnbc.com/2025/06/25/thursdays-big-stock-stories-whats-likely-to-move-the-market.html
@@ -316,6 +320,7 @@ https://www.cnbc.com/2025/06/25/why-blackrocks-rick-rieder-is-confident-in-equit
 https://www.cnbc.com/2025/06/26/asia-pacific-stock-markets-today-live-updates-asian-chip-stocks-middle-east-tensions.html
 https://www.cnbc.com/2025/06/26/china-urges-beijing-backed-development-bank-to-focus-more-on-belt-and-road-initiative.html
 https://www.cnbc.com/2025/06/26/experts-sound-alarm-on-infostealer-malware-after-login-details-exposed.html
+https://www.cnbc.com/2025/06/26/hm-hmb-earnings-q2-fy25.html
 https://www.cnbc.com/2025/06/26/how-ikea-is-doubling-down-on-price-cuts-to-attract-cost-conscious-customers.html
 https://www.cnbc.com/2025/06/26/nvidia-shares-rally-overnight-lifts-asian-chip-stocks.html
 https://www.cnbc.com/2025/06/26/southeast-asian-small-businesses-using-ai-to-stay-competitive.html
