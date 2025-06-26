@@ -86,7 +86,7 @@ def fallback_search_from_google(title):
         for a in soup.select("a"):
             href = a.get("href", "")
             if "url?q=" in href and not "webcache" in href:
-                true_url = re.findall(r"url\?q=(.*?)&", href)
+                true_url = re.findall(r"url\\?q=(.*?)&", href)
                 if true_url:
                     print(f"🔁 Fallback URL: {true_url[0]}")
                     return extract_full_article(true_url[0])
@@ -94,28 +94,36 @@ def fallback_search_from_google(title):
         print(f"❗️ Google fallback failed: {e}")
     return ""
 
+# ------------------- ตัดข้อความยาวเกิน -------------------
+MAX_TOKENS = 500
+
+def trim_text_for_model(text, max_tokens=MAX_TOKENS):
+    words = text.split()
+    return " ".join(words[:max_tokens])
+
 # ------------------- สรุป + แปล -------------------
 def summarize_and_translate(title, summary_text):
     text = f"{title}\n{summary_text or ''}".strip()
+    trimmed_text = trim_text_for_model(text)
 
     try:
-        if len(text.split()) < 30:
+        if len(trimmed_text.split()) < 30:
             summary_en = "[สั้นเกินไป ไม่มีเนื้อหาสำหรับสรุป]"
         else:
-            result = summarizer(text, max_length=160, min_length=60, do_sample=False)
+            result = summarizer(trimmed_text, max_length=160, min_length=60, do_sample=False)
             summary_en = result[0]['summary_text'] if result and isinstance(result, list) and 'summary_text' in result[0] else "[สรุปไม่ได้] ไม่มีผลลัพธ์จากโมเดล"
     except (IndexError, ValueError, KeyError) as e:
         summary_en = f"[สรุปไม่ได้] {type(e).__name__}: {e}"
     except Exception as e:
         summary_en = f"[สรุปไม่ได้] Unknown error: {e}"
 
-    # fallback หากสรุปไม่ได้
     if "[สรุปไม่ได้" in summary_en:
         print("🔍 ใช้ fallback หาข่าวจาก Google")
         fallback_text = fallback_search_from_google(title)
         if fallback_text:
             try:
-                result = summarizer(fallback_text, max_length=160, min_length=60, do_sample=False)
+                trimmed_fallback = trim_text_for_model(fallback_text)
+                result = summarizer(trimmed_fallback, max_length=160, min_length=60, do_sample=False)
                 summary_en = result[0]['summary_text']
             except Exception as e:
                 summary_en = f"[สรุปไม่ได้ (fallback)] {e}"
@@ -133,6 +141,7 @@ def summarize_and_translate(title, summary_text):
         print("🌐 TRANSLATED:", translated)
 
     return translated
+
 # ------------------- ประมวลผล RSS -------------------
 def parse_date(entry):
     try:
