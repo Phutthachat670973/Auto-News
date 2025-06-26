@@ -19,6 +19,7 @@ https://www.aljazeera.com/news/2025/6/24/us-israel-iran-conflict-list-of-key-eve
 https://www.aljazeera.com/news/2025/6/25/four-palestinians-killed-in-occupied-west-bank-by-settlers-israeli-troops
 https://www.aljazeera.com/news/2025/6/25/iran-moves-to-punish-spying-as-it-proclaims-victory-over-israel-us
 https://www.aljazeera.com/news/2025/6/26/eu-leaders-meet-to-discuss-sanctions-tariffs-and-middle-east-policy
+https://www.aljazeera.com/news/2025/6/26/israel-iran-conflict-exposed-chinas-limited-leverage-say-analysts
 https://www.aljazeera.com/news/2025/6/26/witch-hunt-trump-calls-for-cancellation-of-netanyahus-corruption
 https://www.aljazeera.com/news/liveblog/2025/6/19/live-israel-attacks-iran-security-agency-trump-mulls-joining-conflict
 https://www.aljazeera.com/news/liveblog/2025/6/23/live-iran-vows-to-respond-to-us-attacks-trump-hints-at-regime-change
@@ -117,6 +118,7 @@ https://www.bbc.com/news/articles/cj617y6lzzeo
 https://www.bbc.com/news/articles/ckg3082d3ero
 https://www.bbc.com/news/articles/cly24kx0pp6o
 https://www.bbc.com/news/articles/cly24w3z6p7o
+https://www.bbc.com/news/articles/cly2nepg88ro
 https://www.bbc.com/news/articles/cly2rgzye9no
 https://www.bbc.com/news/articles/cly39l8w6reo
 https://www.bbc.com/news/articles/clylzlv91pro
@@ -327,9 +329,14 @@ https://www.cnbc.com/2025/06/26/china-urges-beijing-backed-development-bank-to-f
 https://www.cnbc.com/2025/06/26/experts-sound-alarm-on-infostealer-malware-after-login-details-exposed.html
 https://www.cnbc.com/2025/06/26/hm-hmb-earnings-q2-fy25.html
 https://www.cnbc.com/2025/06/26/how-ikea-is-doubling-down-on-price-cuts-to-attract-cost-conscious-customers.html
+https://www.cnbc.com/2025/06/26/natos-5percent-spending-target-could-be-peak-for-some-defense-stocks-citi.html
 https://www.cnbc.com/2025/06/26/openai-flags-beijing-backed-zhipu-ai-as-a-top-rival.html
 https://www.cnbc.com/2025/06/26/southeast-asian-small-businesses-using-ai-to-stay-competitive.html
-
+https://www.cnbc.com/2025/06/26/trump-and-ruttes-bromance-stole-the-spotlight-at-the-nato-summit.html
+https://www.cnbc.com/2025/06/26/trump-phone-website-removes-made-in-the-usa-tag-for-the-device.html
+https://www.cnbc.com/2025/06/26/what-changes-to-fema-aid-may-mean-for-homeowners.html
+https://www.cnbc.com/select/average-401k-balance-by-age/
+https://www.cnbc.com/select/chase-sapphire-reserve-for-business-card/
 https://www.cnbc.com/video/2025/06/23/crypto-rises-iran-launches-missiles-response-us-strikes-crypto-world.html
 https://www.nytimes.com/2025/06/17/us/politics/house-bill-federal-debt.html
 https://www.nytimes.com/2025/06/17/us/politics/supreme-court-tariffs-toys.html
