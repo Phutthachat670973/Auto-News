@@ -52,7 +52,6 @@ keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "c
 
 # ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
-    text = text.replace("<n>", "")  # ลบ tag ที่ไม่ต้องมี
     url = "https://api-free.deepl.com/v2/translate"
     params = {
         "auth_key": DEEPL_API_KEY,
@@ -68,15 +67,12 @@ def translate_en_to_th(text):
     except Exception as e:
         return f"แปลไม่สำเร็จ: {e}"
 
-# ------------------- สรุป + แปล -------------------
+# ------------------- ฟังก์ชันสรุป + แปล -------------------
 def summarize_and_translate(title, summary_text):
-    # รวมหัวเรื่องและเนื้อหา แล้วล้าง <n>
-    text = f"{title}\n{summary_text}".replace("<n>", "").strip()
-
+    text = f"{title}\n{summary_text}"
     try:
-        result = summarizer(text, max_length=250, min_length=80, do_sample=False)
+        result = summarizer(text, max_length=100, min_length=20, do_sample=False)
         summary_en = result[0]['summary_text']
-        summary_en = summary_en.replace(". ", ".\n\n")  # จัดรูปให้อ่านง่าย
     except Exception as e:
         summary_en = f"[สรุปไม่ได้] {e}"
 
@@ -85,26 +81,16 @@ def summarize_and_translate(title, summary_text):
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
-    # 🔄 ลบบรรทัดซ้ำ & ทำความสะอาด
-    translated_lines = translated.splitlines()
-    cleaned_lines = []
-    seen = set()
-    for line in translated_lines:
-        line = line.strip()
-        if line and line not in seen:
-            cleaned_lines.append(line)
-            seen.add(line)
-    cleaned_text = "\n".join(cleaned_lines)
-
-    # แยกหัวข้อกับเนื้อหา
-    if "\n" in cleaned_text:
-        title_th, summary_th = cleaned_text.split("\n", 1)
+    # 🔧 ตรงนี้คือส่วนเพิ่ม: แยกหัวข้อกับเนื้อหา
+    if "<n>" in translated:
+        parts = translated.split("<n>", 1)
+        title_th = parts[0].strip()
+        summary_th = parts[1].strip()
+        translated = f"{title_th}\n{summary_th}"  # จะได้หัวข้อ + ย่อหน้าเนื้อหา
     else:
-        title_th = cleaned_text
-        summary_th = ""
+        translated = translated.replace("<n>", "").strip()
 
-    return f"{title_th}\n{summary_th.strip()}"
-
+    return translated
 
 
 # ------------------- ประมวลผล RSS -------------------
@@ -140,23 +126,15 @@ def extract_image(entry):
     return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
 # ------------------- จัดหมวดหมู่ -------------------
-# ------------------- จัดหมวดหมู่ -------------------
 candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
 def classify_category(entry):
+    text = (entry.title + " " + entry.get('summary', '')).strip()
     try:
-        if isinstance(entry, dict):
-            title = entry.get('title', '')
-            summary = entry.get('summary', '')
-        else:
-            title = getattr(entry, 'title', '')
-            summary = getattr(entry, 'summary', '')
-        text = (title + " " + summary).strip()
         result = classifier(text, candidate_labels)
         return result['labels'][0]
     except Exception as e:
-        print(f"❗️จัดหมวดหมู่ไม่ได้: {e}")
+        print(f"❗️จัดหมวดหม่ได้: {e}")
         return "Other"
-
 
 # ------------------- ข่าวจาก Al Jazeera -------------------
 def fetch_aljazeera_articles():
