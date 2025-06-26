@@ -158,6 +158,7 @@ https://www.bbc.com/news/articles/cy5wk716pzdo
 https://www.bbc.com/news/articles/cy5wkld3r0xo
 https://www.bbc.com/news/articles/cy7nxgzlpllo
 https://www.bbc.com/news/articles/cy8g7j50gxzo
+https://www.bbc.com/news/articles/cy8g7yqwzg7o
 https://www.bbc.com/news/articles/cy9xl4nrq8wo
 https://www.bbc.com/news/articles/cyvj4pze706o
 https://www.bbc.com/news/articles/cyvjy7m3vmdo
@@ -307,8 +308,10 @@ https://www.cnbc.com/2025/06/25/meta-llama-ai-copyright-ruling.html
 https://www.cnbc.com/2025/06/25/meta-massive-data-center-louisiana-cost-jobs-energy-use.html
 https://www.cnbc.com/2025/06/25/micron-mu-q3-2025-earnings-report.html
 https://www.cnbc.com/2025/06/25/nato-allies-agree-to-higher-5percent-defense-spending-target.html
+https://www.cnbc.com/2025/06/25/nvidia-shareholder-meeting-2025-robots.html
 https://www.cnbc.com/2025/06/25/nvidia-shares-head-for-record-close-wall-street-shrugs-off-china-.html
 https://www.cnbc.com/2025/06/25/oil-prices-today-israel-iran-trump-ceasefire.html
+https://www.cnbc.com/2025/06/25/paychex-ceo-to-policymakers-bring-some-more-clarity-to-the-situation.html
 https://www.cnbc.com/2025/06/25/rfk-jr-acip-cdc-vaccine-panel-holds-first-meeting.html
 https://www.cnbc.com/2025/06/25/schumer-hospital-dehydration-office-says.html
 https://www.cnbc.com/2025/06/25/southwest-airport-lounges-europe-flights-ceo-bob-jordan.html
@@ -324,6 +327,10 @@ https://www.cnbc.com/2025/06/26/china-urges-beijing-backed-development-bank-to-f
 https://www.cnbc.com/2025/06/26/experts-sound-alarm-on-infostealer-malware-after-login-details-exposed.html
 https://www.cnbc.com/2025/06/26/hm-hmb-earnings-q2-fy25.html
 https://www.cnbc.com/2025/06/26/how-ikea-is-doubling-down-on-price-cuts-to-attract-cost-conscious-customers.html
+https://www.cnbc.com/2025/06/26/openai-flags-beijing-backed-zhipu-ai-as-a-top-rival.html
+https://www.cnbc.com/2025/06/26/southeast-asian-small-businesses-using-ai-to-stay-competitive.html
+https://www.cnbc.com/2025/06/26/trump-and-ruttes-bromance-stole-the-spotlight-at-the-nato-summit.html
+https://www.cnbc.com/2025/06/26/trump-phone-website-removes-made-in-the-usa-tag-for-the-device.html
 https://www.cnbc.com/select/average-401k-balance-by-age/
 https://www.cnbc.com/select/chase-sapphire-reserve-for-business-card/
 https://www.cnbc.com/video/2025/06/23/crypto-rises-iran-launches-missiles-response-us-strikes-crypto-world.html
