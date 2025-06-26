@@ -52,6 +52,7 @@ keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "c
 
 # ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
+    text = text.replace("<n>", "")  # ลบ tag ที่ไม่ต้องมี
     url = "https://api-free.deepl.com/v2/translate"
     params = {
         "auth_key": DEEPL_API_KEY,
@@ -67,17 +68,15 @@ def translate_en_to_th(text):
     except Exception as e:
         return f"แปลไม่สำเร็จ: {e}"
 
-# ------------------- ฟังก์ชันสรุป + แปล -------------------
-# ตั้งค่าโมเดลสรุปแบบสรุปยาวขึ้น
-summarizer = pipeline("summarization", model="google/pegasus-cnn_dailymail")
-
+# ------------------- สรุป + แปล -------------------
 def summarize_and_translate(title, summary_text):
-    text = f"{title}\n{summary_text}"
-    
+    # รวมหัวเรื่องและเนื้อหา แล้วล้าง <n>
+    text = f"{title}\n{summary_text}".replace("<n>", "").strip()
+
     try:
         result = summarizer(text, max_length=250, min_length=80, do_sample=False)
         summary_en = result[0]['summary_text']
-        summary_en = summary_en.replace(". ", ".\n\n")  # ทำให้อ่านง่ายขึ้น
+        summary_en = summary_en.replace(". ", ".\n\n")  # จัดรูปให้อ่านง่าย
     except Exception as e:
         summary_en = f"[สรุปไม่ได้] {e}"
 
@@ -86,16 +85,25 @@ def summarize_and_translate(title, summary_text):
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
-    # 🔧 แยกหัวข้อกับเนื้อหา
-    if "<n>" in translated:
-        parts = translated.split("<n>", 1)
-        title_th = parts[0].strip()
-        summary_th = parts[1].strip()
-        translated = f"{title_th}\n{summary_th}"
-    else:
-        translated = translated.replace("<n>", "").strip()
+    # 🔄 ลบบรรทัดซ้ำ & ทำความสะอาด
+    translated_lines = translated.splitlines()
+    cleaned_lines = []
+    seen = set()
+    for line in translated_lines:
+        line = line.strip()
+        if line and line not in seen:
+            cleaned_lines.append(line)
+            seen.add(line)
+    cleaned_text = "\n".join(cleaned_lines)
 
-    return translated
+    # แยกหัวข้อกับเนื้อหา
+    if "\n" in cleaned_text:
+        title_th, summary_th = cleaned_text.split("\n", 1)
+    else:
+        title_th = cleaned_text
+        summary_th = ""
+
+    return f"{title_th}\n{summary_th.strip()}"
 
 
 
