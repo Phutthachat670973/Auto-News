@@ -175,6 +175,14 @@ def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
         summary_th = summarize_and_translate(item['title'], item['summary'])
+
+        # แยกหัวข้อข่าว (title_th) และเนื้อหาย่อ (summary_only)
+        if "\n" in summary_th:
+            title_th, summary_only = summary_th.split("\n", 1)
+        else:
+            title_th = summary_th
+            summary_only = ""
+
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -189,11 +197,10 @@ def create_flex_message(news_items):
                 "type": "box",
                 "layout": "vertical",
                 "contents": [
-                    {"type": "text", "text": item['title'], "weight": "bold", "size": "md", "wrap": True},
+                    {"type": "text", "text": title_th, "weight": "bold", "size": "md", "wrap": True},
                     {"type": "text", "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}", "size": "xs", "color": "#888888", "margin": "sm"},
                     {"type": "text", "text": f"📌 {item['category']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
                     {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
-                    {"type": "text", "text": summary_th, "size": "sm", "wrap": True, "margin": "md"},
                 ]
             },
             "footer": {
@@ -210,14 +217,30 @@ def create_flex_message(news_items):
                 ]
             }
         }
+
+        # เพิ่มเนื้อหาย่อหากมี
+        if summary_only.strip():
+            bubble["body"]["contents"].append({
+                "type": "text",
+                "text": summary_only.strip(),
+                "size": "sm",
+                "wrap": True,
+                "margin": "md"
+            })
+
+        # ตรวจสอบ URL รูป
         if bubble["hero"]["url"].startswith("http"):
             bubbles.append(bubble)
 
-    return [ {
+    return [{
         "type": "flex",
         "altText": f"ข่าวประจำวันที่ {now_thai.strftime('%d/%m/%Y')}",
-        "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
+        "contents": {
+            "type": "carousel",
+            "contents": bubbles[i:i+10]
+        }
     } for i in range(0, len(bubbles), 10)]
+
 
 # ------------------- ส่งเข้า LINE -------------------
 def send_text_and_flex_to_line(header_text, flex_messages):
