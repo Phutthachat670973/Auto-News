@@ -11,7 +11,7 @@ from dateutil import parser as dateutil_parser
 from pathlib import Path
 
 # ------------------- ตั้งค่าโมเดล -------------------
-summarizer = pipeline("summarization", model="google/pegasus-cnn_dailymail")
+summarizer = pipeline("summarization", model="facebook/bart-large-mnli")
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
 # ------------------- ตั้งค่า API -------------------
