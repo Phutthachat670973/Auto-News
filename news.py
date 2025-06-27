@@ -87,15 +87,15 @@ def clip_text(text, max_words=800):
 
 # ------------------- ฟังก์ชันสรุป + แปล -------------------
 def summarize_and_translate(title, summary_text, link=None):
-    if not summary_text and link:
-        summary_text = fetch_full_article_text(link)
-    elif link and len(summary_text.split()) < 100:
+    # กรณีไม่มี summary หรือมีแต่สั้นมาก (< 100 คำ)
+    if (not summary_text or len(summary_text.split()) < 100) and link:
         summary_text = fetch_full_article_text(link)
 
+    # ตัดความยาวถ้าเกิน
     raw_text = f"{title}\n{clip_text(summary_text)}"
 
     try:
-        result = summarizer(raw_text, max_length=180, min_length=40, do_sample=False)
+        result = summarizer(raw_text, max_length=200, min_length=40, do_sample=False)
         summary_en = result[0]['summary_text']
     except Exception as e:
         summary_en = f"[สรุปไม่ได้] {e}"
@@ -105,16 +105,14 @@ def summarize_and_translate(title, summary_text, link=None):
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
-    # Clean up translation
-    if "<n>" in translated:
-        parts = translated.split("<n>", 1)
-        title_th = parts[0].strip()
-        summary_th = parts[1].strip()
-        translated = f"{title_th}\n{summary_th}"
-    else:
-        translated = translated.replace("<n>", "").strip()
+    # ล้าง <n> หรือแยกหัวข้อ/เนื้อหา
+    translated = translated.replace("<n>", "\n")
+    parts = translated.split("\n", 1)
+    title_th = parts[0].strip()
+    summary_th = parts[1].strip() if len(parts) > 1 else ""
 
-    return translated
+    return f"{title_th}\n{summary_th}"
+
 
 
 # ------------------- เหลือฟังก์ชันอื่น ๆ ที่ไม่เปลี่ยน เดี๋ยวใส่ให้ต่อ -------------------
