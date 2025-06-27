@@ -205,15 +205,7 @@ def extract_image_from_aljazeera(link):
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
-        summary_th = summarize_and_translate(item['title'], item['summary'])
-
-        # แยกหัวข้อข่าว (title_th) และเนื้อหาย่อ (summary_only)
-        if "\n" in summary_th:
-            title_th, summary_only = summary_th.split("\n", 1)
-        else:
-            title_th = summary_th
-            summary_only = ""
-
+        title_th, summary_only = summarize_and_translate(item['title'], item['summary'])
         bubble = {
             "type": "bubble",
             "size": "mega",
