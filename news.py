@@ -106,6 +106,14 @@ def summarize_and_translate(title, summary_text, link=None):
     try:
         result = summarizer(raw_text, max_length=200, min_length=40, do_sample=False)
         summary_en = result[0]['summary_text']
+
+        # ตัดข้อความซ้ำ
+        summary_en = re.sub(r'(\b.+?\b)(?: \1\b)+', r'\1', summary_en)
+
+        # จำกัดความยาวหลังสรุป
+        if len(summary_en.split()) > 150:
+            summary_en = " ".join(summary_en.split()[:150]) + " ..."
+
     except Exception as e:
         summary_en = f"[สรุปไม่ได้] {e}"
 
@@ -115,13 +123,12 @@ def summarize_and_translate(title, summary_text, link=None):
         translated = f"[แปลไม่ได้] {e}"
 
     translated = translated.replace("<n>", "\n")
-
-    # ✅ ดึงหัวข้อไทยจากบรรทัดแรก
-    parts = translated.strip().split("\n", 1)
+    parts = translated.split("\n", 1)
     title_th = parts[0].strip()
     summary_th = parts[1].strip() if len(parts) > 1 else ""
 
     return title_th, summary_th
+
 
 
 # ------------------- เหลือฟังก์ชันอื่น ๆ ที่ไม่เปลี่ยน เดี๋ยวใส่ให้ต่อ -------------------
