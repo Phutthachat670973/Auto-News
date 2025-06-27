@@ -86,49 +86,33 @@ def clip_text(text, max_words=800):
     return " ".join(words[:max_words])
 
 # ------------------- ฟังก์ชันสรุป + แปล -------------------
-def summarize_and_translate(title, summary_text):
-    import html
+def summarize_and_translate(title, summary_text, link=None):
+    if not summary_text and link:
+        summary_text = fetch_full_article_text(link)
+    elif link and len(summary_text.split()) < 100:
+        summary_text = fetch_full_article_text(link)
 
-    def clean_text(text):
-        # ลบ tag, decode html entities, ลบ whitespaces
-        text = re.sub(r'<[^>]+>', '', text)
-        text = html.unescape(text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
+    raw_text = f"{title}\n{clip_text(summary_text)}"
 
     try:
-        combined_text = f"{title}\n{summary_text}".strip()
-        cleaned_text = clean_text(combined_text)
-        if not cleaned_text:
-            raise ValueError("Empty text after cleaning.")
-
-        # Clip เนื้อหาเพื่อป้องกัน error
-        clipped_text = clip_text(cleaned_text, max_words=400)
-
-        # Summarize
-        result = summarizer(clipped_text, max_length=100, min_length=20, do_sample=False)
-        summary_en = result[0]['summary_text'].strip()
+        result = summarizer(raw_text, max_length=180, min_length=40, do_sample=False)
+        summary_en = result[0]['summary_text']
     except Exception as e:
-        print(f"⚠️ Summarize error: {e}")
-        summary_en = f"{title}"  # fallback เป็น title หาก fail
+        summary_en = f"[สรุปไม่ได้] {e}"
 
-    # แปลไทย
     try:
         translated = translate_en_to_th(summary_en)
     except Exception as e:
-        print(f"⚠️ Translate error: {e}")
-        translated = summary_en  # fallback เป็นอังกฤษหากแปล fail
+        translated = f"[แปลไม่ได้] {e}"
 
-    # ลบ <n> และ clean อีกครั้ง
-    translated = translated.replace("<n>", "\n")
-    translated = clean_text(translated)
-
-    # จัดรูปให้อยู่ในรูป Title + เนื้อหา
-    if "\n" in translated:
-        title_th, summary_th = translated.split("\n", 1)
-        translated = f"{title_th.strip()}\n{summary_th.strip()}"
+    # Clean up translation
+    if "<n>" in translated:
+        parts = translated.split("<n>", 1)
+        title_th = parts[0].strip()
+        summary_th = parts[1].strip()
+        translated = f"{title_th}\n{summary_th}"
     else:
-        translated = translated.strip()
+        translated = translated.replace("<n>", "").strip()
 
     return translated
 
