@@ -51,32 +51,21 @@ news_sources = {
 keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
 
 # ------------------- แปลภาษา -------------------
-def summarize_and_translate(title, summary_text, link=None):
-    if (not summary_text or len(summary_text.split()) < 100) and link:
-        summary_text = fetch_full_article_text(link)
-
-    raw_text = f"{title}\n{clip_text(summary_text)}"
-
+def translate_en_to_th(text):
+    url = "https://api-free.deepl.com/v2/translate"
+    params = {
+        "auth_key": DEEPL_API_KEY,
+        "text": text,
+        "source_lang": "EN",
+        "target_lang": "TH"
+    }
     try:
-        result = summarizer(raw_text, max_length=200, min_length=40, do_sample=False)
-        summary_en = result[0]['summary_text']
+        response = requests.post(url, data=params, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        return result["translations"][0]["text"]
     except Exception as e:
-        summary_en = f"[สรุปไม่ได้] {e}"
-
-    try:
-        translated = translate_en_to_th(summary_en)
-    except Exception as e:
-        translated = f"[แปลไม่ได้] {e}"
-
-    translated = translated.replace("<n>", "\n")
-
-    # ✅ ดึงหัวข้อไทยจากบรรทัดแรก
-    parts = translated.strip().split("\n", 1)
-    title_th = parts[0].strip()
-    summary_th = parts[1].strip() if len(parts) > 1 else ""
-
-    return title_th, summary_th
-
+        return f"แปลไม่สำเร็จ: {e}"
 
 # ------------------- ดึงเนื้อหาข่าวเต็มจากเว็บ -------------------
 def fetch_full_article_text(link):
@@ -104,7 +93,7 @@ def summarize_and_translate(title, summary_text, link=None):
     raw_text = f"{title}\n{clip_text(summary_text)}"
 
     try:
-        result = summarizer(raw_text, max_length=200, min_length=40, do_sample=False)
+        result = summarizer(raw_text, max_length=100, min_length=20, do_sample=False)
         summary_en = result[0]['summary_text']
 
         # ตัดข้อความซ้ำ
@@ -216,8 +205,14 @@ def extract_image_from_aljazeera(link):
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
-        title_th, summary_only = summarize_and_translate(item['title'], item['summary'])
+        summary_th = summarize_and_translate(item['title'], item['summary'])
 
+        # แยกหัวข้อข่าว (title_th) และเนื้อหาย่อ (summary_only)
+        if "\n" in summary_th:
+            title_th, summary_only = summary_th.split("\n", 1)
+        else:
+            title_th = summary_th
+            summary_only = ""
 
         bubble = {
             "type": "bubble",
