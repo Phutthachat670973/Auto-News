@@ -25,6 +25,7 @@ https://www.aljazeera.com/news/2025/6/26/israel-iran-conflict-exposed-chinas-lim
 https://www.aljazeera.com/news/2025/6/26/un-reports-uptick-in-preventable-diseases-in-gaza-due-to-israeli-blockade
 https://www.aljazeera.com/news/2025/6/26/we-wanted-to-eliminate-khamenei-israels-defence-minister
 https://www.aljazeera.com/news/2025/6/26/witch-hunt-trump-calls-for-cancellation-of-netanyahus-corruption
+https://www.aljazeera.com/news/2025/6/27/us-approves-30m-for-controversial-israel-backed-gaza-aid-group
 https://www.aljazeera.com/news/liveblog/2025/6/19/live-israel-attacks-iran-security-agency-trump-mulls-joining-conflict
 https://www.aljazeera.com/news/liveblog/2025/6/23/live-iran-vows-to-respond-to-us-attacks-trump-hints-at-regime-change
 https://www.aljazeera.com/news/liveblog/2025/6/25/live-israel-iran-truce-holds-us-did-not-destroy-iranian-nuclear-programme
@@ -108,6 +109,7 @@ https://www.bbc.com/news/articles/c8e4k45yw3eo
 https://www.bbc.com/news/articles/c93knke95peo
 https://www.bbc.com/news/articles/c98wyyk475no
 https://www.bbc.com/news/articles/c994x95yygyo
+https://www.bbc.com/news/articles/c9dgjjnvw54o
 https://www.bbc.com/news/articles/cd0vjr07570o
 https://www.bbc.com/news/articles/cdjxdgjpd48o
 https://www.bbc.com/news/articles/cdjxygjrk9ro
@@ -237,6 +239,7 @@ https://www.bbc.com/sport/swimming/articles/cvgn96vp7yjo
 https://www.bbc.com/sport/tennis/articles/ce83y4zry0yo
 https://www.bbc.com/sport/tennis/articles/ckgj184pdrno
 https://www.bbc.com/sport/tennis/articles/cly178zkkg5o
+https://www.bbc.com/sport/tennis/articles/cm204kek8kmo
 https://www.bbc.com/sport/tennis/articles/cp3ljx2vw5wo
 https://www.bbc.com/sport/tennis/articles/cpqn22erd10o
 https://www.bbc.com/sport/tennis/articles/crk6e06vzrdo
@@ -399,9 +402,11 @@ https://www.cnbc.com/2025/06/26/what-changes-to-fema-aid-may-mean-for-homeowners
 https://www.cnbc.com/2025/06/26/whats-driving-wall-streets-stablecoin-interest-trillions.html
 https://www.cnbc.com/2025/06/27/china-industrial-profits-plunge-9point1percent-in-may.html
 https://www.cnbc.com/2025/06/27/china-us-agree-details-of-london-trade-framework-trade-agreement-beijing.html
+https://www.cnbc.com/2025/06/27/china-us-sanctions-shadow-fleet-top-iranian-oil-buyer-trade.html
 https://www.cnbc.com/2025/06/27/defense-stocks-see-greater-flows-as-conflicts-fuel-growth-prospects.html
 https://www.cnbc.com/2025/06/27/investing-in-space-nato-holds-out-hand-to-the-commercial-space-sector.html
 https://www.cnbc.com/2025/06/27/more-southeast-asian-flock-to-chinas-chongqing-thanks-to-social-media.html
+https://www.cnbc.com/2025/06/27/pajamas-bare-feet-at-breakfast-how-hotels-are-handling-bad-etiquette.html
 https://www.cnbc.com/2025/06/27/softbank-ceo-says-he-wanted-to-be-openai-early-investor.html
 https://www.cnbc.com/2025/06/27/trump-tariffs-uk-car-and-vehicle-output-falls-to-76-year-low-in-may.html
 https://www.cnbc.com/select/average-401k-balance-by-age/
