@@ -51,21 +51,32 @@ news_sources = {
 keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
 
 # ------------------- แปลภาษา -------------------
-def translate_en_to_th(text):
-    url = "https://api-free.deepl.com/v2/translate"
-    params = {
-        "auth_key": DEEPL_API_KEY,
-        "text": text,
-        "source_lang": "EN",
-        "target_lang": "TH"
-    }
+def summarize_and_translate(title, summary_text, link=None):
+    if (not summary_text or len(summary_text.split()) < 100) and link:
+        summary_text = fetch_full_article_text(link)
+
+    raw_text = f"{title}\n{clip_text(summary_text)}"
+
     try:
-        response = requests.post(url, data=params, timeout=10)
-        response.raise_for_status()
-        result = response.json()
-        return result["translations"][0]["text"]
+        result = summarizer(raw_text, max_length=200, min_length=40, do_sample=False)
+        summary_en = result[0]['summary_text']
     except Exception as e:
-        return f"แปลไม่สำเร็จ: {e}"
+        summary_en = f"[สรุปไม่ได้] {e}"
+
+    try:
+        translated = translate_en_to_th(summary_en)
+    except Exception as e:
+        translated = f"[แปลไม่ได้] {e}"
+
+    translated = translated.replace("<n>", "\n")
+
+    # ✅ ดึงหัวข้อไทยจากบรรทัดแรก
+    parts = translated.strip().split("\n", 1)
+    title_th = parts[0].strip()
+    summary_th = parts[1].strip() if len(parts) > 1 else ""
+
+    return title_th, summary_th
+
 
 # ------------------- ดึงเนื้อหาข่าวเต็มจากเว็บ -------------------
 def fetch_full_article_text(link):
