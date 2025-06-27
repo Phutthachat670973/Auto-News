@@ -87,11 +87,9 @@ def clip_text(text, max_words=800):
 
 # ------------------- ฟังก์ชันสรุป + แปล -------------------
 def summarize_and_translate(title, summary_text, link=None):
-    # กรณีไม่มี summary หรือมีแต่สั้นมาก (< 100 คำ)
     if (not summary_text or len(summary_text.split()) < 100) and link:
         summary_text = fetch_full_article_text(link)
 
-    # ตัดความยาวถ้าเกิน
     raw_text = f"{title}\n{clip_text(summary_text)}"
 
     try:
@@ -105,13 +103,16 @@ def summarize_and_translate(title, summary_text, link=None):
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
-    # ล้าง <n> หรือแยกหัวข้อ/เนื้อหา
-    translated = translated.replace("<n>", "\n")
-    parts = translated.split("\n", 1)
-    title_th = parts[0].strip()
-    summary_th = parts[1].strip() if len(parts) > 1 else ""
+    translated = translated.replace("<n>", "\n").strip()
 
-    return f"{title_th}\n{summary_th}"
+    if "\n" in translated:
+        title_th, summary_th = translated.split("\n", 1)
+    else:
+        title_th = title
+        summary_th = translated
+
+    return title_th.strip(), summary_th.strip()
+
 
 
 
@@ -196,17 +197,8 @@ def extract_image_from_aljazeera(link):
     return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
 # ------------------- Flex Message -------------------
-def create_flex_message(news_items):
-    bubbles = []
-    for item in news_items:
-        summary_th = summarize_and_translate(item['title'], item['summary'])
+title_th, summary_only = summarize_and_translate(item['title'], item['summary'])
 
-        # แยกหัวข้อข่าว (title_th) และเนื้อหาย่อ (summary_only)
-        if "\n" in summary_th:
-            title_th, summary_only = summary_th.split("\n", 1)
-        else:
-            title_th = summary_th
-            summary_only = ""
 
         bubble = {
             "type": "bubble",
