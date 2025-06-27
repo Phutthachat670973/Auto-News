@@ -93,7 +93,7 @@ def summarize_and_translate(title, summary_text, link=None):
     raw_text = f"{title}\n{clip_text(summary_text)}"
 
     try:
-        result = summarizer(raw_text, max_length=200, min_length=40, do_sample=False)
+        result = summarizer(raw_text, max_length=100, min_length=20, do_sample=False)
         summary_en = result[0]['summary_text']
     except Exception as e:
         summary_en = f"[สรุปไม่ได้] {e}"
