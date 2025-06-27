@@ -93,7 +93,7 @@ def summarize_and_translate(title, summary_text, link=None):
     raw_text = f"{title}\n{clip_text(summary_text)}"
 
     try:
-        result = summarizer(raw_text, max_length=100, min_length=20, do_sample=False)
+        result = summarizer(raw_text, max_length=200, min_length=40, do_sample=False)
         summary_en = result[0]['summary_text']
 
         # ตัดข้อความซ้ำ
@@ -117,6 +117,7 @@ def summarize_and_translate(title, summary_text, link=None):
     summary_th = parts[1].strip() if len(parts) > 1 else ""
 
     return title_th, summary_th
+
 
 
 
@@ -206,6 +207,7 @@ def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
         title_th, summary_only = summarize_and_translate(item['title'], item['summary'])
+
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -241,7 +243,6 @@ def create_flex_message(news_items):
             }
         }
 
-        # เพิ่มเนื้อหาย่อหากมี
         if summary_only.strip():
             bubble["body"]["contents"].append({
                 "type": "text",
@@ -251,7 +252,6 @@ def create_flex_message(news_items):
                 "margin": "md"
             })
 
-        # ตรวจสอบ URL รูป
         if bubble["hero"]["url"].startswith("http"):
             bubbles.append(bubble)
 
@@ -263,6 +263,7 @@ def create_flex_message(news_items):
             "contents": bubbles[i:i+10]
         }
     } for i in range(0, len(bubbles), 10)]
+
 
 
 # ------------------- ส่งเข้า LINE -------------------
