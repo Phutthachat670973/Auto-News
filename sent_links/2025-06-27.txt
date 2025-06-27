@@ -204,9 +204,6 @@ https://www.bbc.com/news/articles/cyvj4pze706o
 https://www.bbc.com/news/articles/cyvjy7m3vmdo
 https://www.bbc.com/news/articles/cz093jn819po
 https://www.bbc.com/news/articles/cz094j3nl1ro
-https://www.bbc.com/news/articles/cz63dej812qo
-https://www.bbc.com/news/articles/czeyp4l9l86o
-https://www.bbc.com/news/articles/czjk3kxr3zno
 https://www.bbc.com/news/articles/czx0e9p9nrko
 https://www.bbc.com/news/videos/c1e0nnx60q6o
 https://www.bbc.com/news/videos/c4g2wxwel5qo
@@ -418,9 +415,7 @@ https://www.cnbc.com/2025/06/26/whats-driving-wall-streets-stablecoin-interest-t
 https://www.cnbc.com/2025/06/27/asia-stock-markets-today-live-updates.html
 https://www.cnbc.com/2025/06/27/british-cars-are-being-stolen-and-shipped-within-a-day-heres-why.html
 https://www.cnbc.com/2025/06/27/china-industrial-profits-plunge-9point1percent-in-may.html
-https://www.cnbc.com/2025/06/27/defense-stocks-see-greater-flows-as-conflicts-fuel-growth-prospects.html
-https://www.cnbc.com/2025/06/27/investing-in-space-nato-holds-out-hand-to-the-commercial-space-sector.html
-https://www.cnbc.com/2025/06/27/more-southeast-asian-flock-to-chinas-chongqing-thanks-to-social-media.html
+
 https://www.cnbc.com/select/average-401k-balance-by-age/
 https://www.cnbc.com/select/chase-sapphire-reserve-for-business-card/
 https://www.cnbc.com/video/2025/06/23/crypto-rises-iran-launches-missiles-response-us-strikes-crypto-world.html
