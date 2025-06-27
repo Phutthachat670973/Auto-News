@@ -197,7 +197,10 @@ def extract_image_from_aljazeera(link):
     return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
 # ------------------- Flex Message -------------------
-title_th, summary_only = summarize_and_translate(item['title'], item['summary'])
+def create_flex_message(news_items):
+    bubbles = []
+    for item in news_items:
+        title_th, summary_only = summarize_and_translate(item['title'], item['summary'])
 
 
         bubble = {
