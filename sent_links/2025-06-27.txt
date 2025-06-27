@@ -179,6 +179,7 @@ https://www.bbc.com/news/articles/cvg1n295z0wo
 https://www.bbc.com/news/articles/cvg45zrex7jo
 https://www.bbc.com/news/articles/cvg480vqnz7o
 https://www.bbc.com/news/articles/cvg8pd2y80go
+https://www.bbc.com/news/articles/cvg9750vvwxo
 https://www.bbc.com/news/articles/cvgwdyn4yqvo
 https://www.bbc.com/news/articles/cwyep25p5d0o
 https://www.bbc.com/news/articles/cwyepy2zz11o
@@ -234,6 +235,7 @@ https://www.bbc.com/sport/cricket/videos/c98w33eg8ejo
 https://www.bbc.com/sport/cricket/videos/c9vrm2zxyk7o
 https://www.bbc.com/sport/football/articles/c0rvqz7e5q7o
 https://www.bbc.com/sport/football/articles/c1ljpdn6yelo
+https://www.bbc.com/sport/football/articles/c23gl9v947zo
 https://www.bbc.com/sport/football/articles/c2d567xj7jeo
 https://www.bbc.com/sport/football/articles/c4g8eeey25lo
 https://www.bbc.com/sport/football/articles/c625wxp7d74o
@@ -416,7 +418,14 @@ https://www.cnbc.com/2025/06/26/trumps-war-against-the-powell-fed-has-taken-anot
 https://www.cnbc.com/2025/06/26/ubs-gives-3-key-ai-stocks-to-own-from-here.html
 https://www.cnbc.com/2025/06/26/us-still-exceptional-after-2025-overseas-outperformance-marc-rowan-says.html
 https://www.cnbc.com/2025/06/26/what-changes-to-fema-aid-may-mean-for-homeowners.html
-
+https://www.cnbc.com/2025/06/26/whats-driving-wall-streets-stablecoin-interest-trillions.html
+https://www.cnbc.com/2025/06/27/asia-stock-markets-today-live-updates.html
+https://www.cnbc.com/2025/06/27/china-industrial-profits-plunge-9point1percent-in-may.html
+https://www.cnbc.com/2025/06/27/defense-stocks-see-greater-flows-as-conflicts-fuel-growth-prospects.html
+https://www.cnbc.com/2025/06/27/europe-stock-markets-live-updates-on-stoxx-ftse-dax-tariffs-news.html
+https://www.cnbc.com/2025/06/27/investing-in-space-nato-holds-out-hand-to-the-commercial-space-sector.html
+https://www.cnbc.com/2025/06/27/more-southeast-asian-flock-to-chinas-chongqing-thanks-to-social-media.html
+https://www.cnbc.com/2025/06/27/trump-tariffs-uk-car-and-vehicle-output-falls-to-76-year-low-in-may.html
 https://www.cnbc.com/select/average-401k-balance-by-age/
 https://www.cnbc.com/select/chase-sapphire-reserve-for-business-card/
 https://www.cnbc.com/video/2025/06/23/crypto-rises-iran-launches-missiles-response-us-strikes-crypto-world.html
