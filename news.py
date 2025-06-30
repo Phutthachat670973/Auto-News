@@ -73,63 +73,44 @@ def fetch_full_article_text(url):
         print(f"⚠️ ไม่สามารถดึงเนื้อหา: {url} | {e}")
         return ""
 
-# ------------------- ฟังก์ชันวิเคราะห์ผลกระทบระดับโลก -------------------
-def analyze_impact(summary_en):
-    prompt = f"""
-    Based on the following article summary, identify one country or region that is most directly affected. If no country or region is clearly mentioned, respond with "Country: None".
-
-    Then summarize the impact briefly.
-
-    Output format:
-    Country: <country name or 'None'>
-    Impact: <1 sentence impact summary>
-
-    Article summary:
-    {summary_en}
-    """
-    try:
-        result = summarizer(prompt, max_length=100, min_length=30, do_sample=False)
-        return result[0]['summary_text']
-    except:
-        return ""
-
-# ------------------- ฟังก์ชันสรุป + แปล + วิเคราะห์ผลกระทบ -------------------
+# ------------------- สรุป + แปล -------------------
 def summarize_and_translate(title, full_text, link=None):
+    # ถ้าเนื้อหาน้อยเกินไป ให้พยายาม fetch จากเว็บใหม่
     if len(full_text.split()) < 50 and link:
         full_text = fetch_full_article_text(link)
 
+    # ถ้าไม่มีเนื้อหาเลย
     if not full_text or len(full_text.strip()) < 30:
-        return title, "ไม่สามารถดึงเนื้อหาข่าวได้", ""
+        return title, "ไม่สามารถดึงเนื้อหาข่าวได้"
 
+    # จำกัดความยาว input ไม่เกิน 600 คำ
     input_words = full_text.split()
     input_trimmed = " ".join(input_words[:600])
 
+    # ปรับ max_length ตาม input
     try:
         token_count = len(input_trimmed.split())
-        max_len = max(40, min(200, int(token_count * 0.5)))
+        max_len = max(40, min(200, int(token_count * 0.5)))  # 50% ของ input, ไม่เกิน 200
         result = summarizer(input_trimmed, max_length=max_len, min_length=40, do_sample=False)
         summary_en = result[0]['summary_text']
     except Exception as e:
+        print(f"❌ Summary Error: {e}")
         summary_en = f"{title}\nเนื้อหาบทความไม่สามารถสรุปได้อัตโนมัติ โปรดคลิกลิงก์เพื่ออ่านเพิ่มเติม"
 
+    # แปลภาษา
     try:
         translated = translate_en_to_th(summary_en)
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
-    try:
-        impact_en = analyze_impact(summary_en)
-        impact_th = translate_en_to_th(impact_en) if impact_en else ""
-    except:
-        impact_th = ""
-
+    # แยกหัวข้อและเนื้อหา
     translated = translated.replace("<n>", "\n").strip()
     if "\n" in translated:
         title_th, summary_th = translated.split("\n", 1)
     else:
         title_th, summary_th = title, translated
 
-    return title_th.strip(), summary_th.strip(), impact_th.strip()
+    return title_th.strip(), summary_th.strip()
 
 
 # ------------------- จัดหมวดหมู่ -------------------
@@ -188,45 +169,16 @@ def extract_image_from_aljazeera(link):
         return None
 
 # ------------------- Flex Message -------------------
-# ------------------- Flex Message -------------------
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
-        title_th, summary_th, impact_th = summarize_and_translate(item['title'], item['summary'], item.get('link'))
-
-        affected_area = ""
-        impact_detail = ""
-        if "Country:" in impact_th and "Impact:" in impact_th:
-            try:
-                parts = impact_th.split("Country:", 1)[1].strip()
-                affected_area, impact_detail = parts.split("Impact:", 1)
-            except:
-                affected_area = ""
-                impact_detail = impact_th.strip()
-        else:
-            impact_detail = impact_th.strip()
-
-        bubble_contents = [
-            {"type": "text", "text": title_th, "weight": "bold", "size": "md", "wrap": True},
-            {"type": "text", "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}", "size": "xs", "color": "#888888", "margin": "sm"},
-            {"type": "text", "text": f"📌 {item['category']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
-            {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
-        ]
-
-        if affected_area.strip() and affected_area.strip().lower() != "none":
-            bubble_contents.append({"type": "text", "text": f"🌍 ประเทศ/ภูมิภาคที่ได้รับผลกระทบ: {affected_area.strip()}", "size": "xs", "color": "#888888", "wrap": True, "margin": "sm"})
-        if impact_detail.strip():
-            bubble_contents.append({"type": "text", "text": "📉 ผลกระทบที่เกิดขึ้น:", "size": "xs", "color": "#888888", "wrap": True, "margin": "xs"})
-            bubble_contents.append({"type": "text", "text": impact_detail.strip(), "size": "xs", "color": "#444444", "wrap": True, "margin": "xs"})
-
-        bubble_contents.append({"type": "text", "text": summary_th.strip(), "size": "sm", "wrap": True, "margin": "md"})
-
+        title_th, summary_th = summarize_and_translate(item['title'], item['summary'], item['link'])
         bubble = {
             "type": "bubble",
             "size": "mega",
             "hero": {
                 "type": "image",
-                "url": item.get("image", "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"),
+                "url": item["image"] or "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png",
                 "size": "full",
                 "aspectRatio": "20:13",
                 "aspectMode": "cover"
@@ -234,24 +186,27 @@ def create_flex_message(news_items):
             "body": {
                 "type": "box",
                 "layout": "vertical",
-                "contents": bubble_contents
+                "contents": [
+                    {"type": "text", "text": title_th, "weight": "bold", "size": "md", "wrap": True},
+                    {"type": "text", "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}", "size": "xs", "color": "#888888", "margin": "sm"},
+                    {"type": "text", "text": f"📌 {item['category']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
+                    {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
+                    {"type": "text", "text": summary_th.strip(), "size": "sm", "wrap": True, "margin": "md"}
+                ]
             },
             "footer": {
                 "type": "box",
                 "layout": "vertical",
                 "spacing": "sm",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "link",
-                        "height": "sm",
-                        "action": {"type": "uri", "label": "อ่านต่อ", "uri": item['link']}
-                    }
-                ]
+                "contents": [{
+                    "type": "button",
+                    "style": "link",
+                    "height": "sm",
+                    "action": {"type": "uri", "label": "อ่านต่อ", "uri": item['link']}
+                }]
             }
         }
-        if bubble["hero"]["url"].startswith("http"):
-            bubbles.append(bubble)
+        bubbles.append(bubble)
 
     return [{
         "type": "flex",
@@ -261,7 +216,6 @@ def create_flex_message(news_items):
             "contents": bubbles[i:i+10]
         }
     } for i in range(0, len(bubbles), 10)]
-
 
 # ------------------- ส่งเข้า LINE -------------------
 def send_text_and_flex_to_line(header_text, flex_messages):
