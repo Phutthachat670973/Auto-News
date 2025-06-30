@@ -113,12 +113,7 @@ def summarize_and_translate(title, summary_text, link=None):
         title_th = title
         summary_th = translated
 
-    return f"{title_th}\n{summary_th}"
-
-
-
-
-
+   return title_th, summary_th
 
 # ------------------- เหลือฟังก์ชันอื่น ๆ ที่ไม่เปลี่ยน เดี๋ยวใส่ให้ต่อ -------------------
 
