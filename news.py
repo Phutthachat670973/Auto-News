@@ -168,7 +168,6 @@ def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
         title_th, summary_th = summarize_and_translate(item['title'], item['summary'], item['link'])
-
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -182,74 +181,31 @@ def create_flex_message(news_items):
             "body": {
                 "type": "box",
                 "layout": "vertical",
-                "spacing": "sm",
                 "contents": [
-                    {
-                        "type": "text",
-                        "text": title_th.strip(),
-                        "weight": "bold",
-                        "size": "md",
-                        "wrap": True,
-                        "maxLines": 3,
-                        "color": "#111111"
-                    },
-                    {
-                        "type": "text",
-                        "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}",
-                        "size": "xs",
-                        "color": "#888888",
-                        "wrap": False
-                    },
-                    {
-                        "type": "text",
-                        "text": f"📌 {item['category']}",
-                        "size": "xs",
-                        "color": "#AAAAAA",
-                        "wrap": False
-                    },
-                    {
-                        "type": "text",
-                        "text": f"📣 {item['source']}",
-                        "size": "xs",
-                        "color": "#AAAAAA",
-                        "wrap": False
-                    },
-                    {
-                        "type": "text",
-                        "text": summary_th.strip()[:300] + "..." if len(summary_th) > 300 else summary_th.strip(),
-                        "size": "sm",
-                        "wrap": True,
-                        "maxLines": 6,
-                        "color": "#333333",
-                        "margin": "md"
-                    }
+                    {"type": "text", "text": title_th, "weight": "bold", "size": "md", "wrap": True},
+                    {"type": "text", "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}", "size": "xs", "color": "#888888", "margin": "sm"},
+                    {"type": "text", "text": f"📌 {item['category']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
+                    {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
+                    {"type": "text", "text": summary_th.strip(), "size": "sm", "wrap": True, "margin": "md"}
                 ]
             },
             "footer": {
                 "type": "box",
                 "layout": "vertical",
                 "spacing": "sm",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "link",
-                        "height": "sm",
-                        "action": {
-                            "type": "uri",
-                            "label": "🔗 อ่านต่อ",
-                            "uri": item["link"]
-                        }
-                    }
-                ],
-                "flex": 0
+                "contents": [{
+                    "type": "button",
+                    "style": "link",
+                    "height": "sm",
+                    "action": {"type": "uri", "label": "อ่านต่อ", "uri": item['link']}
+                }]
             }
         }
-
         bubbles.append(bubble)
 
     return [{
         "type": "flex",
-        "altText": f"📢 ข่าวประจำวันที่ {now_thai.strftime('%d/%m/%Y')}",
+        "altText": f"ข่าวประจำวันที่ {now_thai.strftime('%d/%m/%Y')}",
         "contents": {
             "type": "carousel",
             "contents": bubbles[i:i+10]
@@ -320,4 +276,3 @@ if all_news:
     flex_msgs = create_flex_message(all_news)
     send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_msgs)
     today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
-
