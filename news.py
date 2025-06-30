@@ -96,7 +96,9 @@ def summarize_and_translate(title, summary_text, link=None):
         result = summarizer(raw_text, max_length=200, min_length=40, do_sample=False)
         summary_en = result[0]['summary_text']
     except Exception as e:
-        summary_en = f"[สรุปไม่ได้] {e}"
+        print(f"❌ Summary Error: {e}")
+        # fallback ถ้าสรุปไม่ได้ ให้ใช้เฉพาะ title เป็นเนื้อหา
+        summary_en = f"[{title}]"
 
     try:
         translated = translate_en_to_th(summary_en)
@@ -112,6 +114,7 @@ def summarize_and_translate(title, summary_text, link=None):
         summary_th = translated
 
     return title_th, summary_th
+
 
 # ------------------- Parse และ Extract -------------------
 def parse_date(entry):
