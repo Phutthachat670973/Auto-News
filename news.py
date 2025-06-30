@@ -182,14 +182,15 @@ def create_flex_message(news_items):
             "body": {
                 "type": "box",
                 "layout": "vertical",
-                "spacing": "md",
+                "spacing": "sm",
                 "contents": [
                     {
                         "type": "text",
                         "text": title_th.strip(),
                         "weight": "bold",
-                        "size": "lg",
+                        "size": "md",
                         "wrap": True,
+                        "maxLines": 3,  # จำกัดไม่เกิน 3 บรรทัด
                         "color": "#111111"
                     },
                     {
@@ -201,15 +202,18 @@ def create_flex_message(news_items):
                                 "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}",
                                 "size": "xs",
                                 "color": "#888888",
-                                "flex": 0
+                                "flex": 2,
+                                "wrap": False
                             },
                             {
                                 "type": "text",
                                 "text": f"📌 {item['category']} | 📣 {item['source']}",
                                 "size": "xs",
                                 "color": "#AAAAAA",
-                                "flex": 1,
-                                "align": "end"
+                                "flex": 3,
+                                "align": "end",
+                                "wrap": False,
+                                "maxLines": 1
                             }
                         ]
                     },
@@ -218,8 +222,9 @@ def create_flex_message(news_items):
                         "text": summary_th.strip()[:300] + "..." if len(summary_th) > 300 else summary_th.strip(),
                         "size": "sm",
                         "wrap": True,
-                        "margin": "md",
-                        "color": "#333333"
+                        "maxLines": 6,
+                        "color": "#333333",
+                        "margin": "md"
                     }
                 ]
             },
@@ -245,7 +250,6 @@ def create_flex_message(news_items):
 
         bubbles.append(bubble)
 
-    # จัดชุด Flex แบบ carousel (สูงสุด 10 ข่าวต่อชุด)
     return [{
         "type": "flex",
         "altText": f"📢 ข่าวประจำวันที่ {now_thai.strftime('%d/%m/%Y')}",
@@ -254,6 +258,7 @@ def create_flex_message(news_items):
             "contents": bubbles[i:i+10]
         }
     } for i in range(0, len(bubbles), 10)]
+
 
 
 # ------------------- ส่งเข้า LINE -------------------
