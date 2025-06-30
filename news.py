@@ -3,23 +3,23 @@ import feedparser
 from datetime import datetime, timedelta
 import pytz
 import requests
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer
 import re
 from bs4 import BeautifulSoup
 import os
 from dateutil import parser as dateutil_parser
 from pathlib import Path
-from newspaper import Article
 
 # ------------------- ตั้งค่าโมเดล -------------------
 summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large-cnn")
 
 # ------------------- ตั้งค่า API -------------------
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN.")
+    raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN. Please set it as an environment variable.")
 
 # ------------------- ตั้งค่า Timezone -------------------
 bangkok_tz = pytz.timezone("Asia/Bangkok")
@@ -27,7 +27,7 @@ now_thai = datetime.now(bangkok_tz)
 today_thai = now_thai.date()
 yesterday_thai = today_thai - timedelta(days=1)
 
-# ------------------- ลบไฟล์ข่าวเก่า -------------------
+# ------------------- ฟังก์ชันลบไฟล์ข่าวเก่า -------------------
 def cleanup_old_sent_links(folder="sent_links", keep_days=5):
     cutoff_date = today_thai - timedelta(days=keep_days)
     if not os.path.exists(folder):
@@ -38,14 +38,18 @@ def cleanup_old_sent_links(folder="sent_links", keep_days=5):
                 file_date = datetime.strptime(filename.replace(".txt", ""), "%Y-%m-%d").date()
                 if file_date < cutoff_date:
                     os.remove(os.path.join(folder, filename))
-            except:
-                continue
+                    print(f"🪝 ลบไฟล์ข่าวเก่า: {filename}")
+            except Exception as e:
+                print(f"⚠️ ไม่สามารรมผล {filename}: {e}")
 
 # ------------------- แหล่งข่าว -------------------
 news_sources = {
     "BBC Economy": {"type": "rss", "url": "https://feeds.bbci.co.uk/news/rss.xml"},
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
+
+# ------------------- คำค้นหาหลัก -------------------
+keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
 
 # ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
@@ -57,60 +61,74 @@ def translate_en_to_th(text):
         "target_lang": "TH"
     }
     try:
-        res = requests.post(url, data=params, timeout=10)
-        return res.json()["translations"][0]["text"]
+        response = requests.post(url, data=params, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        return result["translations"][0]["text"]
     except Exception as e:
-        return f"[แปลไม่ได้] {e}"
+        return f"แปลไม่สำเร็จ: {e}"
 
-# ------------------- ดึงเนื้อหาข่าวจากหน้าเว็บ -------------------
-def fetch_full_article_text(url):
+# ------------------- ดึงเนื้อหาข่าวเต็มจากเว็บ -------------------
+def fetch_full_article_text(link):
     try:
-        article = Article(url)
-        article.download()
-        article.parse()
-        return article.text.strip()
+        res = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            paragraphs = soup.find_all('p')
+            full_text = "\n".join(p.get_text() for p in paragraphs if p.get_text())
+            return full_text.strip()
     except Exception as e:
-        print(f"⚠️ ไม่สามารถดึงเนื้อหา: {url} | {e}")
-        return ""
+        print(f"⚠️ ไม่สามารถึงเนื้อหาเต็มจาก {link}: {e}")
+    return ""
 
-# ------------------- สรุป + แปล -------------------
-def summarize_and_translate(title, full_text, link=None):
-    # ถ้าเนื้อหาน้อยเกินไป ให้พยายาม fetch จากเว็บใหม่
-    if len(full_text.split()) < 50 and link:
-        full_text = fetch_full_article_text(link)
+# ------------------- จำกัดความยาวเนื้อหาสำหรับสรุป -------------------
+def clip_text(text, max_words=500):
+    words = text.split()
+    return " ".join(words[:max_words])
 
-    # ถ้าไม่มีเนื้อหาเลย
-    if not full_text or len(full_text.strip()) < 30:
-        return title, "ไม่สามารถดึงเนื้อหาข่าวได้"
-
-    # จำกัดความยาว input ไม่เกิน 600 คำ
-    input_words = full_text.split()
-    input_trimmed = " ".join(input_words[:600])
-
-    # ปรับ max_length ตาม input
+# ------------------- วิเคราะห์ผลกระทบ -------------------
+def analyze_impact(summary_en):
+    prompt = f"Which countries or regions are affected by this news, and how are they impacted?\n{summary_en}"
     try:
-        token_count = len(input_trimmed.split())
-        max_len = max(40, min(200, int(token_count * 0.5)))  # 50% ของ input, ไม่เกิน 200
-        result = summarizer(input_trimmed, max_length=max_len, min_length=40, do_sample=False)
-        summary_en = result[0]['summary_text']
-    except Exception as e:
-        print(f"❌ Summary Error: {e}")
-        summary_en = f"{title}\nเนื้อหาบทความไม่สามารถสรุปได้อัตโนมัติ โปรดคลิกลิงก์เพื่ออ่านเพิ่มเติม"
+        response = summarizer(prompt, max_length=60, min_length=20, do_sample=False)
+        return response[0]['summary_text']
+    except:
+        return "ไม่สามารถวิเคราะห์ผลกระทบได้"
 
-    # แปลภาษา
+# ------------------- ฟังก์ชันสรุป + แปล + ผลกระทบ -------------------
+def summarize_and_translate(title, summary_text, link=None):
+    if (not summary_text or len(summary_text.split()) < 100) and link:
+        summary_text = fetch_full_article_text(link)
+
+    raw_text = f"{title}\n{clip_text(summary_text)}"
+    tokens = tokenizer.encode(raw_text, truncation=True, max_length=1024)
+
+    try:
+        if len(tokens) < 50:
+            summary_en = raw_text
+        else:
+            result = summarizer(raw_text, max_length=200, min_length=40, do_sample=False)
+            summary_en = result[0]['summary_text']
+    except Exception as e:
+        print(f"⚠️ สรุปข่าวไม่ได้: {e}")
+        summary_en = raw_text
+
     try:
         translated = translate_en_to_th(summary_en)
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
-    # แยกหัวข้อและเนื้อหา
     translated = translated.replace("<n>", "\n").strip()
+
     if "\n" in translated:
         title_th, summary_th = translated.split("\n", 1)
     else:
-        title_th, summary_th = title, translated
+        title_th = title
+        summary_th = translated
 
-    return title_th.strip(), summary_th.strip()
+    impact_th = translate_en_to_th(analyze_impact(summary_en))
+
+    return title_th, summary_th, impact_th
 
 
 # ------------------- จัดหมวดหมู่ -------------------
@@ -172,13 +190,13 @@ def extract_image_from_aljazeera(link):
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
-        title_th, summary_th = summarize_and_translate(item['title'], item['summary'], item['link'])
+        title_th, summary_th, impact_th = summarize_and_translate(item['title'], item['summary'], item.get('link'))
         bubble = {
             "type": "bubble",
             "size": "mega",
             "hero": {
                 "type": "image",
-                "url": item["image"] or "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png",
+                "url": item.get("image", "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"),
                 "size": "full",
                 "aspectRatio": "20:13",
                 "aspectMode": "cover"
@@ -191,22 +209,26 @@ def create_flex_message(news_items):
                     {"type": "text", "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}", "size": "xs", "color": "#888888", "margin": "sm"},
                     {"type": "text", "text": f"📌 {item['category']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
                     {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
-                    {"type": "text", "text": summary_th.strip(), "size": "sm", "wrap": True, "margin": "md"}
+                    {"type": "text", "text": summary_th.strip(), "size": "sm", "wrap": True, "margin": "md"},
+                    {"type": "text", "text": f"🌍 ผลกระทบ: {impact_th}", "size": "xs", "color": "#888888", "wrap": True, "margin": "sm"}
                 ]
             },
             "footer": {
                 "type": "box",
                 "layout": "vertical",
                 "spacing": "sm",
-                "contents": [{
-                    "type": "button",
-                    "style": "link",
-                    "height": "sm",
-                    "action": {"type": "uri", "label": "อ่านต่อ", "uri": item['link']}
-                }]
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "link",
+                        "height": "sm",
+                        "action": {"type": "uri", "label": "อ่านต่อ", "uri": item['link']}
+                    }
+                ]
             }
         }
-        bubbles.append(bubble)
+        if bubble["hero"]["url"].startswith("http"):
+            bubbles.append(bubble)
 
     return [{
         "type": "flex",
