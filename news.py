@@ -103,22 +103,17 @@ def summarize_and_translate(title, summary_text, link=None):
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
-    # ล้าง <n> และแยกหัวข้อ
     translated = translated.replace("<n>", "\n").strip()
 
     if "\n" in translated:
         title_th, summary_th = translated.split("\n", 1)
     else:
-        # หากไม่มีการขึ้นบรรทัดใหม่ ใช้ title เดิมเป็นหัวข้อ
         title_th = title
         summary_th = translated
 
-   return title_th, summary_th
+    return title_th, summary_th
 
-# ------------------- เหลือฟังก์ชันอื่น ๆ ที่ไม่เปลี่ยน เดี๋ยวใส่ให้ต่อ -------------------
-
-
-# ------------------- ประมวลผล RSS -------------------
+# ------------------- Parse และ Extract -------------------
 def parse_date(entry):
     try:
         if hasattr(entry, 'published_parsed') and entry.published_parsed:
@@ -150,7 +145,6 @@ def extract_image(entry):
         pass
     return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
-# ------------------- จัดหมวดหมู่ -------------------
 candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
 def classify_category(entry):
     text = (entry.title + " " + entry.get('summary', '')).strip()
@@ -158,10 +152,10 @@ def classify_category(entry):
         result = classifier(text, candidate_labels)
         return result['labels'][0]
     except Exception as e:
-        print(f"❗️จัดหมวดหม่ได้: {e}")
+        print(f"❗️จัดหมวดหมู่ไม่ได้: {e}")
         return "Other"
 
-# ------------------- ข่าวจาก Al Jazeera -------------------
+# ------------------- ดึงข่าว Al Jazeera -------------------
 def fetch_aljazeera_articles():
     articles = []
     try:
@@ -199,8 +193,7 @@ def extract_image_from_aljazeera(link):
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
-        title_th, summary_only = summarize_and_translate(item['title'], item['summary'])
-
+        title_th, summary_only = summarize_and_translate(item['title'], item['summary'], item.get('link'))
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -219,6 +212,7 @@ def create_flex_message(news_items):
                     {"type": "text", "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}", "size": "xs", "color": "#888888", "margin": "sm"},
                     {"type": "text", "text": f"📌 {item['category']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
                     {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
+                    {"type": "text", "text": summary_only.strip(), "size": "sm", "wrap": True, "margin": "md"}
                 ]
             },
             "footer": {
@@ -235,16 +229,6 @@ def create_flex_message(news_items):
                 ]
             }
         }
-
-        if summary_only.strip():
-            bubble["body"]["contents"].append({
-                "type": "text",
-                "text": summary_only.strip(),
-                "size": "sm",
-                "wrap": True,
-                "margin": "md"
-            })
-
         if bubble["hero"]["url"].startswith("http"):
             bubbles.append(bubble)
 
@@ -257,9 +241,6 @@ def create_flex_message(news_items):
         }
     } for i in range(0, len(bubbles), 10)]
 
-
-
-
 # ------------------- ส่งเข้า LINE -------------------
 def send_text_and_flex_to_line(header_text, flex_messages):
     url = 'https://api.line.me/v2/bot/message/broadcast'
@@ -267,31 +248,23 @@ def send_text_and_flex_to_line(header_text, flex_messages):
         'Content-Type': 'application/json',
         'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}'
     }
-
     res1 = requests.post(url, headers=headers, json={"messages": [{"type": "text", "text": header_text}]})
     print(f"📢 ส่งหัวข้อ: {res1.status_code}, {res1.text}")
-
     for i, msg in enumerate(flex_messages):
         res2 = requests.post(url, headers=headers, json={"messages": [msg]})
         print(f"📦 ส่ง Flex {i+1}/{len(flex_messages)} ข่าว {len(msg['contents']['contents'])} เรื่อง | {res2.status_code}")
 
 # ------------------- เริ่มต้นหลัก -------------------
 cleanup_old_sent_links()
-
 sent_dir = Path("sent_links")
 sent_dir.mkdir(exist_ok=True)
-
 today_file = sent_dir / f"{today_thai}.txt"
 yesterday_file = sent_dir / f"{yesterday_thai}.txt"
-
 sent_links = set()
 for f in [today_file, yesterday_file]:
     if f.exists():
         sent_links.update(f.read_text(encoding="utf-8").splitlines())
-
 all_news = []
-
-# ✅ ดึงจาก RSS
 for source, info in news_sources.items():
     if info["type"] == "rss":
         feed = feedparser.parse(info["url"])
@@ -313,19 +286,15 @@ for source, info in news_sources.items():
                     "category": classify_category(entry)
                 })
                 sent_links.add(entry.link)
-
-# ✅ ดึงจาก Al Jazeera (ไม่กรองวันที่เพื่อให้ Middle East แสดงแน่)
+# Al Jazeera
 aljazeera_news = fetch_aljazeera_articles()
 for item in aljazeera_news:
     if item["link"] not in sent_links:
         all_news.append(item)
         sent_links.add(item["link"])
-
-# 🔍 กรองเพาะ Politics, Economy, Energy, Middle East
+# Filter
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [news for news in all_news if news['category'] in allowed_categories]
-
-# ------------------- ส่งข่าว + บันทึก -------------------
 if all_news:
     preferred_order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
     all_news = sorted(all_news, key=lambda x: preferred_order.index(x["category"]) if x["category"] in preferred_order else len(preferred_order))
