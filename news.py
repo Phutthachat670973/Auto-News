@@ -186,19 +186,38 @@ def extract_image_from_aljazeera(link):
     except:
         return None
 
+# ------------------- ฟังก์ชันวิเคราะห์ผลกระทบระดับโลก -------------------
+def analyze_impact(summary_en):
+    prompt = f"""
+    Analyze the global impact of the following news article.
+    Identify specific sectors or regions (e.g., economy, energy, international security, environment, etc.) that are affected.
+    Structure your response as:
+    Country/Region(s): <who is affected>
+    Impact: <how they are affected>
+
+    Article:
+    {summary_en}
+    """
+    try:
+        response = summarizer(prompt, max_length=100, min_length=30, do_sample=False)
+        return response[0]['summary_text']
+    except:
+        return "ทั่วโลก: ไม่สามารถวิเคราะห์ผลกระทบได้"
+
 # ------------------- Flex Message -------------------
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
         title_th, summary_th, impact_th = summarize_and_translate(item['title'], item['summary'], item.get('link'))
 
-        # แยกประเทศที่ได้รับผลกระทบกับคำอธิบายผลกระทบ หากใช้เครื่องหมาย ':' หรือ '\n'
+        # ถ้าไม่สามารถแยกประเทศได้ หรือ impact_th ไม่มีโครงสร้าง ให้ถือว่าเป็นผลกระทบระดับโลก
         if ":" in impact_th:
             affected_area, impact_detail = impact_th.split(":", 1)
         elif "\n" in impact_th:
             affected_area, impact_detail = impact_th.split("\n", 1)
         else:
-            affected_area, impact_detail = "ไม่สามารถระบุประเทศได้", impact_th
+            affected_area = "ทั่วโลก"
+            impact_detail = impact_th.strip()
 
         bubble = {
             "type": "bubble",
@@ -249,6 +268,7 @@ def create_flex_message(news_items):
             "contents": bubbles[i:i+10]
         }
     } for i in range(0, len(bubbles), 10)]
+
 
 
 # ------------------- ส่งเข้า LINE -------------------
