@@ -240,6 +240,8 @@ for f in [today_file, yesterday_file]:
         sent_links.update(f.read_text(encoding="utf-8").splitlines())
 
 all_news = []
+
+# --- ข่าวจาก RSS ---
 for source, info in news_sources.items():
     if info["type"] == "rss":
         feed = feedparser.parse(info["url"])
@@ -262,14 +264,21 @@ for source, info in news_sources.items():
             })
             sent_links.add(entry.link)
 
-all_news += [item for item in fetch_aljazeera_articles() if item["link"] not in sent_links]
+# --- ดึงข่าวจาก Al Jazeera และบันทึกลิงก์ ---
+for item in fetch_aljazeera_articles():
+    if item["link"] not in sent_links:
+        all_news.append(item)
+        sent_links.add(item["link"])
 
+# --- กรองหมวดหมู่ที่ต้องการ ---
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [n for n in all_news if n["category"] in allowed_categories]
 
+# --- ส่งเข้า LINE ---
 if all_news:
     order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
     all_news.sort(key=lambda x: order.index(x["category"]) if x["category"] in order else len(order))
     flex_msgs = create_flex_message(all_news)
     send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_msgs)
     today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
+
