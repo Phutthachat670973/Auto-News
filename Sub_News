@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 import os
 from dateutil import parser as dateutil_parser
 from pathlib import Path
+from newspaper import Article
 
 # ------------------- ตั้งค่าโมเดล -------------------
 summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
@@ -18,7 +19,7 @@ classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnl
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN. Please set it as an environment variable.")
+    raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN.")
 
 # ------------------- ตั้งค่า Timezone -------------------
 bangkok_tz = pytz.timezone("Asia/Bangkok")
@@ -26,7 +27,7 @@ now_thai = datetime.now(bangkok_tz)
 today_thai = now_thai.date()
 yesterday_thai = today_thai - timedelta(days=1)
 
-# ------------------- ฟังก์ชันลบไฟล์ข่าวเก่า -------------------
+# ------------------- ลบไฟล์ข่าวเก่า -------------------
 def cleanup_old_sent_links(folder="sent_links", keep_days=5):
     cutoff_date = today_thai - timedelta(days=keep_days)
     if not os.path.exists(folder):
@@ -37,18 +38,14 @@ def cleanup_old_sent_links(folder="sent_links", keep_days=5):
                 file_date = datetime.strptime(filename.replace(".txt", ""), "%Y-%m-%d").date()
                 if file_date < cutoff_date:
                     os.remove(os.path.join(folder, filename))
-                    print(f"🪝 ลบไฟล์ข่าวเก่า: {filename}")
-            except Exception as e:
-                print(f"⚠️ ไม่สามารรมผล {filename}: {e}")
+            except:
+                continue
 
 # ------------------- แหล่งข่าว -------------------
 news_sources = {
     "BBC Economy": {"type": "rss", "url": "https://feeds.bbci.co.uk/news/rss.xml"},
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
-
-# ------------------- คำค้นหาหลัก -------------------
-keywords = ["economy", "gdp", "inflation", "energy", "oil", "gas", "climate", "carbon", "power", "electricity", "emissions"]
 
 # ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
@@ -60,102 +57,86 @@ def translate_en_to_th(text):
         "target_lang": "TH"
     }
     try:
-        response = requests.post(url, data=params, timeout=10)
-        response.raise_for_status()
-        result = response.json()
-        return result["translations"][0]["text"]
+        res = requests.post(url, data=params, timeout=10)
+        return res.json()["translations"][0]["text"]
     except Exception as e:
-        return f"แปลไม่สำเร็จ: {e}"
+        return f"[แปลไม่ได้] {e}"
 
-# ------------------- ดึงเนื้อหาข่าวเต็มจากเว็บ -------------------
-def fetch_full_article_text(link):
+# ------------------- ดึงเนื้อหาข่าวจากหน้าเว็บ -------------------
+def fetch_full_article_text(url):
     try:
-        res = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
-            paragraphs = soup.find_all('p')
-            full_text = "\n".join(p.get_text() for p in paragraphs if p.get_text())
-            return full_text.strip()
+        article = Article(url)
+        article.download()
+        article.parse()
+        return article.text.strip()
     except Exception as e:
-        print(f"⚠️ ไม่สามารถึงเนื้อหาเต็มจาก {link}: {e}")
-    return ""
+        print(f"⚠️ ไม่สามารถดึงเนื้อหา: {url} | {e}")
+        return ""
 
-# ------------------- จำกัดความยาวเนื้อหาสำหรับสรุป -------------------
-def clip_text(text, max_words=800):
-    words = text.split()
-    return " ".join(words[:max_words])
+# ------------------- สรุป + แปล -------------------
+def summarize_and_translate(title, full_text, link=None):
+    # ถ้าเนื้อหาน้อยเกินไป ให้พยายาม fetch จากเว็บใหม่
+    if len(full_text.split()) < 50 and link:
+        full_text = fetch_full_article_text(link)
 
-# ------------------- ฟังก์ชันสรุป + แปล -------------------
-def summarize_and_translate(title, summary_text, link=None):
-    if (not summary_text or len(summary_text.split()) < 100) and link:
-        summary_text = fetch_full_article_text(link)
+    # ถ้าไม่มีเนื้อหาเลย
+    if not full_text or len(full_text.strip()) < 30:
+        return title, "ไม่สามารถดึงเนื้อหาข่าวได้"
 
-    raw_text = f"{title}\n{clip_text(summary_text)}"
+    # จำกัดความยาว input ไม่เกิน 600 คำ
+    input_words = full_text.split()
+    input_trimmed = " ".join(input_words[:600])
 
+    # ปรับ max_length ตาม input
     try:
-        result = summarizer(raw_text, max_length=200, min_length=40, do_sample=False)
+        token_count = len(input_trimmed.split())
+        max_len = max(40, min(200, int(token_count * 0.5)))  # 50% ของ input, ไม่เกิน 200
+        result = summarizer(input_trimmed, max_length=max_len, min_length=40, do_sample=False)
         summary_en = result[0]['summary_text']
     except Exception as e:
-        summary_en = f"[สรุปไม่ได้] {e}"
+        print(f"❌ Summary Error: {e}")
+        summary_en = f"{title}\nเนื้อหาบทความไม่สามารถสรุปได้อัตโนมัติ โปรดคลิกลิงก์เพื่ออ่านเพิ่มเติม"
 
+    # แปลภาษา
     try:
         translated = translate_en_to_th(summary_en)
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
+    # แยกหัวข้อและเนื้อหา
     translated = translated.replace("<n>", "\n").strip()
-
     if "\n" in translated:
         title_th, summary_th = translated.split("\n", 1)
     else:
-        title_th = title
-        summary_th = translated
+        title_th, summary_th = title, translated
 
-    return title_th, summary_th
+    return title_th.strip(), summary_th.strip()
 
-# ------------------- Parse และ Extract -------------------
-def parse_date(entry):
+
+# ------------------- จัดหมวดหมู่ -------------------
+candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
+def classify_category(entry):
     try:
-        if hasattr(entry, 'published_parsed') and entry.published_parsed:
-            return datetime(*entry.published_parsed[:6], tzinfo=pytz.utc)
-        elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
-            return datetime(*entry.updated_parsed[:6], tzinfo=pytz.utc)
-        elif hasattr(entry, 'published'):
-            return dateutil_parser.parse(entry.published)
+        text = entry.title + " " + getattr(entry, 'summary', '')
+        return classifier(text, candidate_labels)['labels'][0]
     except:
-        return None
+        return "Other"
 
+# ------------------- ดึงภาพข่าว -------------------
 def extract_image(entry):
     if hasattr(entry, 'media_content'):
         for media in entry.media_content:
             if 'url' in media:
                 return media['url']
-    if 'img' in getattr(entry, 'summary', ''):
-        imgs = re.findall(r'<img[^>]+src="([^"]+)">', entry.summary)
-        if imgs:
-            return imgs[0]
     try:
-        response = requests.get(entry.link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
-            og_image = soup.find("meta", property="og:image")
-            if og_image and og_image.get("content"):
-                return og_image["content"]
+        res = requests.get(entry.link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+        og = soup.find("meta", property="og:image")
+        return og["content"] if og and og.get("content") else None
     except:
-        pass
-    return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
+        return None
 
-candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
-def classify_category(entry):
-    text = (entry.title + " " + entry.get('summary', '')).strip()
-    try:
-        result = classifier(text, candidate_labels)
-        return result['labels'][0]
-    except Exception as e:
-        print(f"❗️จัดหมวดหมู่ไม่ได้: {e}")
-        return "Other"
-
-# ------------------- ดึงข่าว Al Jazeera -------------------
+# ------------------- ดึงข่าวจาก Al Jazeera -------------------
 def fetch_aljazeera_articles():
     articles = []
     try:
@@ -168,38 +149,36 @@ def fetch_aljazeera_articles():
             articles.append({
                 "source": "Al Jazeera",
                 "title": title,
-                "summary": "",
+                "summary": fetch_full_article_text(link),
                 "link": link,
                 "image": image,
                 "published": now_thai,
                 "category": "Middle East"
             })
     except Exception as e:
-        print(f"⚠️ ดึงข่าว Al Jazeera ไม่สำเร็จ: {e}")
+        print(f"⚠️ Al Jazeera Error: {e}")
     return articles
 
 def extract_image_from_aljazeera(link):
     try:
         res = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         soup = BeautifulSoup(res.content, "html.parser")
-        meta_img = soup.find("meta", property="og:image")
-        if meta_img and meta_img.get("content"):
-            return meta_img["content"]
+        meta = soup.find("meta", property="og:image")
+        return meta["content"] if meta else None
     except:
-        pass
-    return "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
+        return None
 
 # ------------------- Flex Message -------------------
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
-        title_th, summary_only = summarize_and_translate(item['title'], item['summary'], item.get('link'))
+        title_th, summary_th = summarize_and_translate(item['title'], item['summary'], item['link'])
         bubble = {
             "type": "bubble",
             "size": "mega",
             "hero": {
                 "type": "image",
-                "url": item.get("image", ""),
+                "url": item["image"] or "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png",
                 "size": "full",
                 "aspectRatio": "20:13",
                 "aspectMode": "cover"
@@ -212,25 +191,22 @@ def create_flex_message(news_items):
                     {"type": "text", "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}", "size": "xs", "color": "#888888", "margin": "sm"},
                     {"type": "text", "text": f"📌 {item['category']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
                     {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
-                    {"type": "text", "text": summary_only.strip(), "size": "sm", "wrap": True, "margin": "md"}
+                    {"type": "text", "text": summary_th.strip(), "size": "sm", "wrap": True, "margin": "md"}
                 ]
             },
             "footer": {
                 "type": "box",
                 "layout": "vertical",
                 "spacing": "sm",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "link",
-                        "height": "sm",
-                        "action": {"type": "uri", "label": "อ่านต่อ", "uri": item['link']}
-                    }
-                ]
+                "contents": [{
+                    "type": "button",
+                    "style": "link",
+                    "height": "sm",
+                    "action": {"type": "uri", "label": "อ่านต่อ", "uri": item['link']}
+                }]
             }
         }
-        if bubble["hero"]["url"].startswith("http"):
-            bubbles.append(bubble)
+        bubbles.append(bubble)
 
     return [{
         "type": "flex",
@@ -248,13 +224,11 @@ def send_text_and_flex_to_line(header_text, flex_messages):
         'Content-Type': 'application/json',
         'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}'
     }
-    res1 = requests.post(url, headers=headers, json={"messages": [{"type": "text", "text": header_text}]})
-    print(f"📢 ส่งหัวข้อ: {res1.status_code}, {res1.text}")
-    for i, msg in enumerate(flex_messages):
-        res2 = requests.post(url, headers=headers, json={"messages": [msg]})
-        print(f"📦 ส่ง Flex {i+1}/{len(flex_messages)} ข่าว {len(msg['contents']['contents'])} เรื่อง | {res2.status_code}")
+    requests.post(url, headers=headers, json={"messages": [{"type": "text", "text": header_text}]})
+    for msg in flex_messages:
+        requests.post(url, headers=headers, json={"messages": [msg]})
 
-# ------------------- เริ่มต้นหลัก -------------------
+# ------------------- เริ่มต้น -------------------
 cleanup_old_sent_links()
 sent_dir = Path("sent_links")
 sent_dir.mkdir(exist_ok=True)
@@ -264,40 +238,46 @@ sent_links = set()
 for f in [today_file, yesterday_file]:
     if f.exists():
         sent_links.update(f.read_text(encoding="utf-8").splitlines())
+
 all_news = []
+
+# --- ข่าวจาก RSS ---
 for source, info in news_sources.items():
     if info["type"] == "rss":
         feed = feedparser.parse(info["url"])
         for entry in feed.entries:
-            pub_date = parse_date(entry)
-            if not pub_date:
-                continue
+            pub_date = dateutil_parser.parse(entry.published) if hasattr(entry, "published") else now_thai
             local_date = pub_date.astimezone(bangkok_tz).date()
-            if entry.link in sent_links:
+            if entry.link in sent_links or local_date not in [today_thai, yesterday_thai]:
                 continue
-            if local_date in [today_thai, yesterday_thai]:
-                all_news.append({
-                    "source": source,
-                    "title": entry.title,
-                    "summary": getattr(entry, 'summary', ''),
-                    "link": entry.link,
-                    "image": extract_image(entry),
-                    "published": pub_date.astimezone(bangkok_tz),
-                    "category": classify_category(entry)
-                })
-                sent_links.add(entry.link)
-# Al Jazeera
-aljazeera_news = fetch_aljazeera_articles()
-for item in aljazeera_news:
+            full_text = fetch_full_article_text(entry.link)
+            if len(full_text.split()) < 50:
+                continue
+            all_news.append({
+                "source": source,
+                "title": entry.title,
+                "summary": full_text,
+                "link": entry.link,
+                "image": extract_image(entry),
+                "published": pub_date.astimezone(bangkok_tz),
+                "category": classify_category(entry)
+            })
+            sent_links.add(entry.link)
+
+# --- ดึงข่าวจาก Al Jazeera และบันทึกลิงก์ ---
+for item in fetch_aljazeera_articles():
     if item["link"] not in sent_links:
         all_news.append(item)
         sent_links.add(item["link"])
-# Filter
+
+# --- กรองหมวดหมู่ที่ต้องการ ---
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
-all_news = [news for news in all_news if news['category'] in allowed_categories]
+all_news = [n for n in all_news if n["category"] in allowed_categories]
+
+# --- ส่งเข้า LINE ---
 if all_news:
-    preferred_order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
-    all_news = sorted(all_news, key=lambda x: preferred_order.index(x["category"]) if x["category"] in preferred_order else len(preferred_order))
-    flex_messages = create_flex_message(all_news)
-    send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_messages)
+    order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
+    all_news.sort(key=lambda x: order.index(x["category"]) if x["category"] in order else len(order))
+    flex_msgs = create_flex_message(all_news)
+    send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_msgs)
     today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
