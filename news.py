@@ -190,32 +190,29 @@ def create_flex_message(news_items):
                         "weight": "bold",
                         "size": "md",
                         "wrap": True,
-                        "maxLines": 3,  # จำกัดไม่เกิน 3 บรรทัด
+                        "maxLines": 3,
                         "color": "#111111"
                     },
                     {
-                        "type": "box",
-                        "layout": "baseline",
-                        "contents": [
-                            {
-                                "type": "text",
-                                "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}",
-                                "size": "xs",
-                                "color": "#888888",
-                                "flex": 2,
-                                "wrap": False
-                            },
-                            {
-                                "type": "text",
-                                "text": f"📌 {item['category']} | 📣 {item['source']}",
-                                "size": "xs",
-                                "color": "#AAAAAA",
-                                "flex": 3,
-                                "align": "end",
-                                "wrap": False,
-                                "maxLines": 1
-                            }
-                        ]
+                        "type": "text",
+                        "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}",
+                        "size": "xs",
+                        "color": "#888888",
+                        "wrap": False
+                    },
+                    {
+                        "type": "text",
+                        "text": f"📌 {item['category']}",
+                        "size": "xs",
+                        "color": "#AAAAAA",
+                        "wrap": False
+                    },
+                    {
+                        "type": "text",
+                        "text": f"📣 {item['source']}",
+                        "size": "xs",
+                        "color": "#AAAAAA",
+                        "wrap": False
                     },
                     {
                         "type": "text",
@@ -258,8 +255,6 @@ def create_flex_message(news_items):
             "contents": bubbles[i:i+10]
         }
     } for i in range(0, len(bubbles), 10)]
-
-
 
 # ------------------- ส่งเข้า LINE -------------------
 def send_text_and_flex_to_line(header_text, flex_messages):
