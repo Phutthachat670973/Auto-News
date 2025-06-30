@@ -75,29 +75,43 @@ def fetch_full_article_text(url):
 
 # ------------------- สรุป + แปล -------------------
 def summarize_and_translate(title, full_text, link=None):
+    # ถ้าเนื้อหาน้อยเกินไป ให้พยายาม fetch จากเว็บใหม่
     if len(full_text.split()) < 50 and link:
         full_text = fetch_full_article_text(link)
 
-    if not full_text:
+    # ถ้าไม่มีเนื้อหาเลย
+    if not full_text or len(full_text.strip()) < 30:
         return title, "ไม่สามารถดึงเนื้อหาข่าวได้"
 
+    # จำกัดความยาว input ไม่เกิน 600 คำ
+    input_words = full_text.split()
+    input_trimmed = " ".join(input_words[:600])
+
+    # ปรับ max_length ตาม input
     try:
-        summary_en = summarizer(full_text, max_length=200, min_length=40, do_sample=False)[0]['summary_text']
+        token_count = len(input_trimmed.split())
+        max_len = max(40, min(200, int(token_count * 0.5)))  # 50% ของ input, ไม่เกิน 200
+        result = summarizer(input_trimmed, max_length=max_len, min_length=40, do_sample=False)
+        summary_en = result[0]['summary_text']
     except Exception as e:
         print(f"❌ Summary Error: {e}")
         summary_en = f"{title}\nเนื้อหาบทความไม่สามารถสรุปได้อัตโนมัติ โปรดคลิกลิงก์เพื่ออ่านเพิ่มเติม"
 
+    # แปลภาษา
     try:
         translated = translate_en_to_th(summary_en)
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
+    # แยกหัวข้อและเนื้อหา
     translated = translated.replace("<n>", "\n").strip()
     if "\n" in translated:
         title_th, summary_th = translated.split("\n", 1)
     else:
         title_th, summary_th = title, translated
-    return title_th, summary_th
+
+    return title_th.strip(), summary_th.strip()
+
 
 # ------------------- จัดหมวดหมู่ -------------------
 candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
