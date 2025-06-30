@@ -76,35 +76,33 @@ def fetch_full_article_text(url):
 # ------------------- ฟังก์ชันวิเคราะห์ผลกระทบระดับโลก -------------------
 def analyze_impact(summary_en):
     prompt = f"""
-    Analyze the global impact of the following news article.
-    Identify specific countries or global regions that are affected most by this news.
-    Also summarize the nature of the impact on them.
-    Respond in the following format:
-    Country/Region(s): <affected>
-    Impact: <impact>
+    Based on the following article summary, identify one country or region that is most directly affected. If no country or region is clearly mentioned, respond with "Country: None".
 
-    Article:
+    Then summarize the impact briefly.
+
+    Output format:
+    Country: <country name or 'None'>
+    Impact: <1 sentence impact summary>
+
+    Article summary:
     {summary_en}
     """
     try:
-        response = summarizer(prompt, max_length=100, min_length=30, do_sample=False)
-        return response[0]['summary_text']
+        result = summarizer(prompt, max_length=100, min_length=30, do_sample=False)
+        return result[0]['summary_text']
     except:
         return ""
 
 # ------------------- ฟังก์ชันสรุป + แปล + วิเคราะห์ผลกระทบ -------------------
 def summarize_and_translate(title, full_text, link=None):
-    # ถ้าเนื้อหาน้อยเกินไป ให้พยายาม fetch จากเว็บใหม่
     if len(full_text.split()) < 50 and link:
         full_text = fetch_full_article_text(link)
 
-    # ถ้าไม่มีเนื้อหาเลย
     if not full_text or len(full_text.strip()) < 30:
         return title, "ไม่สามารถดึงเนื้อหาข่าวได้", ""
 
-    # จำกัดความยาว input ไม่เกิน 600 คำ
     input_words = full_text.split()
-    input_trimmed = "".join(input_words[:600])
+    input_trimmed = " ".join(input_words[:600])
 
     try:
         token_count = len(input_trimmed.split())
@@ -119,7 +117,6 @@ def summarize_and_translate(title, full_text, link=None):
     except Exception as e:
         translated = f"[แปลไม่ได้] {e}"
 
-    # วิเคราะห์ผลกระทบ
     try:
         impact_en = analyze_impact(summary_en)
         impact_th = translate_en_to_th(impact_en) if impact_en else ""
@@ -191,23 +188,22 @@ def extract_image_from_aljazeera(link):
         return None
 
 # ------------------- Flex Message -------------------
+# ------------------- Flex Message -------------------
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
         title_th, summary_th, impact_th = summarize_and_translate(item['title'], item['summary'], item.get('link'))
 
-        # แยกส่วน Country/Region และ Impact
         affected_area = ""
         impact_detail = ""
-        if "Country/Region(s):" in impact_th and "Impact:" in impact_th:
+        if "Country:" in impact_th and "Impact:" in impact_th:
             try:
-                parts = impact_th.split("Country/Region(s):", 1)[1].strip()
+                parts = impact_th.split("Country:", 1)[1].strip()
                 affected_area, impact_detail = parts.split("Impact:", 1)
             except:
                 affected_area = ""
                 impact_detail = impact_th.strip()
         else:
-            affected_area = ""
             impact_detail = impact_th.strip()
 
         bubble_contents = [
@@ -217,7 +213,7 @@ def create_flex_message(news_items):
             {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
         ]
 
-        if affected_area.strip():
+        if affected_area.strip() and affected_area.strip().lower() != "none":
             bubble_contents.append({"type": "text", "text": f"🌍 ประเทศ/ภูมิภาคที่ได้รับผลกระทบ: {affected_area.strip()}", "size": "xs", "color": "#888888", "wrap": True, "margin": "sm"})
         if impact_detail.strip():
             bubble_contents.append({"type": "text", "text": "📉 ผลกระทบที่เกิดขึ้น:", "size": "xs", "color": "#888888", "wrap": True, "margin": "xs"})
