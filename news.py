@@ -191,6 +191,15 @@ def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
         title_th, summary_th, impact_th = summarize_and_translate(item['title'], item['summary'], item.get('link'))
+
+        # แยกประเทศที่ได้รับผลกระทบกับคำอธิบายผลกระทบ หากใช้เครื่องหมาย ':' หรือ '\n'
+        if ":" in impact_th:
+            affected_area, impact_detail = impact_th.split(":", 1)
+        elif "\n" in impact_th:
+            affected_area, impact_detail = impact_th.split("\n", 1)
+        else:
+            affected_area, impact_detail = "ไม่สามารถระบุประเทศได้", impact_th
+
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -209,8 +218,9 @@ def create_flex_message(news_items):
                     {"type": "text", "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}", "size": "xs", "color": "#888888", "margin": "sm"},
                     {"type": "text", "text": f"📌 {item['category']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
                     {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
-                    {"type": "text", "text": f"🌍 ประเทศ/ภูมิภาคที่ได้รับผลกระทบ:", "size": "xs", "color": "#888888", "wrap": True, "margin": "sm"},
-                    {"type": "text", "text": impact_th.strip(), "size": "xs", "color": "#444444", "wrap": True, "margin": "xs"},
+                    {"type": "text", "text": f"🌍 ประเทศ/ภูมิภาคที่ได้รับผลกระทบ: {affected_area.strip()}", "size": "xs", "color": "#888888", "wrap": True, "margin": "sm"},
+                    {"type": "text", "text": "📉 ผลกระทบที่เกิดขึ้น:", "size": "xs", "color": "#888888", "wrap": True, "margin": "xs"},
+                    {"type": "text", "text": impact_detail.strip(), "size": "xs", "color": "#444444", "wrap": True, "margin": "xs"},
                     {"type": "text", "text": summary_th.strip(), "size": "sm", "wrap": True, "margin": "md"}
                 ]
             },
