@@ -209,8 +209,9 @@ def create_flex_message(news_items):
                     {"type": "text", "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}", "size": "xs", "color": "#888888", "margin": "sm"},
                     {"type": "text", "text": f"📌 {item['category']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
                     {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
-                    {"type": "text", "text": summary_th.strip(), "size": "sm", "wrap": True, "margin": "md"},
-                    {"type": "text", "text": f"🌍 ผลกระทบ: {impact_th}", "size": "xs", "color": "#888888", "wrap": True, "margin": "sm"}
+                    {"type": "text", "text": f"🌍 ประเทศ/ภูมิภาคที่ได้รับผลกระทบ:", "size": "xs", "color": "#888888", "wrap": True, "margin": "sm"},
+                    {"type": "text", "text": impact_th.strip(), "size": "xs", "color": "#444444", "wrap": True, "margin": "xs"},
+                    {"type": "text", "text": summary_th.strip(), "size": "sm", "wrap": True, "margin": "md"}
                 ]
             },
             "footer": {
@@ -238,6 +239,7 @@ def create_flex_message(news_items):
             "contents": bubbles[i:i+10]
         }
     } for i in range(0, len(bubbles), 10)]
+
 
 # ------------------- ส่งเข้า LINE -------------------
 def send_text_and_flex_to_line(header_text, flex_messages):
