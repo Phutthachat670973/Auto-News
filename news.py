@@ -181,24 +181,70 @@ def create_flex_message(news_items):
             "body": {
                 "type": "box",
                 "layout": "vertical",
+                "spacing": "md",  # เพิ่ม spacing ระหว่างกล่อง
                 "contents": [
-                    {"type": "text", "text": title_th, "weight": "bold", "size": "md", "wrap": True},
-                    {"type": "text", "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}", "size": "xs", "color": "#888888", "margin": "sm"},
-                    {"type": "text", "text": f"📌 {item['category']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
-                    {"type": "text", "text": f"📣 {item['source']}", "size": "xs", "color": "#AAAAAA", "margin": "xs"},
-                    {"type": "text", "text": summary_th.strip(), "size": "sm", "wrap": True, "margin": "md"}
+                    {
+                        "type": "text",
+                        "text": title_th,
+                        "weight": "bold",
+                        "size": "md",
+                        "wrap": True,
+                        "maxLines": 2,   # จำกัดไม่เกิน 2 บรรทัด ถ้าอยากให้สั้น
+                        "margin": "none"
+                    },
+                    {
+                        "type": "box",
+                        "layout": "horizontal",
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}",
+                                "size": "xs",
+                                "color": "#888888",
+                                "flex": 2
+                            },
+                            {
+                                "type": "text",
+                                "text": f"📌 {item['category']}",
+                                "size": "xs",
+                                "color": "#AAAAAA",
+                                "align": "end",
+                                "flex": 3
+                            }
+                        ]
+                    },
+                    {
+                        "type": "text",
+                        "text": f"📣 {item['source']}",
+                        "size": "xs",
+                        "color": "#AAAAAA",
+                        "margin": "sm"
+                    },
+                    {
+                        "type": "text",
+                        "text": summary_th.strip(),
+                        "size": "sm",
+                        "wrap": True,
+                        "margin": "md",
+                        "maxLines": 8  # จำกัดบรรทัด
+                    }
                 ]
             },
             "footer": {
                 "type": "box",
                 "layout": "vertical",
-                "spacing": "sm",
-                "contents": [{
-                    "type": "button",
-                    "style": "link",
-                    "height": "sm",
-                    "action": {"type": "uri", "label": "อ่านต่อ", "uri": item['link']}
-                }]
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "link",
+                        "height": "sm",
+                        "action": {
+                            "type": "uri",
+                            "label": "อ่านต่อ",
+                            "uri": item['link']
+                        }
+                    }
+                ]
             }
         }
         bubbles.append(bubble)
@@ -211,6 +257,7 @@ def create_flex_message(news_items):
             "contents": bubbles[i:i+10]
         }
     } for i in range(0, len(bubbles), 10)]
+
 
 # ------------------- ส่งเข้า LINE -------------------
 def send_text_and_flex_to_line(header_text, flex_messages):
