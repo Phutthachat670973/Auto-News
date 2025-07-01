@@ -10,7 +10,6 @@ import os
 from dateutil import parser as dateutil_parser
 from pathlib import Path
 from newspaper import Article
-from collections import defaultdict
 
 # ------------------- ตั้งค่าโมเดล -------------------
 summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
@@ -88,8 +87,8 @@ def summarize_and_translate(title, full_text, link=None):
 
     try:
         token_count = len(input_trimmed.split())
-        max_len = max(40, min(220, int(token_count * 0.5)))  # ปรับ max_length
-        result = summarizer(input_trimmed, max_length=max_len, min_length=60, do_sample=False)
+        max_len = max(40, min(200, int(token_count * 0.5)))
+        result = summarizer(input_trimmed, max_length=max_len, min_length=40, do_sample=False)
         summary_en = result[0]['summary_text']
     except Exception as e:
         print(f"❌ Summary Error: {e}")
@@ -107,6 +106,7 @@ def summarize_and_translate(title, full_text, link=None):
         summary_th = f"[สรุปแปลไม่ได้] {e}"
 
     return title_th.strip(), summary_th.strip()
+
 
 # ------------------- จัดหมวดหมู่ -------------------
 candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
@@ -181,7 +181,7 @@ def create_flex_message(news_items):
             "body": {
                 "type": "box",
                 "layout": "vertical",
-                "spacing": "md",
+                "spacing": "md",  # เพิ่ม spacing ระหว่างกล่อง
                 "contents": [
                     {
                         "type": "text",
@@ -225,7 +225,7 @@ def create_flex_message(news_items):
                         "size": "sm",
                         "wrap": True,
                         "margin": "md",
-                        "maxLines": 8
+                        "maxLines": 8  # จำกัดบรรทัด
                     }
                 ]
             },
@@ -248,7 +248,6 @@ def create_flex_message(news_items):
         }
         bubbles.append(bubble)
 
-    # Carousel: 10 ข่าว ต่อ 1 Flex
     return [{
         "type": "flex",
         "altText": f"ข่าวประจำวันที่ {now_thai.strftime('%d/%m/%Y')}",
@@ -258,6 +257,7 @@ def create_flex_message(news_items):
         }
     } for i in range(0, len(bubbles), 10)]
 
+
 # ------------------- ส่งเข้า LINE -------------------
 def send_text_and_flex_to_line(header_text, flex_messages):
     url = 'https://api.line.me/v2/bot/message/broadcast'
@@ -265,9 +265,7 @@ def send_text_and_flex_to_line(header_text, flex_messages):
         'Content-Type': 'application/json',
         'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}'
     }
-    # ส่งข้อความหัวข้อก่อน
     requests.post(url, headers=headers, json={"messages": [{"type": "text", "text": header_text}]})
-    # ส่ง Flex ทีละชุด
     for msg in flex_messages:
         requests.post(url, headers=headers, json={"messages": [msg]})
 
@@ -317,22 +315,10 @@ for item in fetch_aljazeera_articles():
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [n for n in all_news if n["category"] in allowed_categories]
 
-# --- แยกข่าวตามหมวดและส่งเข้าไลน์ ---
+# --- ส่งเข้า LINE ---
 if all_news:
-    grouped_news = defaultdict(list)
-    for n in all_news:
-        grouped_news[n["category"]].append(n)
-
-    category_order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
-    for cat in category_order:
-        news_in_cat = grouped_news.get(cat, [])
-        if not news_in_cat:
-            continue
-        # จำกัด 5 ข่าวล่าสุดของแต่ละหมวด
-        top_news = sorted(news_in_cat, key=lambda x: x['published'], reverse=True)[:5]
-        flex_msgs = create_flex_message(top_news)
-        header_text = f"🗞️ ข่าว {cat} ประจำวันที่ {now_thai.strftime('%d/%m/%Y')}"
-        send_text_and_flex_to_line(header_text, flex_msgs)
-
-    # --- บันทึกข่าวที่ส่งแล้ว ---
+    order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
+    all_news.sort(key=lambda x: order.index(x["category"]) if x["category"] in order else len(order))
+    flex_msgs = create_flex_message(all_news)
+    send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_msgs)
     today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
