@@ -189,7 +189,6 @@ def create_flex_message(news_items):
                         "weight": "bold",
                         "size": "md",
                         "wrap": True,
-                        "maxLines": 2,   # จำกัดไม่เกิน 2 บรรทัด ถ้าอยากให้สั้น
                         "margin": "none"
                     },
                     {
