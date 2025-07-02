@@ -12,8 +12,8 @@ from pathlib import Path
 from newspaper import Article
 
 # ------------------- ตั้งค่าโมเดล -------------------
-summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")  # เล็กลง
+classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")  # หรือจะเปลี่ยนเป็น deberta-v3-base ก็ได้
 
 # ------------------- ตั้งค่า API -------------------
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
@@ -73,14 +73,32 @@ def fetch_full_article_text(url):
         print(f"⚠️ ไม่สามารถดึงเนื้อหา: {url} | {e}")
         return ""
 
-# ------------------- สรุป + แปล -------------------
+# ------------------- วิเคราะห์ผลกระทบต่อประเทศไทย -------------------
+def impact_on_thailand(summary_en):
+    prompt = (
+        f"Analyze and answer in English: What is the potential impact of the following news on Thailand? "
+        f"If there is no direct impact, reply: 'No direct impact on Thailand.'\n\n"
+        f"News: {summary_en}"
+    )
+    try:
+        result = summarizer(prompt, max_length=80, min_length=15, do_sample=False)
+        impact_en = result[0]['summary_text']
+    except Exception as e:
+        impact_en = "No direct impact on Thailand."
+    try:
+        impact_th = translate_en_to_th(impact_en)
+    except Exception as e:
+        impact_th = "[แปลผลกระทบไม่ได้]"
+    return impact_th
+
+# ------------------- สรุป + แปล + วิเคราะห์ผลกระทบ -------------------
 def summarize_and_translate(title, full_text, link=None):
     # ถ้าเนื้อหาน้อยเกินไป ให้พยายาม fetch จากเว็บใหม่
     if len(full_text.split()) < 50 and link:
         full_text = fetch_full_article_text(link)
 
     if not full_text or len(full_text.strip()) < 30:
-        return title, "ไม่สามารถดึงเนื้อหาข่าวได้"
+        return title, "ไม่สามารถดึงเนื้อหาข่าวได้", "ไม่สามารถวิเคราะห์ผลกระทบได้"
 
     input_words = full_text.split()
     input_trimmed = " ".join(input_words[:600])
@@ -105,8 +123,13 @@ def summarize_and_translate(title, full_text, link=None):
     except Exception as e:
         summary_th = f"[สรุปแปลไม่ได้] {e}"
 
-    return title_th.strip(), summary_th.strip()
+    # วิเคราะห์ผลกระทบต่อไทย
+    try:
+        impact_th = impact_on_thailand(summary_en)
+    except Exception as e:
+        impact_th = "ไม่สามารถวิเคราะห์ผลกระทบได้"
 
+    return title_th.strip(), summary_th.strip(), impact_th.strip()
 
 # ------------------- จัดหมวดหมู่ -------------------
 candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
@@ -167,7 +190,7 @@ def extract_image_from_aljazeera(link):
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
-        title_th, summary_th = summarize_and_translate(item['title'], item['summary'], item['link'])
+        title_th, summary_th, impact_th = summarize_and_translate(item['title'], item['summary'], item['link'])
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -181,7 +204,7 @@ def create_flex_message(news_items):
             "body": {
                 "type": "box",
                 "layout": "vertical",
-                "spacing": "md",  # เพิ่ม spacing ระหว่างกล่อง
+                "spacing": "md",
                 "contents": [
                     {
                         "type": "text",
@@ -225,7 +248,15 @@ def create_flex_message(news_items):
                         "size": "sm",
                         "wrap": True,
                         "margin": "md",
-                        "maxLines": 8  # จำกัดบรรทัด
+                        "maxLines": 8
+                    },
+                    {
+                        "type": "text",
+                        "text": f"🇹🇭 ผลกระทบต่อไทย: {impact_th}",
+                        "size": "xs",
+                        "color": "#f13e5c",
+                        "margin": "md",
+                        "wrap": True
                     }
                 ]
             },
@@ -257,7 +288,6 @@ def create_flex_message(news_items):
         }
     } for i in range(0, len(bubbles), 10)]
 
-
 # ------------------- ส่งเข้า LINE -------------------
 def send_text_and_flex_to_line(header_text, flex_messages):
     url = 'https://api.line.me/v2/bot/message/broadcast'
@@ -286,7 +316,7 @@ all_news = []
 for source, info in news_sources.items():
     if info["type"] == "rss":
         feed = feedparser.parse(info["url"])
-        for entry in feed.entries:
+        for entry in feed.entries[:5]:  # ลดข่าวต่อรอบ (เช่น 5 ข่าว)
             pub_date = dateutil_parser.parse(entry.published) if hasattr(entry, "published") else now_thai
             local_date = pub_date.astimezone(bangkok_tz).date()
             if entry.link in sent_links or local_date not in [today_thai, yesterday_thai]:
