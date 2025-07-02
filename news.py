@@ -11,7 +11,7 @@ from newspaper import Article
 # ----------------- LOAD PIPELINES -----------------
 summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-impact_llm = pipeline("text-generation", model="microsoft/phi-3-mini-4k-instruct", max_new_tokens=120)
+impact_llm = pipeline("text-generation", model="microsoft/phi-2", max_new_tokens=120)  # LLM ขนาดเล็ก
 
 # ----------------- CONFIG -----------------
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "YOUR_DEEPL_API_KEY"
@@ -66,9 +66,9 @@ def summarize_en(text):
 
 def impact_analyzer_llm(summary_th):
     prompt = (
-        "จงวิเคราะห์ข่าวต่อไปนี้และสรุปเป็นภาษาไทย: ข่าวนี้มีผลกระทบต่อประเทศไทยหรือไม่ ทั้งทางตรงหรืออ้อม "
-        "ถ้าเป็นข่าวระดับโลกที่อาจกระทบเศรษฐกิจหรือพลังงาน ให้ชี้แจงด้วย ถ้าไม่มีผลกระทบเลยให้ตอบว่า 'ไม่มีผลกระทบโดยตรง'\n\n"
-        f"ข่าว: {summary_th}\n\n"
+        "ข่าวนี้มีผลกระทบต่อประเทศไทยหรือไม่ ทั้งทางตรงหรือทางอ้อม? "
+        "ถ้าเป็นข่าวที่อาจกระทบเศรษฐกิจ พลังงาน หรือเสถียรภาพโลก ให้ชี้แจงด้วย ถ้าไม่มีผลกระทบ ให้ตอบว่า 'ไม่มีผลกระทบโดยตรง'\n"
+        f"ข่าว: {summary_th}\n"
         "ผลกระทบต่อประเทศไทย:"
     )
     result = impact_llm(prompt)[0]['generated_text']
