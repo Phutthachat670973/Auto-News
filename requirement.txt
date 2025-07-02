@@ -7,3 +7,4 @@ python-dateutil
 beautifulsoup4
 requests
 pytz
+lxml_html_clean
