@@ -1,4 +1,3 @@
-# ------------------- ส่วนนำเข้า Library -------------------
 import feedparser
 from datetime import datetime, timedelta
 import pytz
@@ -9,29 +8,35 @@ import os
 from dateutil import parser as dateutil_parser
 from newspaper import Article
 
-# ------------------- ตั้งค่าโมเดล -------------------
+# ----------- SETUP PIPELINE -----------
 summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
-# ------------------- ตั้งค่า API -------------------
+# เลือกแบบ rule-based impact หรือถ้าใช้ LLM ให้เปลี่ยนตรงนี้
+def impact_analyzer(summary_en, summary_th):
+    keywords_en = ["Thailand", "Thai", "Bangkok", "ASEAN", "tourism", "export", "energy", "oil", "rice", "rubber", "manufacturing", "supply chain"]
+    keywords_th = ["ไทย", "อาเซียน", "ส่งออก", "ท่องเที่ยว", "น้ำมัน", "ข้าว", "ยางพารา", "อุตสาหกรรม"]
+    if any(kw.lower() in summary_en.lower() for kw in keywords_en) or any(kw in summary_th for kw in keywords_th):
+        return "ข่าวนี้อาจมีผลกระทบกับประเทศไทยในด้านเศรษฐกิจหรือความมั่นคง กรุณาติดตามอย่างใกล้ชิด"
+    else:
+        return "ไม่มีผลกระทบโดยตรงต่อประเทศไทย"
+
+# ----------- CONFIG -----------
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN.")
 
-# ------------------- ตั้งค่า Timezone -------------------
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 now_thai = datetime.now(bangkok_tz)
 today_thai = now_thai.date()
 yesterday_thai = today_thai - timedelta(days=1)
 
-# ------------------- แหล่งข่าว -------------------
 news_sources = {
     "BBC Economy": {"type": "rss", "url": "https://feeds.bbci.co.uk/news/rss.xml"},
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
 
-# ------------------- แปลภาษา -------------------
 def translate_en_to_th(text):
     url = "https://api-free.deepl.com/v2/translate"
     params = {
@@ -46,7 +51,6 @@ def translate_en_to_th(text):
     except Exception as e:
         return f"[แปลไม่ได้] {e}"
 
-# ------------------- ดึงเนื้อหาข่าวจากหน้าเว็บ -------------------
 def fetch_full_article_text(url):
     try:
         article = Article(url)
@@ -57,62 +61,30 @@ def fetch_full_article_text(url):
         print(f"⚠️ ไม่สามารถดึงเนื้อหา: {url} | {e}")
         return ""
 
-# ------------------- วิเคราะห์ผลกระทบต่อประเทศไทย -------------------
-def impact_on_thailand(summary_en):
-    prompt = (
-        f"Analyze and answer in English: What is the potential impact of the following news on Thailand? "
-        f"If there is no direct impact, reply: 'No direct impact on Thailand.'\n\n"
-        f"News: {summary_en}"
-    )
+def summarize_en(text):
     try:
-        result = summarizer(prompt, max_length=80, min_length=15, do_sample=False)
-        impact_en = result[0]['summary_text']
-    except Exception as e:
-        impact_en = "No direct impact on Thailand."
-    try:
-        impact_th = translate_en_to_th(impact_en)
-    except Exception as e:
-        impact_th = "[แปลผลกระทบไม่ได้]"
-    return impact_th
-
-# ------------------- สรุป + แปล + วิเคราะห์ผลกระทบ -------------------
-def summarize_and_translate(title, full_text, link=None):
-    if len(full_text.split()) < 50 and link:
-        full_text = fetch_full_article_text(link)
-
-    if not full_text or len(full_text.strip()) < 30:
-        return title, "ไม่สามารถดึงเนื้อหาข่าวได้", "ไม่สามารถวิเคราะห์ผลกระทบได้"
-
-    input_words = full_text.split()
-    input_trimmed = " ".join(input_words[:600])
-
-    try:
+        input_words = text.split()
+        input_trimmed = " ".join(input_words[:600])
         token_count = len(input_trimmed.split())
         max_len = max(40, min(200, int(token_count * 0.5)))
         result = summarizer(input_trimmed, max_length=max_len, min_length=40, do_sample=False)
         summary_en = result[0]['summary_text']
+        return summary_en
     except Exception as e:
         print(f"❌ Summary Error: {e}")
-        summary_en = f"{title}\nเนื้อหาบทความไม่สามารถสรุปได้อัตโนมัติ โปรดคลิกลิงก์เพื่ออ่านเพิ่มเติม"
+        return ""
 
-    try:
-        title_th = translate_en_to_th(title)
-    except Exception as e:
-        title_th = f"[หัวข้อแปลไม่ได้] {e}"
-
-    try:
-        summary_th = translate_en_to_th(summary_en)
-    except Exception as e:
-        summary_th = f"[สรุปแปลไม่ได้] {e}"
-
-    try:
-        impact_th = impact_on_thailand(summary_en)
-    except Exception as e:
-        impact_th = "ไม่สามารถวิเคราะห์ผลกระทบได้"
-
+def summarize_and_translate(title, full_text, link=None):
+    if len(full_text.split()) < 50 and link:
+        full_text = fetch_full_article_text(link)
+    if not full_text or len(full_text.strip()) < 30:
+        return title, "ไม่สามารถดึงเนื้อหาข่าวได้", "ไม่สามารถวิเคราะห์ผลกระทบได้"
+    summary_en = summarize_en(full_text)
+    title_th = translate_en_to_th(title)
+    summary_th = translate_en_to_th(summary_en)
+    impact_th = impact_analyzer(summary_en, summary_th)
     return title_th.strip(), summary_th.strip(), impact_th.strip()
 
-# ------------------- จัดหมวดหมู่ -------------------
 candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
 def classify_category(entry):
     try:
@@ -121,7 +93,6 @@ def classify_category(entry):
     except:
         return "Other"
 
-# ------------------- ดึงภาพข่าว -------------------
 def extract_image(entry):
     if hasattr(entry, 'media_content'):
         for media in entry.media_content:
@@ -135,7 +106,6 @@ def extract_image(entry):
     except:
         return None
 
-# ------------------- ดึงข่าวจาก Al Jazeera -------------------
 def fetch_aljazeera_articles():
     articles = []
     try:
@@ -167,7 +137,6 @@ def extract_image_from_aljazeera(link):
     except:
         return None
 
-# ------------------- Flex Message -------------------
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
@@ -269,7 +238,6 @@ def create_flex_message(news_items):
         }
     } for i in range(0, len(bubbles), 10)]
 
-# ------------------- ส่งเข้า LINE -------------------
 def send_text_and_flex_to_line(header_text, flex_messages):
     url = 'https://api.line.me/v2/bot/message/broadcast'
     headers = {
@@ -280,19 +248,16 @@ def send_text_and_flex_to_line(header_text, flex_messages):
     for msg in flex_messages:
         requests.post(url, headers=headers, json={"messages": [msg]})
 
-# ------------------- เริ่มต้น (main) -------------------
-sent_links = set()  # <--- ใช้เฉพาะในรอบนี้เท่านั้น (ไม่มีไฟล์)
-
+# ------------------ MAIN ------------------
+sent_links = set()
 all_news = []
 
-# --- ข่าวจาก RSS ---
 for source, info in news_sources.items():
     if info["type"] == "rss":
         feed = feedparser.parse(info["url"])
-        for entry in feed.entries[:5]:  # หรือมากกว่านี้ก็ได้
+        for entry in feed.entries[:5]:
             pub_date = dateutil_parser.parse(entry.published) if hasattr(entry, "published") else now_thai
             local_date = pub_date.astimezone(bangkok_tz).date()
-            # ตรวจจับซ้ำใน session เดียว
             if entry.link in sent_links or local_date not in [today_thai, yesterday_thai]:
                 continue
             full_text = fetch_full_article_text(entry.link)
@@ -309,17 +274,14 @@ for source, info in news_sources.items():
             })
             sent_links.add(entry.link)
 
-# --- ดึงข่าวจาก Al Jazeera ---
 for item in fetch_aljazeera_articles():
     if item["link"] not in sent_links:
         all_news.append(item)
         sent_links.add(item["link"])
 
-# --- กรองหมวดหมู่ที่ต้องการ ---
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [n for n in all_news if n["category"] in allowed_categories]
 
-# --- ส่งเข้า LINE ---
 if all_news:
     order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
     all_news.sort(key=lambda x: order.index(x["category"]) if x["category"] in order else len(order))
