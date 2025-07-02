@@ -8,14 +8,35 @@ import os
 from dateutil import parser as dateutil_parser
 from newspaper import Article
 
-# ----------------- LOAD PIPELINES -----------------
+# ----------- SETUP PIPELINE -----------
 summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
 classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-impact_llm = pipeline("text-generation", model="microsoft/phi-2", max_new_tokens=120)  # LLM ขนาดเล็ก
 
-# ----------------- CONFIG -----------------
-DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "YOUR_DEEPL_API_KEY"
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or "YOUR_LINE_ACCESS_TOKEN"
+# ----------- RULE-BASED IMPACT ANALYZER -----------
+def impact_analyzer(summary_en, summary_th, category, source):
+    keywords_en = [
+        "Thailand", "Thai", "Bangkok", "ASEAN", "tourism", "export", "energy", "oil",
+        "rice", "rubber", "manufacturing", "supply chain"
+    ]
+    keywords_th = [
+        "ไทย", "อาเซียน", "ส่งออก", "ท่องเที่ยว", "น้ำมัน",
+        "ข้าว", "ยางพารา", "อุตสาหกรรม"
+    ]
+
+    if any(kw.lower() in summary_en.lower() for kw in keywords_en) or \
+       any(kw in summary_th for kw in keywords_th):
+        return "ข่าวนี้อาจมีผลกระทบกับประเทศไทยในด้านเศรษฐกิจหรือความมั่นคง กรุณาติดตามอย่างใกล้ชิด"
+    elif category in {"Middle East", "Economy", "Energy", "Politics"} or source in ["BBC Economy", "CNBC"]:
+        return "ข่าวนี้แม้จะไม่ได้กล่าวถึงประเทศไทยโดยตรง แต่เนื้อหาอาจมีผลกระทบทางอ้อมต่อเศรษฐกิจโลก ราคาน้ำมัน หรือเสถียรภาพระหว่างประเทศ ซึ่งประเทศไทยควรติดตามสถานการณ์ใกล้ชิด"
+    else:
+        return "ไม่มีผลกระทบโดยตรงต่อประเทศไทย"
+
+# ----------- CONFIG -----------
+DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+if not LINE_CHANNEL_ACCESS_TOKEN:
+    raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN.")
+
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 now_thai = datetime.now(bangkok_tz)
 today_thai = now_thai.date()
@@ -26,7 +47,6 @@ news_sources = {
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
 
-# ----------------- HELPER FUNCTIONS -----------------
 def translate_en_to_th(text):
     url = "https://api-free.deepl.com/v2/translate"
     params = {
@@ -64,20 +84,7 @@ def summarize_en(text):
         print(f"❌ Summary Error: {e}")
         return ""
 
-def impact_analyzer_llm(summary_th):
-    prompt = (
-        "ข่าวนี้มีผลกระทบต่อประเทศไทยหรือไม่ ทั้งทางตรงหรือทางอ้อม? "
-        "ถ้าเป็นข่าวที่อาจกระทบเศรษฐกิจ พลังงาน หรือเสถียรภาพโลก ให้ชี้แจงด้วย ถ้าไม่มีผลกระทบ ให้ตอบว่า 'ไม่มีผลกระทบโดยตรง'\n"
-        f"ข่าว: {summary_th}\n"
-        "ผลกระทบต่อประเทศไทย:"
-    )
-    result = impact_llm(prompt)[0]['generated_text']
-    answer = result.split("ผลกระทบต่อประเทศไทย:")[-1].strip()
-    if answer == "" or answer.startswith("ข่าว:"):
-        answer = "ไม่สามารถวิเคราะห์ผลกระทบได้"
-    return answer
-
-def summarize_and_translate(title, full_text, link=None):
+def summarize_and_translate(title, full_text, link=None, category=None, source=None):
     if len(full_text.split()) < 50 and link:
         full_text = fetch_full_article_text(link)
     if not full_text or len(full_text.strip()) < 30:
@@ -85,7 +92,7 @@ def summarize_and_translate(title, full_text, link=None):
     summary_en = summarize_en(full_text)
     title_th = translate_en_to_th(title)
     summary_th = translate_en_to_th(summary_en)
-    impact_th = impact_analyzer_llm(summary_th)
+    impact_th = impact_analyzer(summary_en, summary_th, category, source)
     return title_th.strip(), summary_th.strip(), impact_th.strip()
 
 candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
@@ -143,7 +150,13 @@ def extract_image_from_aljazeera(link):
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
-        title_th, summary_th, impact_th = summarize_and_translate(item['title'], item['summary'], item['link'])
+        title_th, summary_th, impact_th = summarize_and_translate(
+            item['title'],
+            item['summary'],
+            item['link'],
+            item['category'],
+            item['source']
+        )
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -250,7 +263,7 @@ def send_text_and_flex_to_line(header_text, flex_messages):
     for msg in flex_messages:
         requests.post(url, headers=headers, json={"messages": [msg]})
 
-# ------------------ MAIN WORKFLOW ------------------
+# ------------------ MAIN ------------------
 sent_links = set()
 all_news = []
 
@@ -265,6 +278,8 @@ for source, info in news_sources.items():
             full_text = fetch_full_article_text(entry.link)
             if len(full_text.split()) < 50:
                 continue
+            # จัดหมวดหมู่ล่วงหน้า
+            category = classify_category(entry)
             all_news.append({
                 "source": source,
                 "title": entry.title,
@@ -272,7 +287,7 @@ for source, info in news_sources.items():
                 "link": entry.link,
                 "image": extract_image(entry),
                 "published": pub_date.astimezone(bangkok_tz),
-                "category": classify_category(entry)
+                "category": category
             })
             sent_links.add(entry.link)
 
