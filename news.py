@@ -4,16 +4,14 @@ from datetime import datetime, timedelta
 import pytz
 import requests
 from transformers import pipeline
-import re
 from bs4 import BeautifulSoup
 import os
 from dateutil import parser as dateutil_parser
-from pathlib import Path
 from newspaper import Article
 
 # ------------------- ตั้งค่าโมเดล -------------------
-summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")  # เล็กลง
-classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")  # หรือจะเปลี่ยนเป็น deberta-v3-base ก็ได้
+summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
+classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
 # ------------------- ตั้งค่า API -------------------
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
@@ -26,20 +24,6 @@ bangkok_tz = pytz.timezone("Asia/Bangkok")
 now_thai = datetime.now(bangkok_tz)
 today_thai = now_thai.date()
 yesterday_thai = today_thai - timedelta(days=1)
-
-# ------------------- ลบไฟล์ข่าวเก่า -------------------
-def cleanup_old_sent_links(folder="sent_links", keep_days=5):
-    cutoff_date = today_thai - timedelta(days=keep_days)
-    if not os.path.exists(folder):
-        return
-    for filename in os.listdir(folder):
-        if filename.endswith(".txt"):
-            try:
-                file_date = datetime.strptime(filename.replace(".txt", ""), "%Y-%m-%d").date()
-                if file_date < cutoff_date:
-                    os.remove(os.path.join(folder, filename))
-            except:
-                continue
 
 # ------------------- แหล่งข่าว -------------------
 news_sources = {
@@ -93,7 +77,6 @@ def impact_on_thailand(summary_en):
 
 # ------------------- สรุป + แปล + วิเคราะห์ผลกระทบ -------------------
 def summarize_and_translate(title, full_text, link=None):
-    # ถ้าเนื้อหาน้อยเกินไป ให้พยายาม fetch จากเว็บใหม่
     if len(full_text.split()) < 50 and link:
         full_text = fetch_full_article_text(link)
 
@@ -112,7 +95,6 @@ def summarize_and_translate(title, full_text, link=None):
         print(f"❌ Summary Error: {e}")
         summary_en = f"{title}\nเนื้อหาบทความไม่สามารถสรุปได้อัตโนมัติ โปรดคลิกลิงก์เพื่ออ่านเพิ่มเติม"
 
-    # แปล title และ summary แยกกัน
     try:
         title_th = translate_en_to_th(title)
     except Exception as e:
@@ -123,7 +105,6 @@ def summarize_and_translate(title, full_text, link=None):
     except Exception as e:
         summary_th = f"[สรุปแปลไม่ได้] {e}"
 
-    # วิเคราะห์ผลกระทบต่อไทย
     try:
         impact_th = impact_on_thailand(summary_en)
     except Exception as e:
@@ -299,16 +280,8 @@ def send_text_and_flex_to_line(header_text, flex_messages):
     for msg in flex_messages:
         requests.post(url, headers=headers, json={"messages": [msg]})
 
-# ------------------- เริ่มต้น -------------------
-cleanup_old_sent_links()
-sent_dir = Path("sent_links")
-sent_dir.mkdir(exist_ok=True)
-today_file = sent_dir / f"{today_thai}.txt"
-yesterday_file = sent_dir / f"{yesterday_thai}.txt"
-sent_links = set()
-for f in [today_file, yesterday_file]:
-    if f.exists():
-        sent_links.update(f.read_text(encoding="utf-8").splitlines())
+# ------------------- เริ่มต้น (main) -------------------
+sent_links = set()  # <--- ใช้เฉพาะในรอบนี้เท่านั้น (ไม่มีไฟล์)
 
 all_news = []
 
@@ -316,9 +289,10 @@ all_news = []
 for source, info in news_sources.items():
     if info["type"] == "rss":
         feed = feedparser.parse(info["url"])
-        for entry in feed.entries[:5]:  # ลดข่าวต่อรอบ (เช่น 5 ข่าว)
+        for entry in feed.entries[:5]:  # หรือมากกว่านี้ก็ได้
             pub_date = dateutil_parser.parse(entry.published) if hasattr(entry, "published") else now_thai
             local_date = pub_date.astimezone(bangkok_tz).date()
+            # ตรวจจับซ้ำใน session เดียว
             if entry.link in sent_links or local_date not in [today_thai, yesterday_thai]:
                 continue
             full_text = fetch_full_article_text(entry.link)
@@ -335,7 +309,7 @@ for source, info in news_sources.items():
             })
             sent_links.add(entry.link)
 
-# --- ดึงข่าวจาก Al Jazeera และบันทึกลิงก์ ---
+# --- ดึงข่าวจาก Al Jazeera ---
 for item in fetch_aljazeera_articles():
     if item["link"] not in sent_links:
         all_news.append(item)
@@ -351,4 +325,3 @@ if all_news:
     all_news.sort(key=lambda x: order.index(x["category"]) if x["category"] in order else len(order))
     flex_msgs = create_flex_message(all_news)
     send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_msgs)
-    today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
