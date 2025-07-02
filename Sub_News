@@ -15,7 +15,7 @@ classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnl
 # ----------- RULE-BASED IMPACT ANALYZER -----------
 def impact_analyzer(summary_en, summary_th, category, source):
     keywords_en = [
-        "Thailand", "Thai", "Bangkok", "ASEAN", "tourism", "export", "energy", "oil",
+        "Thailand", "Thai", "Bangkok", "ASEAN", "export", "tourism", "energy", "oil",
         "rice", "rubber", "manufacturing", "supply chain"
     ]
     keywords_th = [
@@ -23,13 +23,20 @@ def impact_analyzer(summary_en, summary_th, category, source):
         "ข้าว", "ยางพารา", "อุตสาหกรรม"
     ]
 
+    # 1. ผลกระทบโดยตรง
     if any(kw.lower() in summary_en.lower() for kw in keywords_en) or \
        any(kw in summary_th for kw in keywords_th):
-        return "ข่าวนี้อาจมีผลกระทบกับประเทศไทยในด้านเศรษฐกิจหรือความมั่นคง กรุณาติดตามอย่างใกล้ชิด"
+        return "ข่าวนี้มีผลกระทบโดยตรงต่อประเทศไทย เช่น ภาคเศรษฐกิจ ความมั่นคง หรือประชาชน กรุณาติดตามข่าวนี้อย่างใกล้ชิด"
+    # 2. ผลกระทบทางอ้อม (ข่าวกลุ่มเสี่ยง)
     elif category in {"Middle East", "Economy", "Energy", "Politics"} or source in ["BBC Economy", "CNBC"]:
-        return "ข่าวนี้แม้จะไม่ได้กล่าวถึงประเทศไทยโดยตรง แต่เนื้อหาอาจมีผลกระทบทางอ้อมต่อเศรษฐกิจโลก ราคาน้ำมัน หรือเสถียรภาพระหว่างประเทศ ซึ่งประเทศไทยควรติดตามสถานการณ์ใกล้ชิด"
+        return (
+            "ข่าวนี้ไม่มีผลกระทบโดยตรงกับประเทศไทย แต่เนื้อหาเกี่ยวข้องกับสถานการณ์โลก "
+            "เช่น เศรษฐกิจ การเมือง หรือพลังงาน ซึ่งอาจส่งผลต่อไทยในทางอ้อม "
+            "เช่น ราคาน้ำมัน การค้าระหว่างประเทศ หรือความมั่นคง โปรดติดตามสถานการณ์อย่างใกล้ชิด"
+        )
+    # 3. ไม่มีผลกระทบเลย
     else:
-        return "ไม่มีผลกระทบโดยตรงต่อประเทศไทย"
+        return "ข่าวนี้ไม่มีผลกระทบต่อประเทศไทยเลย ไม่ว่าจะโดยตรงหรือโดยอ้อม"
 
 # ----------- CONFIG -----------
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
