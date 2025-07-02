@@ -1,9 +1,9 @@
 transformers
+accelerate
 torch
 feedparser
-pytz
-requests
-beautifulsoup4
-python-dateutil
 newspaper3k
-lxml_html_clean
+python-dateutil
+beautifulsoup4
+requests
+pytz
