@@ -5,6 +5,7 @@ import requests
 from transformers import pipeline
 from bs4 import BeautifulSoup
 import os
+import json
 from dateutil import parser as dateutil_parser
 from newspaper import Article
 
@@ -22,19 +23,15 @@ def impact_analyzer(summary_en, summary_th, category, source):
         "ไทย", "อาเซียน", "ส่งออก", "ท่องเที่ยว", "น้ำมัน",
         "ข้าว", "ยางพารา", "อุตสาหกรรม"
     ]
-
-    # 1. ผลกระทบโดยตรง
     if any(kw.lower() in summary_en.lower() for kw in keywords_en) or \
        any(kw in summary_th for kw in keywords_th):
         return "ข่าวนี้มีผลกระทบโดยตรงต่อประเทศไทย เช่น ภาคเศรษฐกิจ ความมั่นคง หรือประชาชน กรุณาติดตามข่าวนี้อย่างใกล้ชิด"
-    # 2. ผลกระทบทางอ้อม (ข่าวกลุ่มเสี่ยง)
     elif category in {"Middle East", "Economy", "Energy", "Politics"} or source in ["BBC Economy", "CNBC"]:
         return (
             "ข่าวนี้ไม่มีผลกระทบโดยตรงกับประเทศไทย แต่เนื้อหาเกี่ยวข้องกับสถานการณ์โลก "
             "เช่น เศรษฐกิจ การเมือง หรือพลังงาน ซึ่งอาจส่งผลต่อไทยในทางอ้อม "
             "เช่น ราคาน้ำมัน การค้าระหว่างประเทศ หรือความมั่นคง โปรดติดตามสถานการณ์อย่างใกล้ชิด"
         )
-    # 3. ไม่มีผลกระทบเลย
     else:
         return "ข่าวนี้ไม่มีผลกระทบต่อประเทศไทยเลย ไม่ว่าจะโดยตรงหรือโดยอ้อม"
 
@@ -53,6 +50,16 @@ news_sources = {
     "BBC Economy": {"type": "rss", "url": "https://feeds.bbci.co.uk/news/rss.xml"},
     "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 }
+
+SENT_FILE = "sent_links.json"
+def load_sent_links():
+    if os.path.exists(SENT_FILE):
+        with open(SENT_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    return set()
+def save_sent_links(sent_links):
+    with open(SENT_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(sent_links), f)
 
 def translate_en_to_th(text):
     url = "https://api-free.deepl.com/v2/translate"
@@ -270,8 +277,19 @@ def send_text_and_flex_to_line(header_text, flex_messages):
     for msg in flex_messages:
         requests.post(url, headers=headers, json={"messages": [msg]})
 
+def is_breaking_news(item):
+    breaking_keywords = [
+        "breaking", "urgent", "emergency", "alert", "exclusive", "just in", "update", "developing", 
+        "ด่วน", "ด่วน!", "เหตุการณ์เร่งด่วน"
+    ]
+    text = (item.get("title", "") + " " + item.get("summary", "")).lower()
+    for kw in breaking_keywords:
+        if kw in text:
+            return True
+    return False
+
 # ------------------ MAIN ------------------
-sent_links = set()
+sent_links = load_sent_links()
 all_news = []
 
 for source, info in news_sources.items():
@@ -285,7 +303,6 @@ for source, info in news_sources.items():
             full_text = fetch_full_article_text(entry.link)
             if len(full_text.split()) < 50:
                 continue
-            # จัดหมวดหมู่ล่วงหน้า
             category = classify_category(entry)
             all_news.append({
                 "source": source,
@@ -303,11 +320,22 @@ for item in fetch_aljazeera_articles():
         all_news.append(item)
         sent_links.add(item["link"])
 
+# Filter categories you want
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [n for n in all_news if n["category"] in allowed_categories]
 
-if all_news:
+# --- Breaking news ---
+breaking_news = [n for n in all_news if is_breaking_news(n)]
+normal_news = [n for n in all_news if not is_breaking_news(n)]
+
+if breaking_news:
+    flex_msgs = create_flex_message(breaking_news)
+    send_text_and_flex_to_line("🚨 ข่าวด่วน! / Breaking News", flex_msgs)
+
+if normal_news:
     order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
-    all_news.sort(key=lambda x: order.index(x["category"]) if x["category"] in order else len(order))
-    flex_msgs = create_flex_message(all_news)
+    normal_news.sort(key=lambda x: order.index(x["category"]) if x["category"] in order else len(order))
+    flex_msgs = create_flex_message(normal_news)
     send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_msgs)
+
+save_sent_links(sent_links)
