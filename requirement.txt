@@ -6,3 +6,4 @@ torch
 beautifulsoup4
 newspaper3k
 python-dateutil
+lxml_html_clean
