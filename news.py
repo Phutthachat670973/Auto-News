@@ -8,6 +8,18 @@ import os
 import json
 from dateutil import parser as dateutil_parser
 from newspaper import Article
+from google.cloud import language_v1
+
+def google_nlp_entities(text):
+    client = language_v1.LanguageServiceClient()
+    document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
+    try:
+        entities = client.analyze_entities(document=document).entities
+        # ดึงชื่อ entity ทั้งหมดที่เจอ (เช่น Thailand, Thai, Bangkok)
+        return [ent.name.lower() for ent in entities]
+    except Exception as e:
+        print(f"Google NLP Error: {e}")
+        return []
 
 # ----------- SETUP PIPELINE -----------
 summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
@@ -15,17 +27,16 @@ classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnl
 
 # ----------- RULE-BASED IMPACT ANALYZER -----------
 def impact_analyzer(summary_en, summary_th, category, source):
-    keywords_en = [
-        "Thailand", "Thai", "Bangkok", "ASEAN", "export", "tourism", "energy", "oil",
-        "rice", "rubber", "manufacturing", "supply chain"
-    ]
-    keywords_th = [
-        "ไทย", "อาเซียน", "ส่งออก", "ท่องเที่ยว", "น้ำมัน",
-        "ข้าว", "ยางพารา", "อุตสาหกรรม"
-    ]
-    if any(kw.lower() in summary_en.lower() for kw in keywords_en) or \
-       any(kw in summary_th for kw in keywords_th):
-        return "ข่าวนี้มีผลกระทบโดยตรงต่อประเทศไทย เช่น ภาคเศรษฐกิจ ความมั่นคง หรือประชาชน กรุณาติดตามข่าวนี้อย่างใกล้ชิด"
+    # ใช้ Google NLP วิเคราะห์ Entity
+    entity_names = google_nlp_entities(summary_en)
+    keywords_entity = ["thailand", "thai", "bangkok", "asean"]
+
+    # Logic ใหม่: ถ้ามี entity ไทย
+    if any(kw in entity_names for kw in keywords_entity):
+        return (
+            "ข่าวนี้มีผลกระทบโดยตรงต่อประเทศไทย (ตรวจพบชื่อประเทศ/เมือง/บุคคลไทยในเนื้อหาข่าว) "
+            "เช่น เศรษฐกิจ ความมั่นคง หรือประชาชน กรุณาติดตามข่าวนี้อย่างใกล้ชิด"
+        )
     elif category in {"Middle East", "Economy", "Energy", "Politics"} or source in ["BBC Economy", "CNBC"]:
         return (
             "ข่าวนี้ไม่มีผลกระทบโดยตรงกับประเทศไทย แต่เนื้อหาเกี่ยวข้องกับสถานการณ์โลก "
@@ -34,6 +45,7 @@ def impact_analyzer(summary_en, summary_th, category, source):
         )
     else:
         return "ข่าวนี้ไม่มีผลกระทบต่อประเทศไทยเลย ไม่ว่าจะโดยตรงหรือโดยอ้อม"
+
 
 # ----------- CONFIG -----------
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
