@@ -23,21 +23,12 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirement.txt
 
-    # ---------- ใส่ Google NLP Key จาก Secret ----------
-    - name: Write GCP service account key
-      env:
-        GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-      run: |
-        echo "$GCP_SA_KEY" > gcp-key.json
-
-    - name: Set GOOGLE_APPLICATION_CREDENTIALS
-      run: echo "GOOGLE_APPLICATION_CREDENTIALS=$PWD/gcp-key.json" >> $GITHUB_ENV
-
     # ---------- รันโค้ดหลัก ----------
     - name: Run news.py
       env:
         DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
         LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}        # <-- เพิ่มบรรทัดนี้!
       run: |
         python news.py
 
