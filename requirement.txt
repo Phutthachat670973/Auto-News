@@ -8,3 +8,4 @@ newspaper3k
 python-dateutil
 lxml_html_clean
 google-cloud-language
+requests
