@@ -21,30 +21,6 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN.")
 
-# ------------------- วิเคราะห์ผลกระทบข่าวต่อไทยด้วย Gemini Pro -------------------
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
-
-def analyze_impact_gemini(summary_en, summary_th):
-    if not GEMINI_API_KEY:
-        return "ไม่ได้ตั้งค่า GEMINI_API_KEY"
-    prompt = f"""
-ข่าว: {summary_en}
-
-1. ข่าวนี้มีผลกระทบต่อประเทศไทยหรือไม่ (ตอบ: กระทบ / ไม่กระทบ)
-2. ผลกระทบคืออะไร (เช่น ต่อเศรษฐกิจ สังคม ความสัมพันธ์กับต่างประเทศ ฯลฯ)
-3. โปรดให้เหตุผลหรือคำอธิบาย (ภาษาไทย)
-ตอบเป็นหัวข้อ พร้อมเหตุผลแบบสั้นๆ
-"""
-    data = {"contents": [{"parts": [{"text": prompt}]}]}
-    try:
-        resp = requests.post(f"{GEMINI_URL}?key={GEMINI_API_KEY}", json=data, timeout=30)
-        if resp.ok:
-            return resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
-        return "ไม่สามารถวิเคราะห์ผลกระทบได้"
-    except Exception as e:
-        return f"เกิดข้อผิดพลาดในการวิเคราะห์: {e}"
-
 # ------------------- ตั้งค่า Timezone -------------------
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 now_thai = datetime.now(bangkok_tz)
@@ -190,7 +166,6 @@ def extract_image_from_aljazeera(link):
 def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
-        # ใช้ข้อมูลที่ preprocess มาแล้ว (title_th, summary_th, impact)
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -249,15 +224,8 @@ def create_flex_message(news_items):
                         "wrap": True,
                         "margin": "md",
                         "maxLines": 8
-                    },
-                    {
-                        "type": "text",
-                        "text": "💥 ผลกระทบต่อไทย: " + (item.get('impact') or ''),
-                        "size": "xs",
-                        "color": "#EF5350",
-                        "wrap": True,
-                        "margin": "md"
                     }
+                    # <<< ลบกล่องผลกระทบออกแล้ว >>>
                 ]
             },
             "footer": {
@@ -345,20 +313,18 @@ for item in fetch_aljazeera_articles():
 allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
 all_news = [n for n in all_news if n["category"] in allowed_categories]
 
-# --- วิเคราะห์ผลกระทบ, สรุป, แปล ล่วงหน้าก่อนสร้าง Flex Message ---
-news_with_impact = []
+# --- สรุป + แปล ล่วงหน้าก่อนสร้าง Flex Message ---
+news_with_translate = []
 for n in all_news:
     title_th, summary_th, summary_en = summarize_and_translate(n['title'], n['summary'], n['link'])
-    impact_th = analyze_impact_gemini(summary_en, summary_th)
     n['title_th'] = title_th
     n['summary_th'] = summary_th
-    n['impact'] = impact_th
-    news_with_impact.append(n)
+    news_with_translate.append(n)
 
 # --- ส่งเข้า LINE ---
-if news_with_impact:
+if news_with_translate:
     order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
-    news_with_impact.sort(key=lambda x: order.index(x["category"]) if x["category"] in order else len(order))
-    flex_msgs = create_flex_message(news_with_impact)
+    news_with_translate.sort(key=lambda x: order.index(x["category"]) if x["category"] in order else len(order))
+    flex_msgs = create_flex_message(news_with_translate)
     send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_msgs)
     today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
