@@ -236,7 +236,7 @@ def _chunk(lst, n):
         yield lst[i:i+n]
 
 def create_flex_message(news_items):
-    ICON_SIZE = "lg"  # หรือ "md" ถ้าอยากเล็กลง (เลือกแค่ค่า size ที่ LINE รองรับ)
+    ICON_SIZE = "md"  # หรือ "lg" ถ้าอยากใหญ่ขึ้น
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
 
     bubbles = []
@@ -247,14 +247,15 @@ def create_flex_message(news_items):
         if len(bd_lines) > 6:
             bd_text = "\n".join(bd_lines[:6]) + "\n... (ตัดทอน)"
 
-        # ====== แถวไอคอนบริษัทที่ได้รับผล (horizontal + image OK) ======
+        # ====== แถวไอคอนบริษัทที่ได้รับผล (horizontal + ชิดซ้าย) ======
         icon_imgs = []
+        # *** เรียงซ้ายไปขวาตามลำดับที่อยู่ใน item['ptt_companies'] ***
         for code in (item.get("ptt_companies") or []):
             url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
             icon_imgs.append({
                 "type": "image",
                 "url": url,
-                "size": ICON_SIZE,   # ขนาดเดียวกันหมด (ไม่มี width!)
+                "size": ICON_SIZE,
                 "aspectRatio": "1:1",
                 "aspectMode": "fit"
             })
@@ -266,6 +267,7 @@ def create_flex_message(news_items):
                 "layout": "horizontal",
                 "margin": "sm",
                 "spacing": "sm",
+                # ไม่ต้องใส่ flex, alignItems, justifyContent
                 "contents": [
                     {"type": "text", "text": "กระทบ:", "size": "xs", "color": "#888888"}
                 ] + icon_imgs
@@ -294,7 +296,7 @@ def create_flex_message(news_items):
             {"type": "text", "text": f"🌍 {item.get('site','')}", "size": "xs", "color": "#448AFF", "margin": "sm"},
         ]
         if icons_row:
-            body_contents.append(icons_row)  # แสดง icons ชิดซ้ายแน่นอน
+            body_contents.append(icons_row)  # ชิดซ้าย-บนสุดใน row แน่นอน
 
         body_contents += [
             {
@@ -381,6 +383,7 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
+
 
 
 
