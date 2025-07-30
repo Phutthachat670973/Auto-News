@@ -237,7 +237,7 @@ def _chunk(lst, n):
 
 def create_flex_message(news_items):
     import re
-    ICON_SIZE = "md"        # หรือ "lg" ถ้าอยากให้ใหญ่ขึ้น
+    ICON_SIZE = "md"
     ICONS_PER_ROW = 2
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
 
@@ -285,7 +285,13 @@ def create_flex_message(news_items):
                 "margin": "sm",
                 "spacing": "xs",
                 "contents": (
-                    [{"type": "text", "text": "กระทบ:", "size": "xs", "color": "#888888"}]
+                    [{
+                        "type": "text",
+                        "text": "กระทบ:",
+                        "size": "xs",
+                        "color": "#000000",    # สีดำ
+                        "weight": "bold"       # ตัวหนา
+                    }]
                     + icons_rows
                 )
             }
@@ -313,7 +319,7 @@ def create_flex_message(news_items):
             {"type": "text", "text": f"🌍 {item.get('site','')}", "size": "xs", "color": "#448AFF", "margin": "sm"},
         ]
         if icons_grid:
-            body_contents.append(icons_grid)  # ชิดซ้าย, แถวละ 2, ขนาดเท่ากัน
+            body_contents.append(icons_grid)
 
         body_contents += [
             {
@@ -335,23 +341,24 @@ def create_flex_message(news_items):
                         "type": "text",
                         "text": "ผลกระทบ / เหตุผลคะแนน",
                         "weight": "bold",
-                        "size": "lg",  # ขนาดใหญ่
+                        "size": "lg",
                         "color": "#D32F2F"
                     },
                     {
                         "type": "text",
                         "text": f"คะแนนรวม: {item.get('gemini_score','-')} คะแนน",
-                        "size": "lg",         # ขนาดใหญ่
+                        "size": "lg",
                         "wrap": True,
-                        "color": "#C62828",
+                        "color": "#000000",    # สีดำ
                         "weight": "bold"
                     },
                     {
                         "type": "text",
                         "text": (item.get("gemini_reason") or "-"),
-                        "size": "md",         # ขนาดกลาง
+                        "size": "md",
                         "wrap": True,
                         "color": "#C62828",
+                        "weight": "bold",      # ตัวหนา
                         "maxLines": 8
                     },
                     {
@@ -359,7 +366,8 @@ def create_flex_message(news_items):
                         "text": bd_clean,
                         "size": "sm",
                         "wrap": True,
-                        "color": "#8E0000"
+                        "color": "#8E0000",
+                        "weight": "bold"       # ตัวหนา
                     }
                 ]
             }
@@ -406,6 +414,7 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
+
 
 
 
