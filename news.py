@@ -236,7 +236,7 @@ def _chunk(lst, n):
         yield lst[i:i+n]
 
 def create_flex_message(news_items):
-    ICON_WIDTH = "40px"  # ขนาดโลโก้บริษัท สามารถปรับเป็น "36px", "48px" ได้ตามต้องการ
+    ICON_SIZE = "lg"  # หรือ "md" ถ้าอยากเล็กลง (เลือกแค่ค่า size ที่ LINE รองรับ)
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
 
     bubbles = []
@@ -247,14 +247,14 @@ def create_flex_message(news_items):
         if len(bd_lines) > 6:
             bd_text = "\n".join(bd_lines[:6]) + "\n... (ตัดทอน)"
 
-        # ====== แถวไอคอนบริษัทที่ได้รับผล (ชิดซ้าย ขนาดคงที่) ======
+        # ====== แถวไอคอนบริษัทที่ได้รับผล (horizontal + image OK) ======
         icon_imgs = []
         for code in (item.get("ptt_companies") or []):
             url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
             icon_imgs.append({
                 "type": "image",
                 "url": url,
-                "width": ICON_WIDTH,           # <<<<<< ขนาดคงที่เท่ากันหมด
+                "size": ICON_SIZE,   # ขนาดเดียวกันหมด (ไม่มี width!)
                 "aspectRatio": "1:1",
                 "aspectMode": "fit"
             })
@@ -269,7 +269,6 @@ def create_flex_message(news_items):
                 "contents": [
                     {"type": "text", "text": "กระทบ:", "size": "xs", "color": "#888888"}
                 ] + icon_imgs
-                # ** ไม่ต้องใส่ flex หรือ align ใดๆ **
             }
 
         # ---- สร้าง body ----
@@ -295,7 +294,7 @@ def create_flex_message(news_items):
             {"type": "text", "text": f"🌍 {item.get('site','')}", "size": "xs", "color": "#448AFF", "margin": "sm"},
         ]
         if icons_row:
-            body_contents.append(icons_row)  # แสดง icons แถวนี้ ชิดซ้ายแน่นอน
+            body_contents.append(icons_row)  # แสดง icons ชิดซ้ายแน่นอน
 
         body_contents += [
             {
@@ -382,6 +381,7 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
+
 
 
 def broadcast_flex_message(access_token, flex_carousels):
