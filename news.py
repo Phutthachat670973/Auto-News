@@ -236,61 +236,144 @@ def _chunk(lst, n):
         yield lst[i:i+n]
 
 def create_flex_message(news_items):
+    ICON_SIZE = "xxs"  # เล็กลงเพื่อให้โลโก้ไม่เด่นเกิน
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
-    bubbles = []
 
+    bubbles = []
     for item in news_items:
+        # จำกัดบรรทัด breakdown เพื่อไม่ให้ยาวเกิน
         bd_text = (item.get("score_breakdown") or "-")
         bd_lines = bd_text.splitlines()
         if len(bd_lines) > 6:
             bd_text = "\n".join(bd_lines[:6]) + "\n... (ตัดทอน)"
 
-        codes = item.get("ptt_companies") or []
+        # ====== แถวไอคอนบริษัทที่ได้รับผล (horizontal + image OK) ======
+        icon_imgs = []
+        for code in (item.get("ptt_companies") or []):
+            url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
+            icon_imgs.append({
+                "type": "image",
+                "url": url,
+                "size": ICON_SIZE,      # ขนาดเล็กสม่ำเสมอ
+                "aspectRatio": "1:1",   # สี่เหลี่ยมจัตุรัส
+                "aspectMode": "fit"     # ไม่ครอป/ไม่ยืด
+                # อย่าใส่ 'margin' ใน image (Flex ไม่รองรับ)
+            })
+
         icons_row = None
-        if codes:
-            icon_size = "xl" if len(codes) <= 3 else "lg"
-            row_contents = [
-                {"type": "text", "text": "กระทบ:", "size": "xs", "color": "#888888", "flex": 0}
-            ]
-            for code in codes:
-                url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
-                row_contents.append({"type": "icon", "url": url, "size": icon_size})
-            icons_row = {"type": "box", "layout": "baseline", "margin": "sm", "spacing": "md", "contents": row_contents}
+        if icon_imgs:
+            icons_row = {
+                "type": "box",
+                "layout": "horizontal",
+                "margin": "sm",
+                "spacing": "sm",
+                "contents": [
+                    {"type": "text", "text": "กระทบ:", "size": "xs", "color": "#888888"}
+                ] + icon_imgs
+            }
 
+        # ---- สร้าง body ----
         body_contents = [
-            {"type":"text","text": item.get("title","-"),"weight":"bold","size":"xl","wrap":True,"color":"#111111","maxLines":2},
-            {"type":"box","layout":"horizontal","margin":"sm","contents":[
-                {"type":"text","text": f"🗓 {item.get('date','-')}", "size":"xs", "color":"#9E9E9E","flex":6},
-                {"type":"text","text": f"📌 {item.get('category','')}", "size":"xs","color":"#9E9E9E","align":"end","flex":4}
-            ]},
-            {"type":"text","text": f"🌍 {item.get('site','')}", "size":"xs","color":"#448AFF","margin":"xs"},
+            {
+                "type": "text",
+                "text": item.get("title", "-"),
+                "weight": "bold",
+                "size": "lg",
+                "wrap": True,
+                "color": "#111111",
+                "maxLines": 3
+            },
+            {
+                "type": "box",
+                "layout": "horizontal",
+                "margin": "sm",
+                "contents": [
+                    {"type": "text", "text": f"🗓 {item.get('date','-')}", "size": "xs", "color": "#aaaaaa", "flex": 5},
+                    {"type": "text", "text": f"📌 {item.get('category','')}", "size": "xs", "color": "#888888", "align": "end", "flex": 5}
+                ]
+            },
+            {"type": "text", "text": f"🌍 {item.get('site','')}", "size": "xs", "color": "#448AFF", "margin": "sm"},
         ]
-
         if icons_row:
             body_contents.append(icons_row)
 
-        body_contents.append({"type":"text","text":"—","size":"xs","color":"#E0E0E0","margin":"sm"})
         body_contents += [
-            {"type":"text","text": item.get("gemini_summary") or "ไม่พบสรุปข่าว","size":"sm","wrap":True,"margin":"sm","maxLines":6,"color":"#1A237E","weight":"bold"},
-            {"type":"box","layout":"vertical","margin":"md","spacing":"sm","contents":[
-                {"type":"text","text":"ผลกระทบ / เหตุผลคะแนน","weight":"bold","size":"sm","color":"#D32F2F"},
-                {"type":"text","text": f"คะแนนรวม: {item.get('gemini_score','-')} คะแนน","size":"sm","wrap":True,"color":"#C62828","weight":"bold"},
-                {"type":"text","text": (item.get("gemini_reason") or "-"),"size":"sm","wrap":True,"color":"#C62828","maxLines":6},
-                {"type":"text","text": bd_text,"size":"xs","wrap":True,"color":"#8E0000"}
-            ]}
+            {
+                "type": "text",
+                "text": item.get("gemini_summary") or "ไม่พบสรุปข่าว",
+                "size": "md",
+                "wrap": True,
+                "margin": "md",
+                "maxLines": 6,
+                "color": "#1A237E",
+                "weight": "bold"
+            },
+            {
+                "type": "box",
+                "layout": "vertical",
+                "margin": "lg",
+                "contents": [
+                    {"type": "text", "text": "ผลกระทบ / เหตุผลคะแนน", "weight": "bold", "size": "sm", "color": "#D32F2F"},
+                    {
+                        "type": "text",
+                        "text": f"คะแนนรวม: {item.get('gemini_score','-')} คะแนน",
+                        "size": "sm",
+                        "wrap": True,
+                        "color": "#C62828",
+                        "weight": "bold"
+                    },
+                    {
+                        "type": "text",
+                        "text": (item.get("gemini_reason") or "-"),
+                        "size": "sm",
+                        "wrap": True,
+                        "color": "#C62828",
+                        "maxLines": 6
+                    },
+                    {
+                        "type": "text",
+                        "text": bd_text,
+                        "size": "xs",
+                        "wrap": True,
+                        "color": "#8E0000"
+                    }
+                ]
+            }
         ]
 
         bubble = {
             "type": "bubble",
             "size": "mega",
-            "hero": {"type":"image","url": item.get("image") or DEFAULT_ICON_URL,"size":"full","aspectRatio":"16:9","aspectMode":"cover"},
-            "body": {"type":"box","layout":"vertical","spacing":"md","contents": body_contents},
-            "footer": {"type":"box","layout":"vertical","spacing":"sm","contents":[
-                {"type":"button","style":"primary","color":"#1DB446","action":{"type":"uri","label":"อ่านต่อ","uri": item.get("link","#")}}
-            ]}
+            "hero": {
+                "type": "image",
+                "url": item.get("image") or "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png",
+                "size": "full",
+                "aspectRatio": "16:9",
+                "aspectMode": "cover"
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "md",
+                "contents": body_contents
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "color": "#1DB446",
+                        "action": {"type": "uri", "label": "อ่านต่อ", "uri": item.get("link", "#")}
+                    }
+                ]
+            }
         }
         bubbles.append(bubble)
 
+    # แบ่ง Carousel ละไม่เกิน 10 bubbles
     carousels = []
     for i in range(0, len(bubbles), 10):
         carousels.append({
@@ -299,6 +382,7 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
+
 
 def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
