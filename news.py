@@ -398,6 +398,7 @@ def create_flex_message(news_items):
         })
     return carousels
 
+
 def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"}
