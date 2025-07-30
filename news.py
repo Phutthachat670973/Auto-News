@@ -236,8 +236,13 @@ def _chunk(lst, n):
         yield lst[i:i+n]
 
 def create_flex_message(news_items):
-    ICON_SIZE = "md"  # หรือ "lg" ถ้าอยากใหญ่ขึ้น
+    ICON_SIZE = "md"        # หรือ "lg" ถ้าอยากให้ใหญ่ขึ้น
+    ICONS_PER_ROW = 2
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
+
+    def _chunk(lst, n):
+        for i in range(0, len(lst), n):
+            yield lst[i:i+n]
 
     bubbles = []
     for item in news_items:
@@ -247,9 +252,8 @@ def create_flex_message(news_items):
         if len(bd_lines) > 6:
             bd_text = "\n".join(bd_lines[:6]) + "\n... (ตัดทอน)"
 
-        # ====== แถวไอคอนบริษัทที่ได้รับผล (horizontal + ชิดซ้าย) ======
+        # ==== แถวไอคอนบริษัท: Grid 2 อันต่อแถว, ชิดซ้าย ====
         icon_imgs = []
-        # *** เรียงซ้ายไปขวาตามลำดับที่อยู่ใน item['ptt_companies'] ***
         for code in (item.get("ptt_companies") or []):
             url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
             icon_imgs.append({
@@ -260,17 +264,27 @@ def create_flex_message(news_items):
                 "aspectMode": "fit"
             })
 
-        icons_row = None
-        if icon_imgs:
-            icons_row = {
+        # สร้างหลายแถว (horizontal) ละ 2 อัน (chunk)
+        icons_rows = []
+        for row_imgs in _chunk(icon_imgs, ICONS_PER_ROW):
+            icons_rows.append({
                 "type": "box",
                 "layout": "horizontal",
-                "margin": "sm",
                 "spacing": "sm",
-                # ไม่ต้องใส่ flex, alignItems, justifyContent
-                "contents": [
-                    {"type": "text", "text": "กระทบ:", "size": "xs", "color": "#888888"}
-                ] + icon_imgs
+                "contents": row_imgs
+            })
+
+        icons_grid = None
+        if icons_rows:
+            icons_grid = {
+                "type": "box",
+                "layout": "vertical",
+                "margin": "sm",
+                "spacing": "xs",
+                "contents": (
+                    [{"type": "text", "text": "กระทบ:", "size": "xs", "color": "#888888"}]
+                    + icons_rows
+                )
             }
 
         # ---- สร้าง body ----
@@ -295,8 +309,8 @@ def create_flex_message(news_items):
             },
             {"type": "text", "text": f"🌍 {item.get('site','')}", "size": "xs", "color": "#448AFF", "margin": "sm"},
         ]
-        if icons_row:
-            body_contents.append(icons_row)  # ชิดซ้าย-บนสุดใน row แน่นอน
+        if icons_grid:
+            body_contents.append(icons_grid)  # ชิดซ้าย, แถวละ 2, ขนาดเท่ากัน
 
         body_contents += [
             {
@@ -383,9 +397,6 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
-
-
-
 
 def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
