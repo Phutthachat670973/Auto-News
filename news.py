@@ -1,330 +1,651 @@
-# ------------------- ส่วนนำเข้า Library -------------------
-import feedparser
-from datetime import datetime, timedelta
-import pytz
-import requests
-from transformers import pipeline
+# -*- coding: utf-8 -*-
+"""
+ดึงข่าวย้อนหลัง 3 วัน -> จัดอันดับหา 10 ข่าวตัวเต็ง (ไม่ใช้ LLM) -> ให้ Gemini วิเคราะห์เฉพาะ 10 ข่าว
+-> สรุป + ให้คะแนน + แจกแจงคะแนนรวม (score breakdown) + ผลกระทบต่อบริษัทในกลุ่ม PTT
+-> สร้าง Flex Message (มีไอคอนบริษัทที่ได้รับผล) และ (เลือกได้) ส่ง Broadcast ไป LINE OA
+
+คุณสมบัติหลัก
+- ใช้โควตา Gemini สูงสุด 10 calls/รอบ (GEMINI_DAILY_BUDGET = 10)
+- ข้อ 4 เป็น "เหตุผลคะแนนรวม" (score breakdown)
+- Flex: แสดง "ผลกระทบ / เหตุผลคะแนน" + "คะแนนรวม" + breakdown
+- เพิ่มแถว "กระทบ:" + ไอคอนบริษัท (PTTEP, PTTLNG, PTTGL, PTTNGD) ใต้หมวดหมู่
+"""
+
 import re
-from bs4 import BeautifulSoup
-import os
+import json
+import time
+import random
+from datetime import datetime, timedelta
+
+import feedparser
 from dateutil import parser as dateutil_parser
-from pathlib import Path
+import pytz
 from newspaper import Article
+import requests
+import google.generativeai as genai
 
-# ------------------- ตั้งค่าโมเดล -------------------
-summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+# ========================= CONFIG =========================
+# --- API KEY (ใส่ตรง) ---
+GEMINI_API_KEY = "AIzaSyAB_byfT_BVf1aagJJOyRhGMR4lQfjysiI"
+LINE_CHANNEL_ACCESS_TOKEN = "8uoRm9++VvpXup6GsgDr+G8jZPwjHQ2riVK2VGvpcMTqa2ApnuUlb/4zs/7p+/m2CA5uvTO8ueeMBQvThfvNF3A9YCUR6aDGxSWt07nuGDwO2gDxhkXdtPUU8HEIQZn1aOLmx/F5dWCIBr3IfYuCTgdB04t89/1O/w1cDnyilFU="
 
-# ------------------- ตั้งค่า API -------------------
-DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+if not GEMINI_API_KEY:
+    raise RuntimeError("กรุณาใส่ GEMINI_API_KEY")
 if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN.")
+    raise RuntimeError("กรุณาใส่ LINE_CHANNEL_ACCESS_TOKEN")
 
-# ------------------- ตั้งค่า Timezone -------------------
+# --- ตั้งค่าโมเดล / โควตา ---
+genai.configure(api_key=GEMINI_API_KEY)
+GEMINI_MODEL_NAME = "gemini-1.5-flash"
+model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+
+GEMINI_DAILY_BUDGET = 10            # ใช้โมเดลไม่เกิน 10 ครั้ง/รอบ
+MAX_RETRIES = 3
+SLEEP_BETWEEN_CALLS = (1.2, 2.0)    # เว้นจังหวะช่วยลดโอกาสโดน rate limit
+DRY_RUN = False                      # ทดสอบก่อนส่งจริง: True = ไม่ยิง LINE, แค่พิมพ์ payload
+
+# --- เวลา/โซน ---
 bangkok_tz = pytz.timezone("Asia/Bangkok")
-now_thai = datetime.now(bangkok_tz)
-today_thai = now_thai.date()
-yesterday_thai = today_thai - timedelta(days=1)
+now = datetime.now(bangkok_tz)
+THREE_DAYS_AGO = now - timedelta(days=3)
 
-# ------------------- ลบไฟล์ข่าวเก่า -------------------
-def cleanup_old_sent_links(folder="sent_links", keep_days=5):
-    cutoff_date = today_thai - timedelta(days=keep_days)
-    if not os.path.exists(folder):
-        return
-    for filename in os.listdir(folder):
-        if filename.endswith(".txt"):
-            try:
-                file_date = datetime.strptime(filename.replace(".txt", ""), "%Y-%m-%d").date()
-                if file_date < cutoff_date:
-                    os.remove(os.path.join(folder, filename))
-            except:
-                continue
-
-# ------------------- แหล่งข่าว -------------------
+# --- RSS แหล่งข่าว ---
 news_sources = {
-    "BBC Economy": {"type": "rss", "url": "https://feeds.bbci.co.uk/news/rss.xml"},
-    "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
+    "Oilprice": {"type": "rss", "url": "https://oilprice.com/rss/main", "category": "Energy", "site": "Oilprice"},
+    "CleanTechnica": {"type": "rss", "url": "https://cleantechnica.com/feed/", "category": "Energy", "site": "CleanTechnica"},
+    "HydrogenFuelNews": {"type": "rss", "url": "https://www.hydrogenfuelnews.com/feed/", "category": "Energy", "site": "Hydrogen Fuel News"},
+    "Economist-Latest": {"type": "rss", "url": "https://www.economist.com/latest/rss.xml", "category": "Economy", "site": "Economist"},
+    "YahooFinance-News": {"type": "rss", "url": "https://finance.yahoo.com/news/rssindex", "category": "Economy", "site": "Yahoo Finance"},
+    "Politico-EU": {"type": "rss", "url": "https://www.politico.eu/feed/", "category": "Politics", "site": "Politico"},
+    "Guardian-Politics": {"type": "rss", "url": "https://www.theguardian.com/politics/rss", "category": "Politics", "site": "Guardian"},
+    "NPR-Politics": {"type": "rss", "url": "https://www.npr.org/rss/rss.php?id=1014", "category": "Politics", "site": "NPR"},
+    "NYT-Politics": {"type": "rss", "url": "https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml", "category": "Politics", "site": "NYT"},
+    "TheHill-Politics": {"type": "rss", "url": "https://thehill.com/rss/syndicator/19109", "category": "Politics", "site": "The Hill"},
+    "ABCNews-Politics": {"type": "rss", "url": "https://abcnews.go.com/abcnews/politicsheadlines", "category": "Politics", "site": "ABC News"},
 }
 
-# ------------------- แปลภาษา -------------------
-def translate_en_to_th(text):
-    url = "https://api-free.deepl.com/v2/translate"
-    params = {
-        "auth_key": DEEPL_API_KEY,
-        "text": text,
-        "source_lang": "EN",
-        "target_lang": "TH"
-    }
-    try:
-        res = requests.post(url, data=params, timeout=10)
-        return res.json()["translations"][0]["text"]
-    except Exception as e:
-        return f"[แปลไม่ได้] {e}"
+# ===== ไอคอนโลโก้บริษัทในกลุ่ม PTT (แก้ URL ให้เป็นโลโก้จริงของคุณ) =====
+PTT_ICON_URLS = {
+    "PTTEP":  "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTEP.png",
+    "PTTLNG": "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTLNG.jpg",
+    "PTTGL":  "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTGL.jfif",
+    "PTTNGD": "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTNGD.png",
+}
+DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
-# ------------------- ดึงเนื้อหาข่าวจากหน้าเว็บ -------------------
-def fetch_full_article_text(url):
+# ----- ตัวเลือก: boost คำสำคัญในการจัดอันดับก่อนส่งเข้า LLM (ยังคงใช้โควตา 10) -----
+USE_KEYWORD_BOOST = False
+KEYWORDS = [
+    "PTT","PTTEP","PTTLNG","PTTGL","PTTNGD",
+    "LNG","gas","natural gas","pipeline","regas",
+    "oil","crude","OPEC","refinery","hydrogen","ammonia","CCS","carbon capture"
+]
+
+# ========================= Gemini wrapper =========================
+GEMINI_CALLS = 0
+
+def call_gemini(prompt, max_retries=MAX_RETRIES):
+    global GEMINI_CALLS
+    if GEMINI_CALLS >= GEMINI_DAILY_BUDGET:
+        raise RuntimeError(f"ถึงงบ Gemini ประจำวันแล้ว ({GEMINI_CALLS}/{GEMINI_DAILY_BUDGET})")
+    last_error = None
+    for attempt in range(1, max_retries+1):
+        try:
+            resp = model.generate_content(prompt)
+            GEMINI_CALLS += 1
+            return resp
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries:
+                time.sleep(min(2**attempt + random.random(), 8))
+            else:
+                raise last_error
+
+# ========================= Fetch news =========================
+def fetch_news_3days():
+    all_news = []
+    for _, info in news_sources.items():
+        try:
+            feed = feedparser.parse(info["url"])
+            for entry in feed.entries:
+                if hasattr(entry, "published"):
+                    pub_dt = dateutil_parser.parse(entry.published).astimezone(bangkok_tz)
+                elif hasattr(entry, "updated"):
+                    pub_dt = dateutil_parser.parse(entry.updated).astimezone(bangkok_tz)
+                else:
+                    continue
+                if pub_dt < THREE_DAYS_AGO:
+                    continue
+                title = getattr(entry, "title", "-")
+                summary = getattr(entry, "summary", "-")
+                link = getattr(entry, "link", None)
+                if not link:
+                    continue
+                all_news.append({
+                    "site": info["site"], "category": info["category"],
+                    "title": title, "summary": summary, "link": link,
+                    "published": pub_dt, "date": pub_dt.strftime("%d/%m/%Y %H:%M")
+                })
+        except Exception as e:
+            print(f"[WARN] อ่านฟีด {info['site']} ล้มเหลว: {e}")
+    return all_news
+
+# ========================= Rank 10 ตัวเต็ง (ไม่ใช้ LLM) =========================
+def rank_candidates(news_list, use_keyword_boost=USE_KEYWORD_BOOST):
+    ranked = []
+    for n in news_list:
+        # 1) ความสด (0..3)
+        age_h = (now - n["published"]).total_seconds() / 3600.0
+        recency = max(0.0, (72.0 - min(72.0, age_h))) / 72.0 * 3.0
+        # 2) หมวดข่าว
+        cat_w = {"Energy": 3.0, "Economy": 2.0, "Politics": 1.0}.get(n["category"], 1.0)
+        # 3) ความยาวสรุป
+        length = min(len(n.get("summary","")) / 500.0, 1.0)
+        score = recency + cat_w + length
+        # 4) (ตัวเลือก) keyword boost
+        if use_keyword_boost:
+            text = (n["title"] + " " + n.get("summary","")).lower()
+            if any(k.lower() in text for k in KEYWORDS):
+                score += 1.5
+        ranked.append((score, n))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    return [n for _, n in ranked]
+
+# ========================= Download top image =========================
+def fetch_article_image(url):
     try:
-        article = Article(url)
-        article.download()
-        article.parse()
-        return article.text.strip()
-    except Exception as e:
-        print(f"⚠️ ไม่สามารถดึงเนื้อหา: {url} | {e}")
+        art = Article(url); art.download(); art.parse()
+        return art.top_image or ""
+    except Exception:
         return ""
 
-# ------------------- สรุป + แปล -------------------
-def summarize_and_translate(title, full_text, link=None):
-    # ถ้าเนื้อหาน้อยเกินไป ให้พยายาม fetch จากเว็บใหม่
-    if len(full_text.split()) < 50 and link:
-        full_text = fetch_full_article_text(link)
+# ========================= Helper: อ่านชื่อบริษัทจากผลวิเคราะห์ =========================
+def extract_ptt_companies(text: str):
+    """อ่านชื่อบริษัทจากบรรทัด 'ผลกระทบต่อ ปตท.' แล้วคืนลิสต์รหัสบริษัทที่พบ"""
+    if not text:
+        return []
+    companies = []
+    for code in ["PTTEP", "PTTLNG", "PTTGL", "PTTNGD"]:
+        if code in text:
+            companies.append(code)
+    return companies
 
-    if not full_text or len(full_text.strip()) < 30:
-        return title, "ไม่สามารถดึงเนื้อหาข่าวได้", ""
+# ========================= LLM prompt (ข้อ 4 = เหตุผลคะแนนรวม) =========================
+def gemini_summary_and_score(news):
+    prompt = f"""
+หัวข้อข่าว: {news['title']}
+สรุปย่อ: {news['summary']}
+เนื้อหาข่าว (ถ้ามี): {news.get('detail', '')}
 
-    input_words = full_text.split()
-    input_trimmed = " ".join(input_words[:600])
+กรุณาทำ 4 อย่างต่อไปนี้:
 
+1. สรุปข่าวนี้เป็นภาษาไทยอย่างกระชับ (1-2 ประโยค)
+
+2. ให้คะแนนความสำคัญของข่าวระดับโลก (1-5 คะแนน)
+   แจกแจงว่าแต่ละคะแนนมาจากปัจจัยอะไร เช่น:
+   - 2 คะแนนจากราคาน้ำมันที่เปลี่ยนแปลง
+   - 1 คะแนนจากนโยบายรัฐที่เกี่ยวกับ LNG
+
+3. วิเคราะห์ว่า ข่าวนี้มีผลกระทบต่อบริษัทใดในกลุ่ม PTT
+   บริษัทในกลุ่ม PTT ได้แก่:
+   - PTTEP – สำรวจและผลิตปิโตรเลียม
+   - PTTLNG – บริหารสถานี LNG
+   - PTTGL – การลงทุนใน LNG ระดับโลก
+   - PTTNGD – ก๊าซธรรมชาติอุตสาหกรรม
+
+4. แจกแจงคะแนนรวมที่ทำให้ข่าวนี้ได้รับคะแนนตามข้อ (2)
+   เป็นรายการบูลเล็ตโดยใส่ "คะแนน:" นำหน้าแต่ละข้อ และให้ผลรวมเท่ากับคะแนนรวม
+   ตัวอย่างรูปแบบ:
+   - 2 คะแนน: มีประเด็นราคาน้ำมันดิบเพิ่มขึ้น ...
+   - 1 คะแนน: มีนโยบายรัฐเกี่ยวกับ LNG ...
+   - 1 คะแนน: ความเสี่ยงภูมิรัฐศาสตร์ ...
+
+❗️ตอบกลับในรูปแบบนี้:
+- สรุปข่าว: <ข้อความ>
+- คะแนน: <คะแนน> (<คะแนนย่อย> จาก..., ...)
+- ผลกระทบต่อ ปตท.: กระทบต่อ <ชื่อบริษัท> เพราะ <เหตุผล>
+- เหตุผลคะแนนรวม:
+  - <คะแนน> คะแนน: <เหตุผล>
+  - <คะแนน> คะแนน: <เหตุผล>
+"""
     try:
-        token_count = len(input_trimmed.split())
-        max_len = max(40, min(200, int(token_count * 0.5)))
-        result = summarizer(input_trimmed, max_length=max_len, min_length=40, do_sample=False)
-        summary_en = result[0]['summary_text']
+        resp = call_gemini(prompt)
+        return resp.text
     except Exception as e:
-        print(f"❌ Summary Error: {e}")
-        summary_en = f"{title}\nเนื้อหาบทความไม่สามารถสรุปได้อัตโนมัติ โปรดคลิกลิงก์เพื่ออ่านเพิ่มเติม"
+        return f"ERROR: {e}"
 
-    # แปล title และ summary แยกกัน
-    try:
-        title_th = translate_en_to_th(title)
-    except Exception as e:
-        title_th = f"[หัวข้อแปลไม่ได้] {e}"
+def is_ptt_related_from_output(out_text: str) -> bool:
+    if not out_text or out_text.startswith("ERROR"):
+        return False
+    m = re.search(r"ผลกระทบต่อ\s*ปตท\.[：:]\s*(.*)", out_text)
+    if not m: return False
+    val = m.group(1).strip()
+    return any(x in val for x in ["PTTEP","PTTLNG","PTTGL","PTTNGD"])
 
-    try:
-        summary_th = translate_en_to_th(summary_en)
-    except Exception as e:
-        summary_th = f"[สรุปแปลไม่ได้] {e}"
+# ========================= LINE Flex =========================
+# ===== Helper: สร้าง section โลโก้แบบเรียบร้อยด้วย 'icon' =====
+def _chunk(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i+n]
 
-    return title_th.strip(), summary_th.strip(), summary_en.strip()
-
-# ------------------- จัดหมวดหมู่ -------------------
-candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
-def classify_category(entry):
-    try:
-        text = entry.title + " " + getattr(entry, 'summary', '')
-        return classifier(text, candidate_labels)['labels'][0]
-    except:
-        return "Other"
-
-# ------------------- ดึงภาพข่าว -------------------
-def extract_image(entry):
-    if hasattr(entry, 'media_content'):
-        for media in entry.media_content:
-            if 'url' in media:
-                return media['url']
-    try:
-        res = requests.get(entry.link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        soup = BeautifulSoup(res.text, "html.parser")
-        og = soup.find("meta", property="og:image")
-        return og["content"] if og and og.get("content") else None
-    except:
+def build_ptt_icons_section(codes, label_text="กระทบ:", icon_size="sm"):
+    """
+    คืนค่ากล่องแนวตั้ง ที่แต่ละแถวเป็น baseline (text + icon x N)
+    - ใช้ 'icon' เพื่อให้ขนาดคงที่ และ baseline ให้จัดแนวกับข้อความได้
+    - แถวละไม่เกิน 4 ไอคอน (ตัดบรรทัดอัตโนมัติ)
+    """
+    if not codes:
         return None
 
-# ------------------- ดึงข่าวจาก Al Jazeera -------------------
-def fetch_aljazeera_articles():
-    articles = []
-    try:
-        resp = requests.get("https://www.aljazeera.com/middle-east/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        soup = BeautifulSoup(resp.content, "html.parser")
-        for a in soup.select('a.u-clickable-card__link')[:5]:
-            title = a.get_text(strip=True)
-            link = "https://www.aljazeera.com" + a['href']
-            image = extract_image_from_aljazeera(link)
-            articles.append({
-                "source": "Al Jazeera",
-                "title": title,
-                "summary": fetch_full_article_text(link),
-                "link": link,
-                "image": image,
-                "published": now_thai,
-                "category": "Middle East"
+    rows = []
+    first_row = True
+    for group in _chunk(codes, 4):
+        row_contents = []
+        # แถวแรกโชว์ label "กระทบ:" แถวถัดไปเว้นว่างให้ตรงคอลัมน์
+        row_contents.append({
+            "type": "text",
+            "text": label_text if first_row else "",
+            "size": "xs",
+            "color": "#888888",
+            "flex": 0
+        })
+        for code in group:
+            url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
+            row_contents.append({
+                "type": "icon",
+                "url": url,
+                "size": icon_size
             })
-    except Exception as e:
-        print(f"⚠️ Al Jazeera Error: {e}")
-    return articles
+        rows.append({
+            "type": "box",
+            "layout": "baseline",
+            "spacing": "sm",
+            "contents": row_contents
+        })
+        first_row = False
 
-def extract_image_from_aljazeera(link):
-    try:
-        res = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        soup = BeautifulSoup(res.content, "html.parser")
-        meta = soup.find("meta", property="og:image")
-        return meta["content"] if meta else None
-    except:
+    section = {
+        "type": "box",
+        "layout": "vertical",
+        "margin": "sm",
+        "contents": rows
+    }
+    return section
+
+
+# ===== create_flex_message() เวอร์ชันแก้เรื่องโลโก้ =====
+# ===== Helper: แบ่งลิสต์เป็นกลุ่มย่อย =====
+def _chunk(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i+n]
+
+# ===== Helper: สร้าง section โลโก้ PTT แบบเรียบร้อยด้วย 'icon' =====
+def build_ptt_icons_section(codes, label_text="กระทบ:", icon_size="lg", per_row=3):
+    """
+    - ใช้คอมโพเนนต์ 'icon' เพื่อให้ขนาดสม่ำเสมอ (xs/sm/md/lg/xl)
+    - จำกัดไอคอนต่อแถวด้วย per_row เพื่อไม่ให้ล้นแนวเมื่อขยายขนาด
+    - คืนค่าเป็นกล่องแนวตั้ง (หลายแถว baseline) พร้อม label "กระทบ:"
+    """
+    if not codes:
         return None
 
-# ------------------- Flex Message -------------------
+    rows = []
+    first_row = True
+    for group in _chunk(codes, per_row):
+        row_contents = []
+        # แถวแรกแสดง label, แถวถัดไปเว้นช่องให้ตรงคอลัมน์
+        row_contents.append({
+            "type": "text",
+            "text": label_text if first_row else "",
+            "size": "xs",
+            "color": "#888888",
+            "flex": 0
+        })
+        for code in group:
+            url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
+            row_contents.append({
+                "type": "icon",
+                "url": url,
+                "size": icon_size  # ปรับได้: "sm" / "md" / "lg" / "xl"
+            })
+
+        rows.append({
+            "type": "box",
+            "layout": "baseline",
+            "spacing": "sm",
+            "contents": row_contents
+        })
+        first_row = False
+
+    return {
+        "type": "box",
+        "layout": "vertical",
+        "margin": "sm",
+        "contents": rows
+    }
+
+# ===== ฟังก์ชันสร้าง Flex Message (เวอร์ชันแก้ไอคอนให้ใหญ่ขึ้นและเป็นระเบียบ) =====
+# ===== Helper: แบ่งลิสต์เป็นกลุ่มย่อย =====
+def _chunk(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i+n]
+
+# ===== Helper: สร้าง section โลโก้ PTT แบบเรียบร้อยด้วย 'icon' (แก้กรณี text ว่าง) =====
+def build_ptt_icons_section(codes, label_text="กระทบ:", icon_size="lg", per_row=3):
+    """
+    - ใช้คอมโพเนนต์ 'icon' เพื่อให้ขนาดสม่ำเสมอ (xs/sm/md/lg/xl)
+    - จำกัดไอคอนต่อแถวด้วย per_row
+    - แถวแรกโชว์ label "กระทบ:" แถวถัดไปใช้ NBSP (\u00A0) แทน "" เพื่อให้เป็น non-empty text
+    """
+    if not codes:
+        return None
+
+    rows = []
+    first_row = True
+    NBSP = "\u00A0"  # non-breaking space (ถือว่าเป็น non-empty string)
+
+    for group in _chunk(codes, per_row):
+        row_contents = []
+        row_contents.append({
+            "type": "text",
+            "text": label_text if first_row else NBSP,  # <-- เปลี่ยนจาก "" เป็น NBSP
+            "size": "xs",
+            "color": "#888888",
+            "flex": 0
+        })
+        for code in group:
+            url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
+            row_contents.append({
+                "type": "icon",
+                "url": url,
+                "size": icon_size  # "lg" แนะนำ; ถ้าอยากใหญ่ขึ้นได้ "xl"
+            })
+        rows.append({
+            "type": "box",
+            "layout": "baseline",
+            "spacing": "sm",
+            "contents": row_contents
+        })
+        first_row = False
+
+    return {
+        "type": "box",
+        "layout": "vertical",
+        "margin": "sm",
+        "contents": rows
+    }
+
+# ===== ฟังก์ชันสร้าง Flex Message (เรียกใช้ helper ข้างบน) =====
+## ===== Helper: แบ่งลิสต์เป็นกลุ่มย่อย =====
+def _chunk(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i+n]
+
+# ===== Helper: โลโก้ PTT ขนาด XL เต็ม + กัน text ว่าง =====
+def build_ptt_icons_section(codes, label_text="กระทบ:", icon_size="xl", per_row=1):
+    """
+    - ใช้คอมโพเนนต์ 'icon' เพื่อให้ขนาดใหญ่สุด (xl)
+    - แถวละ 1 โลโก้เพื่อให้ขนาดเต็มชัดเจน
+    - แถวแรกโชว์ label 'กระทบ:' แถวถัดไปใช้ NBSP เพื่อผ่าน validation
+    """
+    if not codes:
+        return None
+
+    rows = []
+    first_row = True
+    NBSP = "\u00A0"  # non‑breaking space (non-empty string)
+
+    for group in _chunk(codes, per_row):
+        row_contents = []
+        row_contents.append({
+            "type": "text",
+            "text": label_text if first_row else NBSP,
+            "size": "sm",  # label ใหญ่ขึ้นเล็กน้อย
+            "color": "#888888",
+            "flex": 0
+        })
+        for code in group:
+            url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
+            row_contents.append({
+                "type": "icon",
+                "url": url,
+                "size": icon_size  # ขนาด XL เต็ม
+            })
+        rows.append({
+            "type": "box",
+            "layout": "baseline",
+            "spacing": "md",
+            "contents": row_contents
+        })
+        first_row = False
+
+    return {
+        "type": "box",
+        "layout": "vertical",
+        "margin": "sm",
+        "contents": rows
+    }
+
+# ===== ฟังก์ชันสร้าง Flex Message (หัวข้อ/รายละเอียดจัดระเบียบ + โลโก้ XL เต็ม) =====
 def create_flex_message(news_items):
+    now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
     bubbles = []
+
     for item in news_items:
+        # ตัดทอน breakdown ไม่ให้ยาวเกิน
+        bd_text = (item.get("score_breakdown") or "-")
+        bd_lines = bd_text.splitlines()
+        if len(bd_lines) > 6:
+            bd_text = "\n".join(bd_lines[:6]) + "\n... (ตัดทอน)"
+
+        # === แถวโลโก้: ใช้ baseline (รองรับ icon) + ไซซ์ใหญ่ ===
+        codes = item.get("ptt_companies") or []
+        icons_row = None
+        if codes:
+            # ≤3 โลโก้ = XL (ใหญ่ชัด), ≥4 โลโก้ = LG (กันล้นบรรทัด)
+            icon_size = "xl" if len(codes) <= 3 else "lg"
+
+            row_contents = [
+                {"type": "text", "text": "กระทบ:", "size": "xs", "color": "#888888", "flex": 0}
+            ]
+            for code in codes:
+                url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
+                row_contents.append({
+                    "type": "icon",
+                    "url": url,
+                    "size": icon_size
+                })
+
+            icons_row = {
+                "type": "box",
+                "layout": "baseline",   # ← ใช้ baseline เพื่อให้วาง icon ได้
+                "margin": "sm",
+                "spacing": "md",
+                "contents": row_contents
+            }
+
+        # ---- body ----
+        body_contents = [
+            # หัวข้อข่าว
+            {
+                "type": "text",
+                "text": item.get("title","-"),
+                "weight":"bold",
+                "size":"xl",
+                "wrap":True,
+                "color":"#111111",
+                "maxLines": 2
+            },
+            # เมทาดาต้า
+            {
+                "type": "box",
+                "layout": "horizontal",
+                "margin": "sm",
+                "contents": [
+                    {"type": "text", "text": f"🗓 {item.get('date','-')}", "size": "xs", "color": "#9E9E9E", "flex": 6},
+                    {"type": "text", "text": f"📌 {item.get('category','')}", "size": "xs", "color": "#9E9E9E", "align": "end", "flex": 4}
+                ]
+            },
+            {"type": "text", "text": f"🌍 {item.get('site','')}", "size":"xs", "color":"#448AFF", "margin":"xs"},
+        ]
+
+        if icons_row:
+            body_contents.append(icons_row)
+
+        # คั่นเส้นบาง ๆ
+        body_contents.append({"type": "text", "text": "—", "size": "xs", "color": "#E0E0E0", "margin": "sm"})
+
+        # สรุป + เหตุผลคะแนน
+        body_contents += [
+            {
+                "type": "text",
+                "text": item.get("gemini_summary") or "ไม่พบสรุปข่าว",
+                "size":"sm",
+                "wrap":True,
+                "margin":"sm",
+                "maxLines":6,
+                "color":"#1A237E",
+                "weight":"bold"
+            },
+            {
+                "type": "box",
+                "layout": "vertical",
+                "margin": "md",
+                "spacing": "sm",
+                "contents": [
+                    {"type": "text", "text": "ผลกระทบ / เหตุผลคะแนน", "weight": "bold", "size": "sm", "color": "#D32F2F"},
+                    {"type": "text", "text": f"คะแนนรวม: {item.get('gemini_score','-')} คะแนน", "size": "sm", "wrap": True, "color": "#C62828", "weight": "bold"},
+                    {"type": "text", "text": (item.get("gemini_reason") or "-"), "size": "sm", "wrap": True, "color": "#C62828", "maxLines": 6},
+                    {"type": "text", "text": bd_text, "size": "xs", "wrap": True, "color": "#8E0000"}
+                ]
+            }
+        ]
+
         bubble = {
             "type": "bubble",
             "size": "mega",
             "hero": {
                 "type": "image",
-                "url": item["image"] or "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png",
+                "url": item.get("image") or "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png",
                 "size": "full",
-                "aspectRatio": "20:13",
+                "aspectRatio": "16:9",
                 "aspectMode": "cover"
             },
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "md",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": item.get("title_th", item["title"]),
-                        "weight": "bold",
-                        "size": "md",
-                        "wrap": True,
-                        "margin": "none"
-                    },
-                    {
-                        "type": "box",
-                        "layout": "horizontal",
-                        "contents": [
-                            {
-                                "type": "text",
-                                "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}",
-                                "size": "xs",
-                                "color": "#888888",
-                                "flex": 2
-                            },
-                            {
-                                "type": "text",
-                                "text": f"📌 {item['category']}",
-                                "size": "xs",
-                                "color": "#AAAAAA",
-                                "align": "end",
-                                "flex": 3
-                            }
-                        ]
-                    },
-                    {
-                        "type": "text",
-                        "text": f"📣 {item['source']}",
-                        "size": "xs",
-                        "color": "#AAAAAA",
-                        "margin": "sm"
-                    },
-                    {
-                        "type": "text",
-                        "text": item.get("summary_th", ""),
-                        "size": "sm",
-                        "wrap": True,
-                        "margin": "md",
-                        "maxLines": 8
-                    }
-                    # <<< ลบกล่องผลกระทบออกแล้ว >>>
-                ]
-            },
+            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents},
             "footer": {
                 "type": "box",
                 "layout": "vertical",
+                "spacing": "sm",
                 "contents": [
-                    {
-                        "type": "button",
-                        "style": "link",
-                        "height": "sm",
-                        "action": {
-                            "type": "uri",
-                            "label": "อ่านต่อ",
-                            "uri": item['link']
-                        }
-                    }
+                    {"type": "button", "style": "primary", "color": "#1DB446",
+                     "action": {"type": "uri", "label": "อ่านต่อ", "uri": item.get("link","#")}}
                 ]
             }
         }
         bubbles.append(bubble)
 
-    return [{
-        "type": "flex",
-        "altText": f"ข่าวประจำวันที่ {now_thai.strftime('%d/%m/%Y')}",
-        "contents": {
-            "type": "carousel",
-            "contents": bubbles[i:i+10]
-        }
-    } for i in range(0, len(bubbles), 10)]
+    # แบ่ง carousel
+    carousels = []
+    for i in range(0, len(bubbles), 10):
+        carousels.append({
+            "type": "flex",
+            "altText": f"Top ข่าวเกี่ยวข้อง ปตท. {now_thai}",
+            "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
+        })
+    return carousels
 
-# ------------------- ส่งเข้า LINE -------------------
-def send_text_and_flex_to_line(header_text, flex_messages):
+
+def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}'
-    }
-    requests.post(url, headers=headers, json={"messages": [{"type": "text", "text": header_text}]})
-    for msg in flex_messages:
-        requests.post(url, headers=headers, json={"messages": [msg]})
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"}
+    for idx, carousel in enumerate(flex_carousels, 1):
+        payload = {"messages": [carousel]}
+        if DRY_RUN:
+            print(f"[DRY_RUN] จะส่ง Carousel #{idx}: {json.dumps(payload)[:500]}...")
+            continue
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        print(f"Broadcast #{idx} status:", resp.status_code, getattr(resp, "text", ""))
+        if resp.status_code >= 300:
+            break
 
-# ------------------- เริ่มต้น -------------------
-cleanup_old_sent_links()
-sent_dir = Path("sent_links")
-sent_dir.mkdir(exist_ok=True)
-today_file = sent_dir / f"{today_thai}.txt"
-yesterday_file = sent_dir / f"{yesterday_thai}.txt"
-sent_links = set()
-for f in [today_file, yesterday_file]:
-    if f.exists():
-        sent_links.update(f.read_text(encoding="utf-8").splitlines())
+# ========================= MAIN =========================
+def main():
+    # 1) ดึงข่าว 3 วันทั้งหมด
+    all_news = fetch_news_3days()
+    print(f"ดึงข่าวทั้งหมดภายใน 1 วัน: {len(all_news)} รายการ")
+    if not all_news:
+        print("ไม่พบข่าว")
+        return
 
-all_news = []
+    # 2) เลือกตัวเต็ง 10 ข่าว (ไม่ใช้ LLM)
+    ranked = rank_candidates(all_news, use_keyword_boost=USE_KEYWORD_BOOST)
+    top_candidates = ranked[:min(10, len(ranked))]
+    print(f"ส่งให้ Gemini วิเคราะห์เพียง {len(top_candidates)} ข่าว (จำกัด 10)")
 
-# --- ข่าวจาก RSS ---
-for source, info in news_sources.items():
-    if info["type"] == "rss":
-        feed = feedparser.parse(info["url"])
-        for entry in feed.entries:
-            pub_date = dateutil_parser.parse(entry.published) if hasattr(entry, "published") else now_thai
-            local_date = pub_date.astimezone(bangkok_tz).date()
-            if entry.link in sent_links or local_date not in [today_thai, yesterday_thai]:
-                continue
-            full_text = fetch_full_article_text(entry.link)
-            if len(full_text.split()) < 50:
-                continue
-            all_news.append({
-                "source": source,
-                "title": entry.title,
-                "summary": full_text,
-                "link": entry.link,
-                "image": extract_image(entry),
-                "published": pub_date.astimezone(bangkok_tz),
-                "category": classify_category(entry)
-            })
-            sent_links.add(entry.link)
+    # 3) วิเคราะห์ด้วย LLM (จำกัดโควตา 10 calls)
+    ptt_related_news = []
+    for news in top_candidates:
+        # ดึงเนื้อหาเพิ่มเมื่อ summary สั้น
+        if len(news.get('summary','')) < 50:
+            try:
+                art = Article(news['link']); art.download(); art.parse()
+                news['detail'] = art.text.strip()
+            except Exception:
+                news['detail'] = news['title']
+        else:
+            news['detail'] = ""
 
-# --- ดึงข่าวจาก Al Jazeera และบันทึกลิงก์ ---
-for item in fetch_aljazeera_articles():
-    if item["link"] not in sent_links:
-        all_news.append(item)
-        sent_links.add(item["link"])
+        out = gemini_summary_and_score(news)
+        news['gemini_output'] = out
 
-# --- กรองหมวดหมู่ที่ต้องการ ---
-allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
-all_news = [n for n in all_news if n["category"] in allowed_categories]
+        # ดึงค่าที่ต้องการ
+        m_score = re.search(r"คะแนน[:：]\s*(\d+)", out or "")
+        news['gemini_score'] = int(m_score.group(1)) if m_score else 3
 
-# --- สรุป + แปล ล่วงหน้าก่อนสร้าง Flex Message ---
-news_with_translate = []
-for n in all_news:
-    title_th, summary_th, summary_en = summarize_and_translate(n['title'], n['summary'], n['link'])
-    n['title_th'] = title_th
-    n['summary_th'] = summary_th
-    news_with_translate.append(n)
+        m_sum = re.search(r"สรุปข่าว[:：]\s*(.*)", out or "")
+        news['gemini_summary'] = m_sum.group(1).strip() if m_sum else "ไม่พบสรุปข่าว"
 
-# --- ส่งเข้า LINE ---
-if news_with_translate:
-    order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
-    news_with_translate.sort(key=lambda x: order.index(x["category"]) if x["category"] in order else len(order))
-    flex_msgs = create_flex_message(news_with_translate)
-    send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_msgs)
-    today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
+        m_reason = re.search(r"ผลกระทบต่อ\s*ปตท\.[：:]\s*(.*)", out or "")
+        news['gemini_reason'] = m_reason.group(1).strip() if m_reason else "-"
+
+        # เก็บรายชื่อบริษัทสำหรับแสดงไอคอน
+        news['ptt_companies'] = extract_ptt_companies(news.get('gemini_reason', ''))
+
+        # ดึง "เหตุผลคะแนนรวม"
+        m_bd = re.search(r"เหตุผลคะแนนรวม[:：]\s*(.*)", out or "", flags=re.DOTALL)
+        if m_bd:
+            score_bd_raw = m_bd.group(1).strip()
+            lines = [ln.strip() for ln in score_bd_raw.splitlines() if "คะแนน" in ln]
+            news['score_breakdown'] = "\n".join(lines) if lines else score_bd_raw
+        else:
+            news['score_breakdown'] = "-"
+
+        # เก็บเฉพาะข่าวที่โมเดลระบุว่ากระทบต่อกลุ่ม PTT
+        if is_ptt_related_from_output(out):
+            ptt_related_news.append(news)
+
+        time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
+
+    print(f"ใช้ Gemini ไปแล้ว: {GEMINI_CALLS}/{GEMINI_DAILY_BUDGET} calls")
+
+    if not ptt_related_news:
+        print("ไม่พบข่าวที่โมเดลระบุว่ากระทบต่อกลุ่ม PTT จากตัวเต็ง 10 ข่าว")
+        return
+
+    # 4) คัด Top 10 ตามคะแนน (จริง ๆ จะไม่เกิน 10 อยู่แล้ว)
+    ptt_related_news.sort(key=lambda n: (n.get('gemini_score',0), n.get('published', datetime.min)), reverse=True)
+    top_news = ptt_related_news[:10]
+
+    # 5) ดึงรูปภาพเฉพาะ Top แล้วสร้าง Flex
+    for item in top_news:
+        item["image"] = fetch_article_image(item["link"]) or ""
+
+    carousels = create_flex_message(top_news)
+    broadcast_flex_message(LINE_CHANNEL_ACCESS_TOKEN, carousels)
+    print("เสร็จสิ้น.")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("[ERROR]", e)
