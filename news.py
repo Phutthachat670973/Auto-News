@@ -247,15 +247,12 @@ def create_flex_message(news_items):
 
     bubbles = []
     for item in news_items:
-        # จำกัดบรรทัด breakdown เพื่อไม่ให้ยาวเกิน
+        # --- ไม่ตัดทอน breakdown แล้ว แสดงครบทุกบรรทัด ---
         bd_text = (item.get("score_breakdown") or "-")
-        bd_lines = bd_text.splitlines()
-        if len(bd_lines) > 6:
-            bd_text = "\n".join(bd_lines[:6]) + "\n... (ตัดทอน)"
         # ลบ - ออกเฉพาะบรรทัดต้น bullet
         bd_clean = re.sub(r"^- ", "", bd_text, flags=re.MULTILINE)
 
-        # ==== แถวไอคอนบริษัท: Grid 2 อันต่อแถว, ชิดซ้าย ====
+        # ==== Grid ไอคอนบริษัท 2 อันต่อแถว ====
         icon_imgs = []
         for code in (item.get("ptt_companies") or []):
             url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
@@ -267,7 +264,6 @@ def create_flex_message(news_items):
                 "aspectMode": "fit"
             })
 
-        # สร้างหลายแถว (horizontal) ละ 2 อัน (chunk)
         icons_rows = []
         for row_imgs in _chunk(icon_imgs, ICONS_PER_ROW):
             icons_rows.append({
@@ -289,8 +285,8 @@ def create_flex_message(news_items):
                         "type": "text",
                         "text": "กระทบ:",
                         "size": "xs",
-                        "color": "#000000",    # สีดำ
-                        "weight": "bold"       # ตัวหนา
+                        "color": "#000000",
+                        "weight": "bold"
                     }]
                     + icons_rows
                 )
@@ -346,28 +342,28 @@ def create_flex_message(news_items):
                     },
                     {
                         "type": "text",
-                        "text": f"คะแนนรวม: {item.get('gemini_score','-')} คะแนน",
-                        "size": "lg",
-                        "wrap": True,
-                        "color": "#000000",    # สีดำ
-                        "weight": "bold"
-                    },
-                    {
-                        "type": "text",
                         "text": (item.get("gemini_reason") or "-"),
                         "size": "md",
                         "wrap": True,
                         "color": "#C62828",
-                        "weight": "bold",      # ตัวหนา
+                        "weight": "bold",
                         "maxLines": 8
                     },
                     {
                         "type": "text",
-                        "text": bd_clean,
+                        "text": f"คะแนนรวม: {item.get('gemini_score','-')} คะแนน",
+                        "size": "lg",
+                        "wrap": True,
+                        "color": "#000000",
+                        "weight": "bold"
+                    },
+                    {
+                        "type": "text",
+                        "text": bd_clean,  # ไม่ตัด ... อีกต่อไป
                         "size": "sm",
                         "wrap": True,
                         "color": "#8E0000",
-                        "weight": "bold"       # ตัวหนา
+                        "weight": "bold"
                     }
                 ]
             }
@@ -414,9 +410,6 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
-
-
-
 
 def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
