@@ -11,6 +11,7 @@
 - เพิ่มแถว "กระทบ:" + ไอคอนบริษัท (PTTEP, PTTLNG, PTTGL, PTTNGD) ใต้หมวดหมู่
 """
 
+import os
 import re
 import json
 import time
@@ -24,15 +25,22 @@ from newspaper import Article
 import requests
 import google.generativeai as genai
 
+# (optional) โหลด .env เมื่อรันบนเครื่องนักพัฒนา
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 # ========================= CONFIG =========================
-# --- API KEY (ใส่ตรง) ---
-GEMINI_API_KEY = "AIzaSyAB_byfT_BVf1aagJJOyRhGMR4lQfjysiI"
-LINE_CHANNEL_ACCESS_TOKEN = "8uoRm9++VvpXup6GsgDr+G8jZPwjHQ2riVK2VGvpcMTqa2ApnuUlb/4zs/7p+/m2CA5uvTO8ueeMBQvThfvNF3A9YCUR6aDGxSWt07nuGDwO2gDxhkXdtPUU8HEIQZn1aOLmx/F5dWCIBr3IfYuCTgdB04t89/1O/w1cDnyilFU="
+# --- API KEY: อ่านจาก Environment/Secrets ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 
 if not GEMINI_API_KEY:
-    raise RuntimeError("กรุณาใส่ GEMINI_API_KEY")
+    raise RuntimeError("ไม่พบ GEMINI_API_KEY ใน Environment/Secrets")
 if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise RuntimeError("กรุณาใส่ LINE_CHANNEL_ACCESS_TOKEN")
+    raise RuntimeError("ไม่พบ LINE_CHANNEL_ACCESS_TOKEN ใน Environment/Secrets")
 
 # --- ตั้งค่าโมเดล / โควตา ---
 genai.configure(api_key=GEMINI_API_KEY)
@@ -42,9 +50,10 @@ model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 GEMINI_DAILY_BUDGET = 10            # ใช้โมเดลไม่เกิน 10 ครั้ง/รอบ
 MAX_RETRIES = 3
 SLEEP_BETWEEN_CALLS = (1.2, 2.0)    # เว้นจังหวะช่วยลดโอกาสโดน rate limit
-DRY_RUN = False                      # ทดสอบก่อนส่งจริง: True = ไม่ยิง LINE, แค่พิมพ์ payload
+DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"  # true=ไม่ยิง LINE, แค่พิมพ์ payload
 
 # --- เวลา/โซน ---
+import pytz
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 now = datetime.now(bangkok_tz)
 THREE_DAYS_AGO = now - timedelta(days=3)
@@ -64,7 +73,7 @@ news_sources = {
     "ABCNews-Politics": {"type": "rss", "url": "https://abcnews.go.com/abcnews/politicsheadlines", "category": "Politics", "site": "ABC News"},
 }
 
-# ===== ไอคอนโลโก้บริษัทในกลุ่ม PTT (แก้ URL ให้เป็นโลโก้จริงของคุณ) =====
+# ===== โลโก้บริษัทในกลุ่ม PTT =====
 PTT_ICON_URLS = {
     "PTTEP":  "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTEP.png",
     "PTTLNG": "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTLNG.jpg",
@@ -73,7 +82,7 @@ PTT_ICON_URLS = {
 }
 DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
-# ----- ตัวเลือก: boost คำสำคัญในการจัดอันดับก่อนส่งเข้า LLM (ยังคงใช้โควตา 10) -----
+# ----- ตัวเลือก: boost คำสำคัญในการจัดอันดับก่อนส่งเข้า LLM -----
 USE_KEYWORD_BOOST = False
 KEYWORDS = [
     "PTT","PTTEP","PTTLNG","PTTGL","PTTNGD",
@@ -161,7 +170,6 @@ def fetch_article_image(url):
 
 # ========================= Helper: อ่านชื่อบริษัทจากผลวิเคราะห์ =========================
 def extract_ptt_companies(text: str):
-    """อ่านชื่อบริษัทจากบรรทัด 'ผลกระทบต่อ ปตท.' แล้วคืนลิสต์รหัสบริษัทที่พบ"""
     if not text:
         return []
     companies = []
@@ -170,7 +178,7 @@ def extract_ptt_companies(text: str):
             companies.append(code)
     return companies
 
-# ========================= LLM prompt (ข้อ 4 = เหตุผลคะแนนรวม) =========================
+# ========================= LLM prompt =========================
 def gemini_summary_and_score(news):
     prompt = f"""
 หัวข้อข่าว: {news['title']}
@@ -223,328 +231,66 @@ def is_ptt_related_from_output(out_text: str) -> bool:
     return any(x in val for x in ["PTTEP","PTTLNG","PTTGL","PTTNGD"])
 
 # ========================= LINE Flex =========================
-# ===== Helper: สร้าง section โลโก้แบบเรียบร้อยด้วย 'icon' =====
 def _chunk(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i+n]
 
-def build_ptt_icons_section(codes, label_text="กระทบ:", icon_size="sm"):
-    """
-    คืนค่ากล่องแนวตั้ง ที่แต่ละแถวเป็น baseline (text + icon x N)
-    - ใช้ 'icon' เพื่อให้ขนาดคงที่ และ baseline ให้จัดแนวกับข้อความได้
-    - แถวละไม่เกิน 4 ไอคอน (ตัดบรรทัดอัตโนมัติ)
-    """
-    if not codes:
-        return None
-
-    rows = []
-    first_row = True
-    for group in _chunk(codes, 4):
-        row_contents = []
-        # แถวแรกโชว์ label "กระทบ:" แถวถัดไปเว้นว่างให้ตรงคอลัมน์
-        row_contents.append({
-            "type": "text",
-            "text": label_text if first_row else "",
-            "size": "xs",
-            "color": "#888888",
-            "flex": 0
-        })
-        for code in group:
-            url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
-            row_contents.append({
-                "type": "icon",
-                "url": url,
-                "size": icon_size
-            })
-        rows.append({
-            "type": "box",
-            "layout": "baseline",
-            "spacing": "sm",
-            "contents": row_contents
-        })
-        first_row = False
-
-    section = {
-        "type": "box",
-        "layout": "vertical",
-        "margin": "sm",
-        "contents": rows
-    }
-    return section
-
-
-# ===== create_flex_message() เวอร์ชันแก้เรื่องโลโก้ =====
-# ===== Helper: แบ่งลิสต์เป็นกลุ่มย่อย =====
-def _chunk(lst, n):
-    for i in range(0, len(lst), n):
-        yield lst[i:i+n]
-
-# ===== Helper: สร้าง section โลโก้ PTT แบบเรียบร้อยด้วย 'icon' =====
-def build_ptt_icons_section(codes, label_text="กระทบ:", icon_size="lg", per_row=3):
-    """
-    - ใช้คอมโพเนนต์ 'icon' เพื่อให้ขนาดสม่ำเสมอ (xs/sm/md/lg/xl)
-    - จำกัดไอคอนต่อแถวด้วย per_row เพื่อไม่ให้ล้นแนวเมื่อขยายขนาด
-    - คืนค่าเป็นกล่องแนวตั้ง (หลายแถว baseline) พร้อม label "กระทบ:"
-    """
-    if not codes:
-        return None
-
-    rows = []
-    first_row = True
-    for group in _chunk(codes, per_row):
-        row_contents = []
-        # แถวแรกแสดง label, แถวถัดไปเว้นช่องให้ตรงคอลัมน์
-        row_contents.append({
-            "type": "text",
-            "text": label_text if first_row else "",
-            "size": "xs",
-            "color": "#888888",
-            "flex": 0
-        })
-        for code in group:
-            url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
-            row_contents.append({
-                "type": "icon",
-                "url": url,
-                "size": icon_size  # ปรับได้: "sm" / "md" / "lg" / "xl"
-            })
-
-        rows.append({
-            "type": "box",
-            "layout": "baseline",
-            "spacing": "sm",
-            "contents": row_contents
-        })
-        first_row = False
-
-    return {
-        "type": "box",
-        "layout": "vertical",
-        "margin": "sm",
-        "contents": rows
-    }
-
-# ===== ฟังก์ชันสร้าง Flex Message (เวอร์ชันแก้ไอคอนให้ใหญ่ขึ้นและเป็นระเบียบ) =====
-# ===== Helper: แบ่งลิสต์เป็นกลุ่มย่อย =====
-def _chunk(lst, n):
-    for i in range(0, len(lst), n):
-        yield lst[i:i+n]
-
-# ===== Helper: สร้าง section โลโก้ PTT แบบเรียบร้อยด้วย 'icon' (แก้กรณี text ว่าง) =====
-def build_ptt_icons_section(codes, label_text="กระทบ:", icon_size="lg", per_row=3):
-    """
-    - ใช้คอมโพเนนต์ 'icon' เพื่อให้ขนาดสม่ำเสมอ (xs/sm/md/lg/xl)
-    - จำกัดไอคอนต่อแถวด้วย per_row
-    - แถวแรกโชว์ label "กระทบ:" แถวถัดไปใช้ NBSP (\u00A0) แทน "" เพื่อให้เป็น non-empty text
-    """
-    if not codes:
-        return None
-
-    rows = []
-    first_row = True
-    NBSP = "\u00A0"  # non-breaking space (ถือว่าเป็น non-empty string)
-
-    for group in _chunk(codes, per_row):
-        row_contents = []
-        row_contents.append({
-            "type": "text",
-            "text": label_text if first_row else NBSP,  # <-- เปลี่ยนจาก "" เป็น NBSP
-            "size": "xs",
-            "color": "#888888",
-            "flex": 0
-        })
-        for code in group:
-            url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
-            row_contents.append({
-                "type": "icon",
-                "url": url,
-                "size": icon_size  # "lg" แนะนำ; ถ้าอยากใหญ่ขึ้นได้ "xl"
-            })
-        rows.append({
-            "type": "box",
-            "layout": "baseline",
-            "spacing": "sm",
-            "contents": row_contents
-        })
-        first_row = False
-
-    return {
-        "type": "box",
-        "layout": "vertical",
-        "margin": "sm",
-        "contents": rows
-    }
-
-# ===== ฟังก์ชันสร้าง Flex Message (เรียกใช้ helper ข้างบน) =====
-## ===== Helper: แบ่งลิสต์เป็นกลุ่มย่อย =====
-def _chunk(lst, n):
-    for i in range(0, len(lst), n):
-        yield lst[i:i+n]
-
-# ===== Helper: โลโก้ PTT ขนาด XL เต็ม + กัน text ว่าง =====
-def build_ptt_icons_section(codes, label_text="กระทบ:", icon_size="xl", per_row=1):
-    """
-    - ใช้คอมโพเนนต์ 'icon' เพื่อให้ขนาดใหญ่สุด (xl)
-    - แถวละ 1 โลโก้เพื่อให้ขนาดเต็มชัดเจน
-    - แถวแรกโชว์ label 'กระทบ:' แถวถัดไปใช้ NBSP เพื่อผ่าน validation
-    """
-    if not codes:
-        return None
-
-    rows = []
-    first_row = True
-    NBSP = "\u00A0"  # non‑breaking space (non-empty string)
-
-    for group in _chunk(codes, per_row):
-        row_contents = []
-        row_contents.append({
-            "type": "text",
-            "text": label_text if first_row else NBSP,
-            "size": "sm",  # label ใหญ่ขึ้นเล็กน้อย
-            "color": "#888888",
-            "flex": 0
-        })
-        for code in group:
-            url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
-            row_contents.append({
-                "type": "icon",
-                "url": url,
-                "size": icon_size  # ขนาด XL เต็ม
-            })
-        rows.append({
-            "type": "box",
-            "layout": "baseline",
-            "spacing": "md",
-            "contents": row_contents
-        })
-        first_row = False
-
-    return {
-        "type": "box",
-        "layout": "vertical",
-        "margin": "sm",
-        "contents": rows
-    }
-
-# ===== ฟังก์ชันสร้าง Flex Message (หัวข้อ/รายละเอียดจัดระเบียบ + โลโก้ XL เต็ม) =====
 def create_flex_message(news_items):
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
     bubbles = []
 
     for item in news_items:
-        # ตัดทอน breakdown ไม่ให้ยาวเกิน
         bd_text = (item.get("score_breakdown") or "-")
         bd_lines = bd_text.splitlines()
         if len(bd_lines) > 6:
             bd_text = "\n".join(bd_lines[:6]) + "\n... (ตัดทอน)"
 
-        # === แถวโลโก้: ใช้ baseline (รองรับ icon) + ไซซ์ใหญ่ ===
         codes = item.get("ptt_companies") or []
         icons_row = None
         if codes:
-            # ≤3 โลโก้ = XL (ใหญ่ชัด), ≥4 โลโก้ = LG (กันล้นบรรทัด)
             icon_size = "xl" if len(codes) <= 3 else "lg"
-
             row_contents = [
                 {"type": "text", "text": "กระทบ:", "size": "xs", "color": "#888888", "flex": 0}
             ]
             for code in codes:
                 url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
-                row_contents.append({
-                    "type": "icon",
-                    "url": url,
-                    "size": icon_size
-                })
+                row_contents.append({"type": "icon", "url": url, "size": icon_size})
+            icons_row = {"type": "box", "layout": "baseline", "margin": "sm", "spacing": "md", "contents": row_contents}
 
-            icons_row = {
-                "type": "box",
-                "layout": "baseline",   # ← ใช้ baseline เพื่อให้วาง icon ได้
-                "margin": "sm",
-                "spacing": "md",
-                "contents": row_contents
-            }
-
-        # ---- body ----
         body_contents = [
-            # หัวข้อข่าว
-            {
-                "type": "text",
-                "text": item.get("title","-"),
-                "weight":"bold",
-                "size":"xl",
-                "wrap":True,
-                "color":"#111111",
-                "maxLines": 2
-            },
-            # เมทาดาต้า
-            {
-                "type": "box",
-                "layout": "horizontal",
-                "margin": "sm",
-                "contents": [
-                    {"type": "text", "text": f"🗓 {item.get('date','-')}", "size": "xs", "color": "#9E9E9E", "flex": 6},
-                    {"type": "text", "text": f"📌 {item.get('category','')}", "size": "xs", "color": "#9E9E9E", "align": "end", "flex": 4}
-                ]
-            },
-            {"type": "text", "text": f"🌍 {item.get('site','')}", "size":"xs", "color":"#448AFF", "margin":"xs"},
+            {"type":"text","text": item.get("title","-"),"weight":"bold","size":"xl","wrap":True,"color":"#111111","maxLines":2},
+            {"type":"box","layout":"horizontal","margin":"sm","contents":[
+                {"type":"text","text": f"🗓 {item.get('date','-')}", "size":"xs", "color":"#9E9E9E","flex":6},
+                {"type":"text","text": f"📌 {item.get('category','')}", "size":"xs","color":"#9E9E9E","align":"end","flex":4}
+            ]},
+            {"type":"text","text": f"🌍 {item.get('site','')}", "size":"xs","color":"#448AFF","margin":"xs"},
         ]
 
         if icons_row:
             body_contents.append(icons_row)
 
-        # คั่นเส้นบาง ๆ
-        body_contents.append({"type": "text", "text": "—", "size": "xs", "color": "#E0E0E0", "margin": "sm"})
-
-        # สรุป + เหตุผลคะแนน
+        body_contents.append({"type":"text","text":"—","size":"xs","color":"#E0E0E0","margin":"sm"})
         body_contents += [
-            {
-                "type": "text",
-                "text": item.get("gemini_summary") or "ไม่พบสรุปข่าว",
-                "size":"sm",
-                "wrap":True,
-                "margin":"sm",
-                "maxLines":6,
-                "color":"#1A237E",
-                "weight":"bold"
-            },
-            {
-                "type": "box",
-                "layout": "vertical",
-                "margin": "md",
-                "spacing": "sm",
-                "contents": [
-                    {"type": "text", "text": "ผลกระทบ / เหตุผลคะแนน", "weight": "bold", "size": "sm", "color": "#D32F2F"},
-                    {"type": "text", "text": f"คะแนนรวม: {item.get('gemini_score','-')} คะแนน", "size": "sm", "wrap": True, "color": "#C62828", "weight": "bold"},
-                    {"type": "text", "text": (item.get("gemini_reason") or "-"), "size": "sm", "wrap": True, "color": "#C62828", "maxLines": 6},
-                    {"type": "text", "text": bd_text, "size": "xs", "wrap": True, "color": "#8E0000"}
-                ]
-            }
+            {"type":"text","text": item.get("gemini_summary") or "ไม่พบสรุปข่าว","size":"sm","wrap":True,"margin":"sm","maxLines":6,"color":"#1A237E","weight":"bold"},
+            {"type":"box","layout":"vertical","margin":"md","spacing":"sm","contents":[
+                {"type":"text","text":"ผลกระทบ / เหตุผลคะแนน","weight":"bold","size":"sm","color":"#D32F2F"},
+                {"type":"text","text": f"คะแนนรวม: {item.get('gemini_score','-')} คะแนน","size":"sm","wrap":True,"color":"#C62828","weight":"bold"},
+                {"type":"text","text": (item.get("gemini_reason") or "-"),"size":"sm","wrap":True,"color":"#C62828","maxLines":6},
+                {"type":"text","text": bd_text,"size":"xs","wrap":True,"color":"#8E0000"}
+            ]}
         ]
 
         bubble = {
             "type": "bubble",
             "size": "mega",
-            "hero": {
-                "type": "image",
-                "url": item.get("image") or "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png",
-                "size": "full",
-                "aspectRatio": "16:9",
-                "aspectMode": "cover"
-            },
-            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents},
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "sm",
-                "contents": [
-                    {"type": "button", "style": "primary", "color": "#1DB446",
-                     "action": {"type": "uri", "label": "อ่านต่อ", "uri": item.get("link","#")}}
-                ]
-            }
+            "hero": {"type":"image","url": item.get("image") or DEFAULT_ICON_URL,"size":"full","aspectRatio":"16:9","aspectMode":"cover"},
+            "body": {"type":"box","layout":"vertical","spacing":"md","contents": body_contents},
+            "footer": {"type":"box","layout":"vertical","spacing":"sm","contents":[
+                {"type":"button","style":"primary","color":"#1DB446","action":{"type":"uri","label":"อ่านต่อ","uri": item.get("link","#")}}
+            ]}
         }
         bubbles.append(bubble)
 
-    # แบ่ง carousel
     carousels = []
     for i in range(0, len(bubbles), 10):
         carousels.append({
@@ -553,7 +299,6 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
-
 
 def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
@@ -572,7 +317,7 @@ def broadcast_flex_message(access_token, flex_carousels):
 def main():
     # 1) ดึงข่าว 3 วันทั้งหมด
     all_news = fetch_news_3days()
-    print(f"ดึงข่าวทั้งหมดภายใน 1 วัน: {len(all_news)} รายการ")
+    print(f"ดึงข่าวทั้งหมดภายใน 3 วัน: {len(all_news)} รายการ")
     if not all_news:
         print("ไม่พบข่าว")
         return
@@ -582,14 +327,14 @@ def main():
     top_candidates = ranked[:min(10, len(ranked))]
     print(f"ส่งให้ Gemini วิเคราะห์เพียง {len(top_candidates)} ข่าว (จำกัด 10)")
 
-    # 3) วิเคราะห์ด้วย LLM (จำกัดโควตา 10 calls)
+    # 3) วิเคราะห์ด้วย LLM
     ptt_related_news = []
+    SLEEP_MIN, SLEEP_MAX = SLEEP_BETWEEN_CALLS
     for news in top_candidates:
-        # ดึงเนื้อหาเพิ่มเมื่อ summary สั้น
         if len(news.get('summary','')) < 50:
             try:
                 art = Article(news['link']); art.download(); art.parse()
-                news['detail'] = art.text.strip()
+                news['detail'] = (art.text or "").strip() or news['title']
             except Exception:
                 news['detail'] = news['title']
         else:
@@ -598,7 +343,6 @@ def main():
         out = gemini_summary_and_score(news)
         news['gemini_output'] = out
 
-        # ดึงค่าที่ต้องการ
         m_score = re.search(r"คะแนน[:：]\s*(\d+)", out or "")
         news['gemini_score'] = int(m_score.group(1)) if m_score else 3
 
@@ -608,10 +352,8 @@ def main():
         m_reason = re.search(r"ผลกระทบต่อ\s*ปตท\.[：:]\s*(.*)", out or "")
         news['gemini_reason'] = m_reason.group(1).strip() if m_reason else "-"
 
-        # เก็บรายชื่อบริษัทสำหรับแสดงไอคอน
         news['ptt_companies'] = extract_ptt_companies(news.get('gemini_reason', ''))
 
-        # ดึง "เหตุผลคะแนนรวม"
         m_bd = re.search(r"เหตุผลคะแนนรวม[:：]\s*(.*)", out or "", flags=re.DOTALL)
         if m_bd:
             score_bd_raw = m_bd.group(1).strip()
@@ -620,11 +362,10 @@ def main():
         else:
             news['score_breakdown'] = "-"
 
-        # เก็บเฉพาะข่าวที่โมเดลระบุว่ากระทบต่อกลุ่ม PTT
         if is_ptt_related_from_output(out):
             ptt_related_news.append(news)
 
-        time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
+        time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
 
     print(f"ใช้ Gemini ไปแล้ว: {GEMINI_CALLS}/{GEMINI_DAILY_BUDGET} calls")
 
@@ -632,11 +373,11 @@ def main():
         print("ไม่พบข่าวที่โมเดลระบุว่ากระทบต่อกลุ่ม PTT จากตัวเต็ง 10 ข่าว")
         return
 
-    # 4) คัด Top 10 ตามคะแนน (จริง ๆ จะไม่เกิน 10 อยู่แล้ว)
+    # 4) คัด Top 10 ตามคะแนน
     ptt_related_news.sort(key=lambda n: (n.get('gemini_score',0), n.get('published', datetime.min)), reverse=True)
     top_news = ptt_related_news[:10]
 
-    # 5) ดึงรูปภาพเฉพาะ Top แล้วสร้าง Flex
+    # 5) ดึงรูปภาพและสร้าง Flex
     for item in top_news:
         item["image"] = fetch_article_image(item["link"]) or ""
 
