@@ -5,9 +5,10 @@ pytz>=2024.1
 newspaper3k>=0.2.8
 requests>=2.32.3
 
-# deps ที่มักจำเป็นสำหรับ newspaper3k
+# deps สำหรับ newspaper3k
 beautifulsoup4>=4.12.3
 lxml>=5.2.2
+lxml_html_clean>=0.2.0
 cssselect>=1.2.0
 tldextract>=5.1.2
 Pillow>=10.3.0
@@ -15,5 +16,5 @@ nltk>=3.8.1
 jieba>=0.42.1
 tinysegmenter>=0.3
 
-# ใช้ตอนรันบนเครื่อง (โหลดค่า .env)
+# ใช้ตอนรันโลคัล (.env)
 python-dotenv>=1.0.1
