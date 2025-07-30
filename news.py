@@ -236,7 +236,7 @@ def _chunk(lst, n):
         yield lst[i:i+n]
 
 def create_flex_message(news_items):
-    ICON_SIZE = "xxs"  # เล็กลงเพื่อให้โลโก้ไม่เด่นเกิน
+    ICON_SIZE = "md"  # ขยายไอคอนเป็น md (หรือ "lg" ได้ถ้าอยากให้ใหญ่ขึ้น)
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
 
     bubbles = []
@@ -254,10 +254,10 @@ def create_flex_message(news_items):
             icon_imgs.append({
                 "type": "image",
                 "url": url,
-                "size": ICON_SIZE,      # ขนาดเล็กสม่ำเสมอ
-                "aspectRatio": "1:1",   # สี่เหลี่ยมจัตุรัส
-                "aspectMode": "fit"     # ไม่ครอป/ไม่ยืด
-                # อย่าใส่ 'margin' ใน image (Flex ไม่รองรับ)
+                "size": ICON_SIZE,        # ขยายขนาดเป็น md หรือ lg
+                "aspectRatio": "1:1",
+                "aspectMode": "fit"
+                # ถ้ายังไม่ใหญ่พอ ลองเพิ่ม "width": "40px"
             })
 
         icons_row = None
@@ -268,8 +268,9 @@ def create_flex_message(news_items):
                 "margin": "sm",
                 "spacing": "sm",
                 "contents": [
-                    {"type": "text", "text": "กระทบ:", "size": "xs", "color": "#888888"}
-                ] + icon_imgs
+                    {"type": "text", "text": "กระทบ:", "size": "xs", "color": "#888888", "align": "start"}
+                ] + icon_imgs,
+                "alignItems": "flex-start",   # ทำให้ภาพและข้อความเรียงชิดบน
             }
 
         # ---- สร้าง body ----
@@ -295,7 +296,7 @@ def create_flex_message(news_items):
             {"type": "text", "text": f"🌍 {item.get('site','')}", "size": "xs", "color": "#448AFF", "margin": "sm"},
         ]
         if icons_row:
-            body_contents.append(icons_row)
+            body_contents.append(icons_row)   # ใส่ไอคอนต่อท้าย
 
         body_contents += [
             {
@@ -382,7 +383,6 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
-
 
 def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
