@@ -236,6 +236,7 @@ def _chunk(lst, n):
         yield lst[i:i+n]
 
 def create_flex_message(news_items):
+    import re
     ICON_SIZE = "md"        # หรือ "lg" ถ้าอยากให้ใหญ่ขึ้น
     ICONS_PER_ROW = 2
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
@@ -251,6 +252,8 @@ def create_flex_message(news_items):
         bd_lines = bd_text.splitlines()
         if len(bd_lines) > 6:
             bd_text = "\n".join(bd_lines[:6]) + "\n... (ตัดทอน)"
+        # ลบ - ออกเฉพาะบรรทัดต้น bullet
+        bd_clean = re.sub(r"^- ", "", bd_text, flags=re.MULTILINE)
 
         # ==== แถวไอคอนบริษัท: Grid 2 อันต่อแถว, ชิดซ้าย ====
         icon_imgs = []
@@ -328,11 +331,17 @@ def create_flex_message(news_items):
                 "layout": "vertical",
                 "margin": "lg",
                 "contents": [
-                    {"type": "text", "text": "ผลกระทบ / เหตุผลคะแนน", "weight": "bold", "size": "sm", "color": "#D32F2F"},
+                    {
+                        "type": "text",
+                        "text": "ผลกระทบ / เหตุผลคะแนน",
+                        "weight": "bold",
+                        "size": "lg",  # ขนาดใหญ่
+                        "color": "#D32F2F"
+                    },
                     {
                         "type": "text",
                         "text": f"คะแนนรวม: {item.get('gemini_score','-')} คะแนน",
-                        "size": "sm",
+                        "size": "lg",         # ขนาดใหญ่
                         "wrap": True,
                         "color": "#C62828",
                         "weight": "bold"
@@ -340,15 +349,15 @@ def create_flex_message(news_items):
                     {
                         "type": "text",
                         "text": (item.get("gemini_reason") or "-"),
-                        "size": "sm",
+                        "size": "md",         # ขนาดกลาง
                         "wrap": True,
                         "color": "#C62828",
-                        "maxLines": 6
+                        "maxLines": 8
                     },
                     {
                         "type": "text",
-                        "text": bd_text,
-                        "size": "xs",
+                        "text": bd_clean,
+                        "size": "sm",
                         "wrap": True,
                         "color": "#8E0000"
                     }
@@ -397,6 +406,7 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
+
 
 
 def broadcast_flex_message(access_token, flex_carousels):
