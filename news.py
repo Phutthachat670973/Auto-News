@@ -21,7 +21,7 @@ except Exception:
 # ========================= CONFIG =========================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-CONTEXT_URL = "https://raw.githubusercontent.com/phutthachat1001/Auto-News/refs/heads/main/ptt_business_context.txt?token=GHSAT0AAAAAADGDO44FQ4XYIOWKERUEBZSC2ELCA7Q"  # <<== เปลี่ยนตรงนี้
+CONTEXT_URL = "https://github.com/phutthachat1001/Auto-News/blob/main/ptt_business_context.txt"  # <<== เปลี่ยนตรงนี้
 
 if not GEMINI_API_KEY:
     raise RuntimeError("ไม่พบ GEMINI_API_KEY ใน Environment/Secrets")
