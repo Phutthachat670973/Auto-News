@@ -1,16 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-ดึงข่าวย้อนหลัง 3 วัน -> จัดอันดับหา 10 ข่าวตัวเต็ง (ไม่ใช้ LLM) -> ให้ Gemini วิเคราะห์เฉพาะ 10 ข่าว
--> สรุป + ให้คะแนน + แจกแจงคะแนนรวม (score breakdown) + ผลกระทบต่อบริษัทในกลุ่ม PTT
--> สร้าง Flex Message (มีไอคอนบริษัทที่ได้รับผล) และ (เลือกได้) ส่ง Broadcast ไป LINE OA
-
-คุณสมบัติหลัก
-- ใช้โควตา Gemini สูงสุด 10 calls/รอบ (GEMINI_DAILY_BUDGET = 10)
-- ข้อ 4 เป็น "เหตุผลคะแนนรวม" (score breakdown)
-- Flex: แสดง "ผลกระทบ / เหตุผลคะแนน" + "คะแนนรวม" + breakdown
-- เพิ่มแถว "กระทบ:" + ไอคอนบริษัท (PTTEP, PTTLNG, PTTGL, PTTNGD) ใต้หมวดหมู่
-"""
-
 import os
 import re
 import json
@@ -53,10 +40,37 @@ SLEEP_BETWEEN_CALLS = (1.2, 2.0)    # เว้นจังหวะช่วย
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"  # true=ไม่ยิง LINE, แค่พิมพ์ payload
 
 # --- เวลา/โซน ---
-import pytz
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 now = datetime.now(bangkok_tz)
 THREE_DAYS_AGO = now - timedelta(days=3)
+
+# ========== SENT LINKS: กันส่งซ้ำ (วันนี้กับเมื่อวาน) ==========
+SENT_LINKS_DIR = "sent_links"
+os.makedirs(SENT_LINKS_DIR, exist_ok=True)
+
+def get_sent_links_file(date=None):
+    if date is None:
+        date = datetime.now(bangkok_tz).strftime("%Y-%m-%d")
+    return os.path.join(SENT_LINKS_DIR, f"{date}.txt")
+
+def load_sent_links_today_yesterday():
+    sent_links = set()
+    for i in range(2):  # วันนี้, เมื่อวาน
+        date = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+        path = get_sent_links_file(date)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    url = line.strip()
+                    if url:
+                        sent_links.add(url)
+    return sent_links
+
+def save_sent_links(new_links, date=None):
+    path = get_sent_links_file(date)
+    with open(path, "a", encoding="utf-8") as f:
+        for url in new_links:
+            f.write(url.strip() + "\n")
 
 # --- RSS แหล่งข่าว ---
 news_sources = {
@@ -488,12 +502,21 @@ def main():
     ptt_related_news.sort(key=lambda n: (n.get('gemini_score',0), n.get('published', datetime.min)), reverse=True)
     top_news = ptt_related_news[:10]
 
+    # --- กันข่าวซ้ำ (วันนี้กับเมื่อวาน) ---
+    sent_links = load_sent_links_today_yesterday()
+    top_news_to_send = [n for n in top_news if n["link"] not in sent_links]
+
+    if not top_news_to_send:
+        print("ข่าววันนี้กับเมื่อวานส่งครบหมดแล้ว ไม่มีข่าวใหม่")
+        return
+
     # 5) ดึงรูปภาพและสร้าง Flex
-    for item in top_news:
+    for item in top_news_to_send:
         item["image"] = fetch_article_image(item["link"]) or ""
 
-    carousels = create_flex_message(top_news)
+    carousels = create_flex_message(top_news_to_send)
     broadcast_flex_message(LINE_CHANNEL_ACCESS_TOKEN, carousels)
+    save_sent_links([n["link"] for n in top_news_to_send])
     print("เสร็จสิ้น.")
 
 if __name__ == "__main__":
