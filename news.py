@@ -448,8 +448,9 @@ def main():
         else:
             news['detail'] = ""
         # เรียก LLM filter
-        if llm_ptt_subsidiary_filter(news, model):
-            filtered_news.append(news)
+        if llm_ptt_subsidiary_impact_filter(news, model):
+    filtered_news.append(news)
+
         time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
 
     print(f"ข่าวที่เกี่ยวข้องกับบริษัทลูก PTT: {len(filtered_news)} ข่าว")
