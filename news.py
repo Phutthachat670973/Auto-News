@@ -204,7 +204,6 @@ def is_ptt_related_from_output(out_text: str) -> bool:
     val = m.group(1).strip()
     return any(x in val for x in ["PTTEP","PTTLNG","PTTGL","PTTNGD"])
 
-# ====== ฟังก์ชัน LLM filter สำหรับบริษัทลูก PTT ======
 def llm_ptt_subsidiary_impact_filter(news, llm_model):
     prompt = f'''
 คุณคือผู้เชี่ยวชาญด้านการคัดกรองข่าวสำหรับบริษัทในเครือ ปตท. กรุณาวิเคราะห์ข่าวด้านล่างนี้ แล้วตอบเพียง "ใช่" หรือ "ไม่ใช่" เท่านั้น
@@ -234,6 +233,20 @@ def llm_ptt_subsidiary_impact_filter(news, llm_model):
         print("[ERROR] LLM Filter:", e)
         return False
 
+def rank_candidates(news_list, use_keyword_boost=False):
+    ranked = []
+    for n in news_list:
+        # 1) ความสด (0..3)
+        age_h = (now - n["published"]).total_seconds() / 3600.0
+        recency = max(0.0, (72.0 - min(72.0, age_h))) / 72.0 * 3.0
+        # 2) หมวดข่าว
+        cat_w = {"Energy": 3.0, "Economy": 2.0, "Politics": 1.0}.get(n["category"], 1.0)
+        # 3) ความยาวสรุป
+        length = min(len(n.get("summary","")) / 500.0, 1.0)
+        score = recency + cat_w + length
+        ranked.append((score, n))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    return [n for _, n in ranked]
 
 def _chunk(lst, n):
     for i in range(0, len(lst), n):
@@ -401,7 +414,6 @@ def create_flex_message(news_items):
         }
         bubbles.append(bubble)
 
-    # ปิดฟังก์ชันตรงนี้
     carousels = []
     for i in range(0, len(bubbles), 10):
         carousels.append({
@@ -410,7 +422,6 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
-
 
 def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
@@ -449,8 +460,7 @@ def main():
             news['detail'] = ""
         # เรียก LLM filter
         if llm_ptt_subsidiary_impact_filter(news, model):
-    filtered_news.append(news)
-
+            filtered_news.append(news)
         time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
 
     print(f"ข่าวที่เกี่ยวข้องกับบริษัทลูก PTT: {len(filtered_news)} ข่าว")
