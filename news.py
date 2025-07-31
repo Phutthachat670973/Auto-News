@@ -38,7 +38,6 @@ DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 now = datetime.now(bangkok_tz)
-THREE_DAYS_AGO = now - timedelta(days=3)
 
 # ========== SENT LINKS: กันส่งซ้ำ (วันนี้กับเมื่อวาน) ==========
 SENT_LINKS_DIR = "sent_links"
@@ -73,13 +72,6 @@ news_sources = {
     "CleanTechnica": {"type": "rss", "url": "https://cleantechnica.com/feed/", "category": "Energy", "site": "CleanTechnica"},
     "HydrogenFuelNews": {"type": "rss", "url": "https://www.hydrogenfuelnews.com/feed/", "category": "Energy", "site": "Hydrogen Fuel News"},
     "Economist-Latest": {"type": "rss", "url": "https://www.economist.com/latest/rss.xml", "category": "Economy", "site": "Economist"},
-    "YahooFinance-News": {"type": "rss", "url": "https://finance.yahoo.com/news/rssindex", "category": "Economy", "site": "Yahoo Finance"},
-    "Politico-EU": {"type": "rss", "url": "https://www.politico.eu/feed/", "category": "Politics", "site": "Politico"},
-    "Guardian-Politics": {"type": "rss", "url": "https://www.theguardian.com/politics/rss", "category": "Politics", "site": "Guardian"},
-    "NPR-Politics": {"type": "rss", "url": "https://www.npr.org/rss/rss.php?id=1014", "category": "Politics", "site": "NPR"},
-    "NYT-Politics": {"type": "rss", "url": "https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml", "category": "Politics", "site": "NYT"},
-    "TheHill-Politics": {"type": "rss", "url": "https://thehill.com/rss/syndicator/19109", "category": "Politics", "site": "The Hill"},
-    "ABCNews-Politics": {"type": "rss", "url": "https://abcnews.go.com/abcnews/politicsheadlines", "category": "Politics", "site": "ABC News"},
 }
 
 PTT_ICON_URLS = {
@@ -109,7 +101,7 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
             else:
                 raise last_error
 
-def fetch_news_3days():
+def fetch_news_today_only():
     all_news = []
     for _, info in news_sources.items():
         try:
@@ -121,7 +113,7 @@ def fetch_news_3days():
                     pub_dt = dateutil_parser.parse(entry.updated).astimezone(bangkok_tz)
                 else:
                     continue
-                if pub_dt < THREE_DAYS_AGO:
+                if pub_dt.date() != now.date():
                     continue
                 title = getattr(entry, "title", "-")
                 summary = getattr(entry, "summary", "-")
@@ -438,9 +430,9 @@ def broadcast_flex_message(access_token, flex_carousels):
 
 # ========================= MAIN =========================
 def main():
-    # 1) ดึงข่าว 3 วันทั้งหมด
-    all_news = fetch_news_3days()
-    print(f"ดึงข่าวทั้งหมดภายใน 3 วัน: {len(all_news)} รายการ")
+    # 1) ดึงข่าว "วันนี้" ทั้งหมด
+    all_news = fetch_news_today_only()
+    print(f"ดึงข่าวของวันนี้: {len(all_news)} รายการ")
     if not all_news:
         print("ไม่พบข่าว")
         return
