@@ -12,7 +12,6 @@ from newspaper import Article
 import requests
 import google.generativeai as genai
 
-# (optional) โหลด .env เมื่อรันบนเครื่องนักพัฒนา
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -20,7 +19,6 @@ except Exception:
     pass
 
 # ========================= CONFIG =========================
-# --- API KEY: อ่านจาก Environment/Secrets ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 
@@ -29,17 +27,15 @@ if not GEMINI_API_KEY:
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("ไม่พบ LINE_CHANNEL_ACCESS_TOKEN ใน Environment/Secrets")
 
-# --- ตั้งค่าโมเดล / โควตา ---
 genai.configure(api_key=GEMINI_API_KEY)
 GEMINI_MODEL_NAME = "gemini-1.5-flash"
 model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 
-GEMINI_DAILY_BUDGET = 10            # ใช้โมเดลไม่เกิน 10 ครั้ง/รอบ
+GEMINI_DAILY_BUDGET = 10
 MAX_RETRIES = 3
-SLEEP_BETWEEN_CALLS = (1.2, 2.0)    # เว้นจังหวะช่วยลดโอกาสโดน rate limit
-DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"  # true=ไม่ยิง LINE, แค่พิมพ์ payload
+SLEEP_BETWEEN_CALLS = (1.2, 2.0)
+DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
-# --- เวลา/โซน ---
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 now = datetime.now(bangkok_tz)
 THREE_DAYS_AGO = now - timedelta(days=3)
@@ -72,7 +68,6 @@ def save_sent_links(new_links, date=None):
         for url in new_links:
             f.write(url.strip() + "\n")
 
-# --- RSS แหล่งข่าว ---
 news_sources = {
     "Oilprice": {"type": "rss", "url": "https://oilprice.com/rss/main", "category": "Energy", "site": "Oilprice"},
     "CleanTechnica": {"type": "rss", "url": "https://cleantechnica.com/feed/", "category": "Energy", "site": "CleanTechnica"},
@@ -87,7 +82,6 @@ news_sources = {
     "ABCNews-Politics": {"type": "rss", "url": "https://abcnews.go.com/abcnews/politicsheadlines", "category": "Politics", "site": "ABC News"},
 }
 
-# ===== โลโก้บริษัทในกลุ่ม PTT =====
 PTT_ICON_URLS = {
     "PTTEP":  "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTEP.png",
     "PTTLNG": "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTLNG.jpg",
@@ -96,15 +90,6 @@ PTT_ICON_URLS = {
 }
 DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
-# ----- ตัวเลือก: boost คำสำคัญในการจัดอันดับก่อนส่งเข้า LLM -----
-USE_KEYWORD_BOOST = False
-KEYWORDS = [
-    "PTT","PTTEP","PTTLNG","PTTGL","PTTNGD",
-    "LNG","gas","natural gas","pipeline","regas",
-    "oil","crude","OPEC","refinery","hydrogen","ammonia","CCS","carbon capture"
-]
-
-# ========================= Gemini wrapper =========================
 GEMINI_CALLS = 0
 
 def call_gemini(prompt, max_retries=MAX_RETRIES):
@@ -124,7 +109,6 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
             else:
                 raise last_error
 
-# ========================= Fetch news =========================
 def fetch_news_3days():
     all_news = []
     for _, info in news_sources.items():
@@ -153,28 +137,6 @@ def fetch_news_3days():
             print(f"[WARN] อ่านฟีด {info['site']} ล้มเหลว: {e}")
     return all_news
 
-# ========================= Rank 10 ตัวเต็ง (ไม่ใช้ LLM) =========================
-def rank_candidates(news_list, use_keyword_boost=USE_KEYWORD_BOOST):
-    ranked = []
-    for n in news_list:
-        # 1) ความสด (0..3)
-        age_h = (now - n["published"]).total_seconds() / 3600.0
-        recency = max(0.0, (72.0 - min(72.0, age_h))) / 72.0 * 3.0
-        # 2) หมวดข่าว
-        cat_w = {"Energy": 3.0, "Economy": 2.0, "Politics": 1.0}.get(n["category"], 1.0)
-        # 3) ความยาวสรุป
-        length = min(len(n.get("summary","")) / 500.0, 1.0)
-        score = recency + cat_w + length
-        # 4) (ตัวเลือก) keyword boost
-        if use_keyword_boost:
-            text = (n["title"] + " " + n.get("summary","")).lower()
-            if any(k.lower() in text for k in KEYWORDS):
-                score += 1.5
-        ranked.append((score, n))
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    return [n for _, n in ranked]
-
-# ========================= Download top image =========================
 def fetch_article_image(url):
     try:
         art = Article(url); art.download(); art.parse()
@@ -182,7 +144,6 @@ def fetch_article_image(url):
     except Exception:
         return ""
 
-# ========================= Helper: อ่านชื่อบริษัทจากผลวิเคราะห์ =========================
 def extract_ptt_companies(text: str):
     if not text:
         return []
@@ -192,7 +153,6 @@ def extract_ptt_companies(text: str):
             companies.append(code)
     return companies
 
-# ========================= LLM prompt =========================
 def gemini_summary_and_score(news):
     prompt = f"""
 หัวข้อข่าว: {news['title']}
@@ -244,7 +204,37 @@ def is_ptt_related_from_output(out_text: str) -> bool:
     val = m.group(1).strip()
     return any(x in val for x in ["PTTEP","PTTLNG","PTTGL","PTTNGD"])
 
-# ========================= LINE Flex =========================
+# ====== ฟังก์ชัน LLM filter สำหรับบริษัทลูก PTT ======
+def llm_ptt_subsidiary_impact_filter(news, llm_model):
+    prompt = f'''
+คุณคือผู้เชี่ยวชาญด้านการคัดกรองข่าวสำหรับบริษัทในเครือ ปตท. กรุณาวิเคราะห์ข่าวด้านล่างนี้ แล้วตอบเพียง "ใช่" หรือ "ไม่ใช่" เท่านั้น
+
+ให้ตอบ "ใช่" ถ้าเนื้อหาข่าวนี้
+- มีผลกระทบโดยตรงหรือโดยอ้อมต่อบริษัทเหล่านี้: PTTEP, PTTLNG, PTTGL, PTTNGD
+- แม้ในข่าวจะไม่ได้กล่าวถึงชื่อบริษัทเหล่านี้โดยตรง แต่มีประเด็นที่เกี่ยวข้องกับอุตสาหกรรม/ธุรกิจที่บริษัทเหล่านี้ดำเนินการ เช่น ราคาน้ำมัน, ราคาก๊าซธรรมชาติ, นโยบายหรือกฎระเบียบที่เกี่ยวกับ LNG หรือก๊าซฯ, ทิศทางตลาดพลังงาน ที่บริษัทเหล่านี้จะได้รับผลกระทบหรือมีโอกาสทางธุรกิจ
+
+เช่น
+- ราคาน้ำมันหรือก๊าซปรับขึ้น/ลง → อาจมีผลกับ PTTEP หรือ PTTNGD
+- นโยบาย LNG หรือโครงการใหม่ที่เกี่ยวกับการนำเข้าหรือขนส่ง LNG → อาจมีผลกับ PTTLNG หรือ PTTGL
+- ความเปลี่ยนแปลงในอุตสาหกรรมพลังงานที่เชื่อมโยงกับธุรกิจหลักของบริษัทเหล่านี้
+
+หากข่าวไม่มีผลกระทบที่เกี่ยวข้องกับธุรกิจหลักของบริษัทเหล่านี้เลย ให้ตอบ "ไม่ใช่"
+ตอบเพียง "ใช่" หรือ "ไม่ใช่" เท่านั้น  
+---
+ข่าว:
+{news['title']}
+{news['summary']}
+{news.get('detail', '')}
+'''
+    try:
+        resp = llm_model.generate_content(prompt)
+        ans = resp.text.strip().replace("\n", "")
+        return ans.startswith("ใช่")
+    except Exception as e:
+        print("[ERROR] LLM Filter:", e)
+        return False
+
+
 def _chunk(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i+n]
@@ -261,12 +251,9 @@ def create_flex_message(news_items):
 
     bubbles = []
     for item in news_items:
-        # --- ไม่ตัดทอน breakdown แล้ว แสดงครบทุกบรรทัด ---
         bd_text = (item.get("score_breakdown") or "-")
-        # ลบ - ออกเฉพาะบรรทัดต้น bullet
         bd_clean = re.sub(r"^- ", "", bd_text, flags=re.MULTILINE)
 
-        # ==== Grid ไอคอนบริษัท 2 อันต่อแถว ====
         icon_imgs = []
         for code in (item.get("ptt_companies") or []):
             url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
@@ -306,7 +293,6 @@ def create_flex_message(news_items):
                 )
             }
 
-        # ---- สร้าง body ----
         body_contents = [
             {
                 "type": "text",
@@ -373,7 +359,7 @@ def create_flex_message(news_items):
                     },
                     {
                         "type": "text",
-                        "text": bd_clean,  # ไม่ตัด ... อีกต่อไป
+                        "text": bd_clean,
                         "size": "sm",
                         "wrap": True,
                         "color": "#8E0000",
@@ -399,6 +385,10 @@ def create_flex_message(news_items):
                 "spacing": "md",
                 "contents": body_contents
             },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
             "footer": {
                 "type": "box",
                 "layout": "vertical",
@@ -447,15 +437,11 @@ def main():
         print("ไม่พบข่าว")
         return
 
-    # 2) เลือกตัวเต็ง 10 ข่าว (ไม่ใช้ LLM)
-    ranked = rank_candidates(all_news, use_keyword_boost=USE_KEYWORD_BOOST)
-    top_candidates = ranked[:min(10, len(ranked))]
-    print(f"ส่งให้ Gemini วิเคราะห์เพียง {len(top_candidates)} ข่าว (จำกัด 10)")
-
-    # 3) วิเคราะห์ด้วย LLM
-    ptt_related_news = []
+    # 2) กรองข่าวด้วย LLM (เฉพาะที่เกี่ยวข้องบริษัทลูก PTT 4 บริษัท)
     SLEEP_MIN, SLEEP_MAX = SLEEP_BETWEEN_CALLS
-    for news in top_candidates:
+    filtered_news = []
+    for news in all_news:
+        # ดึง detail เพิ่ม ถ้า summary สั้นมาก
         if len(news.get('summary','')) < 50:
             try:
                 art = Article(news['link']); art.download(); art.parse()
@@ -464,7 +450,25 @@ def main():
                 news['detail'] = news['title']
         else:
             news['detail'] = ""
+        # เรียก LLM filter
+        if llm_ptt_subsidiary_filter(news, model):
+            filtered_news.append(news)
+        time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
 
+    print(f"ข่าวที่เกี่ยวข้องกับบริษัทลูก PTT: {len(filtered_news)} ข่าว")
+
+    if not filtered_news:
+        print("ไม่มีข่าวเกี่ยวข้องบริษัทลูก PTT")
+        return
+
+    # 3) เลือกตัวเต็ง 10 ข่าว (ไม่ใช้ LLM)
+    ranked = rank_candidates(filtered_news, use_keyword_boost=False)
+    top_candidates = ranked[:min(10, len(ranked))]
+    print(f"ส่งให้ Gemini วิเคราะห์เพียง {len(top_candidates)} ข่าว (จำกัด 10)")
+
+    # 4) วิเคราะห์ด้วย Gemini LLM
+    ptt_related_news = []
+    for news in top_candidates:
         out = gemini_summary_and_score(news)
         news['gemini_output'] = out
 
@@ -487,6 +491,7 @@ def main():
         else:
             news['score_breakdown'] = "-"
 
+        # เช็คซ้ำเพื่อความชัวร์
         if is_ptt_related_from_output(out):
             ptt_related_news.append(news)
 
@@ -498,7 +503,7 @@ def main():
         print("ไม่พบข่าวที่โมเดลระบุว่ากระทบต่อกลุ่ม PTT จากตัวเต็ง 10 ข่าว")
         return
 
-    # 4) คัด Top 10 ตามคะแนน
+    # 5) คัด Top 10 ตามคะแนน
     ptt_related_news.sort(key=lambda n: (n.get('gemini_score',0), n.get('published', datetime.min)), reverse=True)
     top_news = ptt_related_news[:10]
 
@@ -510,7 +515,7 @@ def main():
         print("ข่าววันนี้กับเมื่อวานส่งครบหมดแล้ว ไม่มีข่าวใหม่")
         return
 
-    # 5) ดึงรูปภาพและสร้าง Flex
+    # 6) ดึงรูปภาพและสร้าง Flex
     for item in top_news_to_send:
         item["image"] = fetch_article_image(item["link"]) or ""
 
