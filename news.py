@@ -306,7 +306,7 @@ def create_flex_message(news_items):
                 "size": "lg",
                 "wrap": True,
                 "color": "#111111",
-                # "maxLines": 3  # ลบออก
+                # "maxLines": 3   # ถ้าอยากจำกัดหัวข้อข่าว
             },
             {
                 "type": "box",
@@ -329,7 +329,7 @@ def create_flex_message(news_items):
                 "size": "md",
                 "wrap": True,
                 "margin": "md",
-                # "maxLines": 6,  # ลบออก
+                # "maxLines": 6,   # เอาออกเพื่อแสดงผลเต็ม
                 "color": "#1A237E",
                 "weight": "bold"
             },
@@ -352,7 +352,7 @@ def create_flex_message(news_items):
                         "wrap": True,
                         "color": "#C62828",
                         "weight": "bold",
-                        # "maxLines": 8  # ลบออก
+                        # "maxLines": 8   # เอาออกเพื่อแสดงผลเต็ม
                     },
                     {
                         "type": "text",
@@ -361,7 +361,6 @@ def create_flex_message(news_items):
                         "wrap": True,
                         "color": "#000000",
                         "weight": "bold"
-                        # "maxLines": ...  # ลบออก
                     },
                     {
                         "type": "text",
@@ -370,7 +369,6 @@ def create_flex_message(news_items):
                         "wrap": True,
                         "color": "#8E0000",
                         "weight": "bold"
-                        # "maxLines": ...  # ลบออก
                     }
                 ]
             }
@@ -398,6 +396,15 @@ def create_flex_message(news_items):
                 "spacing": "sm",
                 "contents": [
                     {
+                        "type": "text",
+                        "text": "หมายเหตุ: การวิเคราะห์ทั้งหมดอยู่ในช่วงทดลอง ขออภัยในความไม่สะดวก",
+                        "size": "xs",
+                        "color": "#A0A0A0",
+                        "wrap": True,
+                        "margin": "md",
+                        "weight": "regular"
+                    },
+                    {
                         "type": "button",
                         "style": "primary",
                         "color": "#1DB446",
@@ -416,7 +423,6 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
-
 
 def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
