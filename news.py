@@ -399,7 +399,7 @@ def create_flex_message(news_items):
                         "type": "text",
                         "text": "หมายเหตุ: การวิเคราะห์ทั้งหมดอยู่ในช่วงทดสอบ ขออภัยในความไม่สะดวก",
                         "size": "xs",
-                        "color": "#A0A0A0",
+                        "color": "#FF0000",
                         "wrap": True,
                         "margin": "md",
                         "weight": "regular"
