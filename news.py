@@ -419,7 +419,7 @@ def create_flex_message(news_items):
     for i in range(0, len(bubbles), 10):
         carousels.append({
             "type": "flex",
-            "altText": f"Top ข่าวเกี่ยวข้อง ปตท. {now_thai}",
+            "altText": f"ข่าวเกี่ยวข้องกับ ปตท. {now_thai}",
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
