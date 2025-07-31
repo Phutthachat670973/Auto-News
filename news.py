@@ -21,7 +21,7 @@ except Exception:
 # ========================= CONFIG =========================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-CONTEXT_URL = "https://raw.githubusercontent.com/phutthachat1001/Auto-News/refs/heads/main/ptt_business_context.txt?token=GHSAT0AAAAAADGDO44FFN2KMDD5KWOJZIRK2ELCJNQ"
+CONTEXT_URL = "https://raw.githubusercontent.com/phutthachat1001/Auto-News/main/ptt_business_context.txt"  # <-- RAW URL ไม่ต้องใส่ token
 
 if not GEMINI_API_KEY:
     raise RuntimeError("ไม่พบ GEMINI_API_KEY ใน Environment/Secrets")
@@ -41,7 +41,6 @@ bangkok_tz = pytz.timezone("Asia/Bangkok")
 now = datetime.now(bangkok_tz)
 TODAY = now.date()
 
-# ========== SENT LINKS: กันส่งซ้ำ (วันนี้กับเมื่อวาน) ==========
 SENT_LINKS_DIR = "sent_links"
 os.makedirs(SENT_LINKS_DIR, exist_ok=True)
 
@@ -69,7 +68,6 @@ def save_sent_links(new_links, date=None):
         for url in new_links:
             f.write(url.strip() + "\n")
 
-# ===== โลโก้บริษัทในกลุ่ม PTT =====
 PTT_ICON_URLS = {
     "PTTEP":  "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTEP.png",
     "PTTLNG": "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTLNG.jpg",
@@ -156,10 +154,12 @@ def extract_ptt_companies(text: str):
             companies.append(code)
     return companies
 
-# --------- โหลด business context เพียง 1 ครั้งก่อนวิเคราะห์ข่าว ---------
+# --------- โหลด business context พร้อม debug print ---------
 def load_business_context():
     try:
+        print("Load from:", CONTEXT_URL)
         resp = requests.get(CONTEXT_URL)
+        print("Status code:", resp.status_code)
         if resp.status_code == 200:
             return resp.text.strip()
         else:
@@ -233,17 +233,14 @@ def create_flex_message(news_items):
             yield lst[i:i+n]
 
     def split_bullets(text):
-        """ แปลง bullet (เช่น 1. ... หรือ - ...) เป็น list แยกบรรทัด """
         bullets = []
         for line in text.strip().splitlines():
             line = line.strip()
             if not line:
                 continue
-            # รองรับ bullet แบบ "1 คะแนน:", "- 2 คะแนน:" หรือ "- ..."
             if re.match(r"^(\d+|\-)\s*คะแนน[:：]", line) or line.startswith("- "):
                 bullets.append(line)
             else:
-                # ถ้าไม่ขึ้น bullet ให้ต่อท้ายอันล่าสุด (กรณี LLM ตัดบรรทัด)
                 if bullets:
                     bullets[-1] += " " + line
                 else:
@@ -256,7 +253,6 @@ def create_flex_message(news_items):
         bd_clean = re.sub(r"^- ", "", bd_text, flags=re.MULTILINE)
         bd_bullets = split_bullets(bd_clean)
 
-        # --- ทำ icon grid สำหรับบริษัทที่ได้รับผลกระทบ ---
         icon_imgs = []
         for code in (item.get("ptt_companies") or []):
             url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
@@ -360,7 +356,6 @@ def create_flex_message(news_items):
                         "color": "#000000",
                         "weight": "bold"
                     },
-                    # เพิ่มแต่ละ bullet เป็น text object
                     *[
                         {
                             "type": "text",
@@ -438,19 +433,16 @@ def main():
         print("[ERROR] ไม่มี business context สำหรับวิเคราะห์ข่าว")
         return
 
-    # 1) ดึงข่าว "วันนี้" เท่านั้น
     all_news = fetch_news_today()
     print(f"ดึงข่าววันนี้: {len(all_news)} รายการ")
     if not all_news:
         print("ไม่พบข่าว")
         return
 
-    # 2) เลือกตัวเต็ง 10 ข่าว (เรียงตามสูตร)
     ranked = rank_candidates(all_news)
     top_candidates = ranked[:min(10, len(ranked))]
     print(f"ส่งให้ Gemini วิเคราะห์ {len(top_candidates)} ข่าว (จำกัด 10)")
 
-    # 3) วิเคราะห์ด้วย Gemini
     SLEEP_MIN, SLEEP_MAX = SLEEP_BETWEEN_CALLS
     ptt_related_news = []
     for news in top_candidates:
@@ -484,7 +476,6 @@ def main():
         else:
             news['score_breakdown'] = "-"
 
-        # เพิ่มเงื่อนไขนี้หากต้องการกรองข่าวที่กระทบ PTT จริง ๆ (จาก output)
         if is_ptt_related_from_output(out):
             ptt_related_news.append(news)
 
@@ -496,11 +487,9 @@ def main():
         print("ไม่พบข่าวที่โมเดลระบุว่ากระทบต่อกลุ่ม PTT จากตัวเต็ง 10 ข่าว")
         return
 
-    # 4) คัด Top 10 ตามคะแนน
     ptt_related_news.sort(key=lambda n: (n.get('gemini_score',0), n.get('published', datetime.min)), reverse=True)
     top_news = ptt_related_news[:10]
 
-    # --- กันข่าวซ้ำ (วันนี้กับเมื่อวาน) ---
     sent_links = load_sent_links_today_yesterday()
     top_news_to_send = [n for n in top_news if n["link"] not in sent_links]
 
@@ -508,7 +497,6 @@ def main():
         print("ข่าววันนี้กับเมื่อวานส่งครบหมดแล้ว ไม่มีข่าวใหม่")
         return
 
-    # 5) ดึงรูปภาพและสร้าง Flex
     for item in top_news_to_send:
         item["image"] = fetch_article_image(item["link"]) or ""
 
