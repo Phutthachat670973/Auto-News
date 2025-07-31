@@ -389,10 +389,6 @@ def create_flex_message(news_items):
                 "type": "box",
                 "layout": "vertical",
                 "spacing": "sm",
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "sm",
                 "contents": [
                     {
                         "type": "button",
@@ -405,7 +401,7 @@ def create_flex_message(news_items):
         }
         bubbles.append(bubble)
 
-    # แบ่ง Carousel ละไม่เกิน 10 bubbles
+    # ปิดฟังก์ชันตรงนี้
     carousels = []
     for i in range(0, len(bubbles), 10):
         carousels.append({
@@ -414,6 +410,7 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
+
 
 def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
