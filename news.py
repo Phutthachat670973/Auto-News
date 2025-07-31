@@ -306,7 +306,7 @@ def create_flex_message(news_items):
                 "size": "lg",
                 "wrap": True,
                 "color": "#111111",
-                "maxLines": 3
+                # "maxLines": 3  # ลบออก
             },
             {
                 "type": "box",
@@ -329,7 +329,7 @@ def create_flex_message(news_items):
                 "size": "md",
                 "wrap": True,
                 "margin": "md",
-                "maxLines": 6,
+                # "maxLines": 6,  # ลบออก
                 "color": "#1A237E",
                 "weight": "bold"
             },
@@ -352,7 +352,7 @@ def create_flex_message(news_items):
                         "wrap": True,
                         "color": "#C62828",
                         "weight": "bold",
-                        "maxLines": 8
+                        # "maxLines": 8  # ลบออก
                     },
                     {
                         "type": "text",
@@ -361,6 +361,7 @@ def create_flex_message(news_items):
                         "wrap": True,
                         "color": "#000000",
                         "weight": "bold"
+                        # "maxLines": ...  # ลบออก
                     },
                     {
                         "type": "text",
@@ -369,6 +370,7 @@ def create_flex_message(news_items):
                         "wrap": True,
                         "color": "#8E0000",
                         "weight": "bold"
+                        # "maxLines": ...  # ลบออก
                     }
                 ]
             }
@@ -414,6 +416,7 @@ def create_flex_message(news_items):
             "contents": {"type": "carousel", "contents": bubbles[i:i+10]}
         })
     return carousels
+
 
 def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
