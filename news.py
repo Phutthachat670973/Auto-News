@@ -101,10 +101,10 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
             else:
                 raise last_error
 
-# ========= ดึงข่าว 18:00 ของวันก่อน ถึง 06:00 ของวันนี้ =========
-def fetch_news_evening_to_morning():
+# ========= ดึงข่าว "เมื่อวาน 00:00 ถึง วันนี้ 06:00" =========
+def fetch_news_yesterday_to_this_morning():
     now = datetime.now(bangkok_tz)
-    start_time = (now - timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+    start_time = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     end_time = now.replace(hour=6, minute=0, second=0, microsecond=0)
     if start_time.tzinfo is None:
         start_time = bangkok_tz.localize(start_time)
@@ -437,9 +437,9 @@ def broadcast_flex_message(access_token, flex_carousels):
 
 # ========================= MAIN =========================
 def main():
-    # 1) ดึงข่าวระหว่างเวลา 18:00 ของวันก่อน – 06:00 ของวันนี้
-    all_news = fetch_news_evening_to_morning()
-    print(f"ดึงข่าวช่วง 18:00-06:00: {len(all_news)} รายการ")
+    # 1) ดึงข่าวตั้งแต่เมื่อวาน 00:00 ถึงวันนี้ 06:00
+    all_news = fetch_news_yesterday_to_this_morning()
+    print(f"ดึงข่าวช่วงเมื่อวานทั้งวันถึงวันนี้ 6 โมงเช้า: {len(all_news)} รายการ")
     if not all_news:
         print("ไม่พบข่าว")
         return
