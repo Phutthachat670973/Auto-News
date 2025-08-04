@@ -101,29 +101,38 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
             else:
                 raise last_error
 
-def fetch_news_today_only():
+# ========= NEW: ดึงข่าวช่วงเวลา เช่น 22:00 - 06:00 =========
+def fetch_news_between_times(start_hour=22, end_hour=6):
     all_news = []
+    now = datetime.now(bangkok_tz)
+    # คำนวณช่วงเวลา
+    if start_hour > end_hour:
+        start_time = (now - timedelta(days=1)).replace(hour=start_hour, minute=0, second=0, microsecond=0)
+        end_time = now.replace(hour=end_hour, minute=0, second=0, microsecond=0)
+    else:
+        start_time = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+        end_time = now.replace(hour=end_hour, minute=0, second=0, microsecond=0)
+    if start_time.tzinfo is None:
+        start_time = bangkok_tz.localize(start_time)
+    if end_time.tzinfo is None:
+        end_time = bangkok_tz.localize(end_time)
     for _, info in news_sources.items():
         try:
             feed = feedparser.parse(info["url"])
             for entry in feed.entries:
-                if hasattr(entry, "published"):
-                    pub_dt = dateutil_parser.parse(entry.published).astimezone(bangkok_tz)
-                elif hasattr(entry, "updated"):
-                    pub_dt = dateutil_parser.parse(entry.updated).astimezone(bangkok_tz)
-                else:
+                pub_str = getattr(entry, "published", None) or getattr(entry, "updated", None)
+                if not pub_str:
                     continue
-                if pub_dt.date() != now.date():
-                    continue
-                title = getattr(entry, "title", "-")
-                summary = getattr(entry, "summary", "-")
-                link = getattr(entry, "link", None)
-                if not link:
+                pub_dt = dateutil_parser.parse(pub_str).astimezone(bangkok_tz)
+                if not (start_time <= pub_dt <= end_time):
                     continue
                 all_news.append({
                     "site": info["site"], "category": info["category"],
-                    "title": title, "summary": summary, "link": link,
-                    "published": pub_dt, "date": pub_dt.strftime("%d/%m/%Y %H:%M")
+                    "title": getattr(entry, "title", "-"),
+                    "summary": getattr(entry, "summary", "-"),
+                    "link": getattr(entry, "link", ""),
+                    "published": pub_dt,
+                    "date": pub_dt.strftime("%d/%m/%Y %H:%M")
                 })
         except Exception as e:
             print(f"[WARN] อ่านฟีด {info['site']} ล้มเหลว: {e}")
@@ -228,12 +237,9 @@ def llm_ptt_subsidiary_impact_filter(news, llm_model):
 def rank_candidates(news_list, use_keyword_boost=False):
     ranked = []
     for n in news_list:
-        # 1) ความสด (0..3)
         age_h = (now - n["published"]).total_seconds() / 3600.0
         recency = max(0.0, (72.0 - min(72.0, age_h))) / 72.0 * 3.0
-        # 2) หมวดข่าว
         cat_w = {"Energy": 3.0, "Economy": 2.0, "Politics": 1.0}.get(n["category"], 1.0)
-        # 3) ความยาวสรุป
         length = min(len(n.get("summary","")) / 500.0, 1.0)
         score = recency + cat_w + length
         ranked.append((score, n))
@@ -306,7 +312,6 @@ def create_flex_message(news_items):
                 "size": "lg",
                 "wrap": True,
                 "color": "#111111",
-                # "maxLines": 3   # ถ้าอยากจำกัดหัวข้อข่าว
             },
             {
                 "type": "box",
@@ -329,7 +334,6 @@ def create_flex_message(news_items):
                 "size": "md",
                 "wrap": True,
                 "margin": "md",
-                # "maxLines": 6,   # เอาออกเพื่อแสดงผลเต็ม
                 "color": "#1A237E",
                 "weight": "bold"
             },
@@ -352,7 +356,6 @@ def create_flex_message(news_items):
                         "wrap": True,
                         "color": "#C62828",
                         "weight": "bold",
-                        # "maxLines": 8   # เอาออกเพื่อแสดงผลเต็ม
                     },
                     {
                         "type": "text",
@@ -439,9 +442,9 @@ def broadcast_flex_message(access_token, flex_carousels):
 
 # ========================= MAIN =========================
 def main():
-    # 1) ดึงข่าว "วันนี้" ทั้งหมด
-    all_news = fetch_news_today_only()
-    print(f"ดึงข่าวของวันนี้: {len(all_news)} รายการ")
+    # 1) ดึงข่าวระหว่างเวลา 22:00 – 06:00 (ข้ามวัน)
+    all_news = fetch_news_between_times(22, 6)
+    print(f"ดึงข่าวช่วง 22:00-06:00: {len(all_news)} รายการ")
     if not all_news:
         print("ไม่พบข่าว")
         return
@@ -450,7 +453,6 @@ def main():
     SLEEP_MIN, SLEEP_MAX = SLEEP_BETWEEN_CALLS
     filtered_news = []
     for news in all_news:
-        # ดึง detail เพิ่ม ถ้า summary สั้นมาก
         if len(news.get('summary','')) < 50:
             try:
                 art = Article(news['link']); art.download(); art.parse()
@@ -459,7 +461,6 @@ def main():
                 news['detail'] = news['title']
         else:
             news['detail'] = ""
-        # เรียก LLM filter
         if llm_ptt_subsidiary_impact_filter(news, model):
             filtered_news.append(news)
         time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
@@ -500,7 +501,6 @@ def main():
         else:
             news['score_breakdown'] = "-"
 
-        # เช็คซ้ำเพื่อความชัวร์
         if is_ptt_related_from_output(out):
             ptt_related_news.append(news)
 
@@ -516,7 +516,6 @@ def main():
     ptt_related_news.sort(key=lambda n: (n.get('gemini_score',0), n.get('published', datetime.min)), reverse=True)
     top_news = ptt_related_news[:10]
 
-    # --- กันข่าวซ้ำ (วันนี้กับเมื่อวาน) ---
     sent_links = load_sent_links_today_yesterday()
     top_news_to_send = [n for n in top_news if n["link"] not in sent_links]
 
@@ -524,7 +523,6 @@ def main():
         print("ข่าววันนี้กับเมื่อวานส่งครบหมดแล้ว ไม่มีข่าวใหม่")
         return
 
-    # 6) ดึงรูปภาพและสร้าง Flex
     for item in top_news_to_send:
         item["image"] = fetch_article_image(item["link"]) or ""
 
