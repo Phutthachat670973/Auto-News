@@ -102,20 +102,15 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
                 raise last_error
 
 # ========= NEW: ดึงข่าวช่วงเวลา เช่น 22:00 - 06:00 =========
-def fetch_news_between_times(start_hour=22, end_hour=6):
-    all_news = []
+def fetch_news_evening_to_morning():
     now = datetime.now(bangkok_tz)
-    # คำนวณช่วงเวลา
-    if start_hour > end_hour:
-        start_time = (now - timedelta(days=1)).replace(hour=start_hour, minute=0, second=0, microsecond=0)
-        end_time = now.replace(hour=end_hour, minute=0, second=0, microsecond=0)
-    else:
-        start_time = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
-        end_time = now.replace(hour=end_hour, minute=0, second=0, microsecond=0)
+    start_time = (now - timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+    end_time = now.replace(hour=6, minute=0, second=0, microsecond=0)
     if start_time.tzinfo is None:
         start_time = bangkok_tz.localize(start_time)
     if end_time.tzinfo is None:
         end_time = bangkok_tz.localize(end_time)
+    all_news = []
     for _, info in news_sources.items():
         try:
             feed = feedparser.parse(info["url"])
@@ -137,6 +132,7 @@ def fetch_news_between_times(start_hour=22, end_hour=6):
         except Exception as e:
             print(f"[WARN] อ่านฟีด {info['site']} ล้มเหลว: {e}")
     return all_news
+
 
 def fetch_article_image(url):
     try:
