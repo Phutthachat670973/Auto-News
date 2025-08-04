@@ -101,7 +101,7 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
             else:
                 raise last_error
 
-# ========= NEW: ดึงข่าวช่วงเวลา เช่น 22:00 - 06:00 =========
+# ========= ดึงข่าว 18:00 ของวันก่อน ถึง 06:00 ของวันนี้ =========
 def fetch_news_evening_to_morning():
     now = datetime.now(bangkok_tz)
     start_time = (now - timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
@@ -132,7 +132,6 @@ def fetch_news_evening_to_morning():
         except Exception as e:
             print(f"[WARN] อ่านฟีด {info['site']} ล้มเหลว: {e}")
     return all_news
-
 
 def fetch_article_image(url):
     try:
@@ -438,9 +437,9 @@ def broadcast_flex_message(access_token, flex_carousels):
 
 # ========================= MAIN =========================
 def main():
-    # 1) ดึงข่าวระหว่างเวลา 22:00 – 06:00 (ข้ามวัน)
-    all_news = fetch_news_between_times(22, 6)
-    print(f"ดึงข่าวช่วง 22:00-06:00: {len(all_news)} รายการ")
+    # 1) ดึงข่าวระหว่างเวลา 18:00 ของวันก่อน – 06:00 ของวันนี้
+    all_news = fetch_news_evening_to_morning()
+    print(f"ดึงข่าวช่วง 18:00-06:00: {len(all_news)} รายการ")
     if not all_news:
         print("ไม่พบข่าว")
         return
