@@ -32,8 +32,8 @@ GEMINI_MODEL_NAME = "gemini-1.5-flash"
 model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 
 GEMINI_DAILY_BUDGET = 10
-MAX_RETRIES = 3
-SLEEP_BETWEEN_CALLS = (1.2, 2.0)
+MAX_RETRIES = 6
+SLEEP_BETWEEN_CALLS = (4.2, 4.8)   # ปลอดภัยสำหรับ Gemini Free Tier (15 req/min)
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
@@ -95,18 +95,24 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
             GEMINI_CALLS += 1
             return resp
         except Exception as e:
-            last_error = e
-            if attempt < max_retries:
-                time.sleep(min(2**attempt + random.random(), 8))
+            err_str = str(e)
+            if "429" in err_str and "retry_delay" in err_str:
+                import re
+                m = re.search(r'retry_delay\s*{[^}]*seconds:\s*(\d+)', err_str)
+                wait_sec = int(m.group(1)) if m else 60
+                print(f"[Quota] โดน 429 รอ {wait_sec} วินาทีแล้วลองใหม่ (รอบที่ {attempt})")
+                time.sleep(wait_sec)
             else:
-                raise last_error
+                last_error = e
+                if attempt < max_retries:
+                    time.sleep(5 * attempt)
+                else:
+                    raise last_error
+    raise last_error
 
-# ========= ดึงข่าว "เมื่อวาน 21:00 ถึง วันนี้ 06:00" =========
 def fetch_news_9pm_to_6am():
     now = datetime.now(bangkok_tz)
-    # เริ่มต้นเมื่อวาน 21:00
     start_time = (now - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
-    # สิ้นสุดวันนี้ 06:00
     end_time = now.replace(hour=6, minute=0, second=0, microsecond=0)
     print("ช่วง fetch:", start_time, "ถึง", end_time)
     all_news = []
@@ -118,7 +124,6 @@ def fetch_news_9pm_to_6am():
                 if not pub_str:
                     continue
                 pub_dt = dateutil_parser.parse(pub_str).astimezone(bangkok_tz)
-                # print(f" - {pub_dt} : {entry.title[:60]}")
                 if not (start_time <= pub_dt <= end_time):
                     continue
                 all_news.append({
@@ -438,13 +443,11 @@ def broadcast_flex_message(access_token, flex_carousels):
 
 # ========================= MAIN =========================
 def main():
-    # 1) ดึงข่าวระหว่าง 21:00 ของเมื่อวาน ถึง 06:00 ของวันนี้
     all_news = fetch_news_9pm_to_6am()
     print(f"ดึงข่าวช่วง 21:00 เมื่อวาน ถึง 06:00 วันนี้: {len(all_news)} รายการ")
     if not all_news:
         print("ไม่พบข่าว")
         return
-    # 2) กรองข่าวด้วย LLM (เฉพาะที่เกี่ยวข้องบริษัทลูก PTT 4 บริษัท)
     SLEEP_MIN, SLEEP_MAX = SLEEP_BETWEEN_CALLS
     filtered_news = []
     for news in all_news:
@@ -458,7 +461,7 @@ def main():
             news['detail'] = ""
         if llm_ptt_subsidiary_impact_filter(news, model):
             filtered_news.append(news)
-        time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
+        time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))   # Sleep นานขึ้น
 
     print(f"ข่าวที่เกี่ยวข้องกับบริษัทลูก PTT: {len(filtered_news)} ข่าว")
 
@@ -466,12 +469,10 @@ def main():
         print("ไม่มีข่าวเกี่ยวข้องบริษัทลูก PTT")
         return
 
-    # 3) เลือกตัวเต็ง 10 ข่าว (ไม่ใช้ LLM)
     ranked = rank_candidates(filtered_news, use_keyword_boost=False)
     top_candidates = ranked[:min(10, len(ranked))]
     print(f"ส่งให้ Gemini วิเคราะห์เพียง {len(top_candidates)} ข่าว (จำกัด 10)")
 
-    # 4) วิเคราะห์ด้วย Gemini LLM
     ptt_related_news = []
     for news in top_candidates:
         out = gemini_summary_and_score(news)
@@ -499,7 +500,7 @@ def main():
         if is_ptt_related_from_output(out):
             ptt_related_news.append(news)
 
-        time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
+        time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))   # Sleep นานขึ้น
 
     print(f"ใช้ Gemini ไปแล้ว: {GEMINI_CALLS}/{GEMINI_DAILY_BUDGET} calls")
 
@@ -507,7 +508,6 @@ def main():
         print("ไม่พบข่าวที่โมเดลระบุว่ากระทบต่อกลุ่ม PTT จากตัวเต็ง 10 ข่าว")
         return
 
-    # 5) คัด Top 10 ตามคะแนน
     ptt_related_news.sort(key=lambda n: (n.get('gemini_score',0), n.get('published', datetime.min)), reverse=True)
     top_news = ptt_related_news[:10]
 
