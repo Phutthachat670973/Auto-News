@@ -101,17 +101,14 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
             else:
                 raise last_error
 
-# ========= ดึงข่าว "เมื่อวาน 00:00 ถึง วันนี้ 06:00" =========
-def fetch_news_6pm_to_6am():
+# ========= ดึงข่าว "เมื่อวาน 21:00 ถึง วันนี้ 06:00" =========
+def fetch_news_9pm_to_6am():
     now = datetime.now(bangkok_tz)
-    # เริ่มต้นเมื่อวาน 18:00
-    start_time = (now - timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+    # เริ่มต้นเมื่อวาน 21:00
+    start_time = (now - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
     # สิ้นสุดวันนี้ 06:00
     end_time = now.replace(hour=6, minute=0, second=0, microsecond=0)
-    if start_time.tzinfo is None:
-        start_time = bangkok_tz.localize(start_time)
-    if end_time.tzinfo is None:
-        end_time = bangkok_tz.localize(end_time)
+    print("ช่วง fetch:", start_time, "ถึง", end_time)
     all_news = []
     for _, info in news_sources.items():
         try:
@@ -121,6 +118,7 @@ def fetch_news_6pm_to_6am():
                 if not pub_str:
                     continue
                 pub_dt = dateutil_parser.parse(pub_str).astimezone(bangkok_tz)
+                # print(f" - {pub_dt} : {entry.title[:60]}")
                 if not (start_time <= pub_dt <= end_time):
                     continue
                 all_news.append({
@@ -133,6 +131,7 @@ def fetch_news_6pm_to_6am():
                 })
         except Exception as e:
             print(f"[WARN] อ่านฟีด {info['site']} ล้มเหลว: {e}")
+    print("ข่าวที่อยู่ในช่วง:", len(all_news))
     return all_news
 
 def fetch_article_image(url):
@@ -439,9 +438,9 @@ def broadcast_flex_message(access_token, flex_carousels):
 
 # ========================= MAIN =========================
 def main():
-    # 1) ดึงข่าวระหว่าง 18:00 ของเมื่อวาน ถึง 06:00 ของวันนี้
-    all_news = fetch_news_6pm_to_6am()
-    print(f"ดึงข่าวช่วง 18:00 เมื่อวาน ถึง 06:00 วันนี้: {len(all_news)} รายการ")
+    # 1) ดึงข่าวระหว่าง 21:00 ของเมื่อวาน ถึง 06:00 ของวันนี้
+    all_news = fetch_news_9pm_to_6am()
+    print(f"ดึงข่าวช่วง 21:00 เมื่อวาน ถึง 06:00 วันนี้: {len(all_news)} รายการ")
     if not all_news:
         print("ไม่พบข่าว")
         return
