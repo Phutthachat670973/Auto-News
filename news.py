@@ -102,9 +102,9 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
                 raise last_error
 
 # ========= ดึงข่าว "เมื่อวาน 00:00 ถึง วันนี้ 06:00" =========
-def fetch_news_yesterday_to_this_morning():
+def fetch_news_noon_yesterday_to_this_morning():
     now = datetime.now(bangkok_tz)
-    start_time = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_time = (now - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
     end_time = now.replace(hour=6, minute=0, second=0, microsecond=0)
     if start_time.tzinfo is None:
         start_time = bangkok_tz.localize(start_time)
@@ -437,13 +437,12 @@ def broadcast_flex_message(access_token, flex_carousels):
 
 # ========================= MAIN =========================
 def main():
-    # 1) ดึงข่าวตั้งแต่เมื่อวาน 00:00 ถึงวันนี้ 06:00
-    all_news = fetch_news_yesterday_to_this_morning()
-    print(f"ดึงข่าวช่วงเมื่อวานทั้งวันถึงวันนี้ 6 โมงเช้า: {len(all_news)} รายการ")
+    # ดึงข่าวตั้งแต่เที่ยงเมื่อวานถึงวันนี้ 6 โมงเช้า
+    all_news = fetch_news_noon_yesterday_to_this_morning()
+    print(f"ดึงข่าวช่วงเที่ยงเมื่อวานถึงวันนี้ 6 โมงเช้า: {len(all_news)} รายการ")
     if not all_news:
         print("ไม่พบข่าว")
         return
-
     # 2) กรองข่าวด้วย LLM (เฉพาะที่เกี่ยวข้องบริษัทลูก PTT 4 บริษัท)
     SLEEP_MIN, SLEEP_MAX = SLEEP_BETWEEN_CALLS
     filtered_news = []
