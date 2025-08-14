@@ -74,12 +74,7 @@ news_sources = {
     "Economist-Latest": {"type": "rss", "url": "https://www.economist.com/latest/rss.xml", "category": "Economy", "site": "Economist"},
 }
 
-PTT_ICON_URLS = {
-    "PTTEP":  "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTEP.png",
-    "PTTLNG": "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTLNG.jpg",
-    "PTTGL":  "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTGL.jfif",
-    "PTTNGD": "https://raw.githubusercontent.com/phutthachat1001/ptt-assets/refs/heads/main/PTTNGD.png",
-}
+# (เอาโลโก้ออกแล้ว ไม่ใช้ PTT_ICON_URLS อีกต่อไป)
 DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
 GEMINI_CALLS = 0
@@ -253,57 +248,29 @@ def _chunk(lst, n):
 
 def create_flex_message(news_items):
     import re
-    ICON_SIZE = "md"
-    ICONS_PER_ROW = 2
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
 
-    def _chunk(lst, n):
-        for i in range(0, len(lst), n):
-            yield lst[i:i+n]
+    def join_companies(codes):
+        codes = codes or []
+        if not codes:
+            return "ไม่มีระบุ"
+        return ", ".join(codes)
 
     bubbles = []
     for item in news_items:
         bd_text = (item.get("score_breakdown") or "-")
         bd_clean = re.sub(r"^- ", "", bd_text, flags=re.MULTILINE)
 
-        icon_imgs = []
-        for code in (item.get("ptt_companies") or []):
-            url = PTT_ICON_URLS.get(code, DEFAULT_ICON_URL)
-            icon_imgs.append({
-                "type": "image",
-                "url": url,
-                "size": ICON_SIZE,
-                "aspectRatio": "1:1",
-                "aspectMode": "fit"
-            })
-
-        icons_rows = []
-        for row_imgs in _chunk(icon_imgs, ICONS_PER_ROW):
-            icons_rows.append({
-                "type": "box",
-                "layout": "horizontal",
-                "spacing": "sm",
-                "contents": row_imgs
-            })
-
-        icons_grid = None
-        if icons_rows:
-            icons_grid = {
-                "type": "box",
-                "layout": "vertical",
-                "margin": "sm",
-                "spacing": "xs",
-                "contents": (
-                    [{
-                        "type": "text",
-                        "text": "กระทบ:",
-                        "size": "xs",
-                        "color": "#000000",
-                        "weight": "bold"
-                    }]
-                    + icons_rows
-                )
-            }
+        # แทนที่ส่วนโลโก้: แสดงเป็นบรรทัดข้อความ "กระทบ: ..."
+        impact_line = {
+            "type": "text",
+            "text": f"กระทบ: {join_companies(item.get('ptt_companies'))}",
+            "size": "xs",
+            "color": "#000000",
+            "weight": "bold",
+            "wrap": True,
+            "margin": "sm"
+        }
 
         body_contents = [
             {
@@ -324,11 +291,7 @@ def create_flex_message(news_items):
                 ]
             },
             {"type": "text", "text": f"🌍 {item.get('site','')}", "size": "xs", "color": "#448AFF", "margin": "sm"},
-        ]
-        if icons_grid:
-            body_contents.append(icons_grid)
-
-        body_contents += [
+            impact_line,  # <<< ใช้บรรทัดกระทบแทนโลโก้
             {
                 "type": "text",
                 "text": item.get("gemini_summary") or "ไม่พบสรุปข่าว",
