@@ -78,31 +78,44 @@ DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_c
 
 GEMINI_CALLS = 0
 
-# ---------- บล็อก Context สำหรับใส่ในพรอมพ์ ----------
+# ---------- Context + Few-shot สำหรับใส่ในพรอมพ์ ----------
 PTT_CONTEXT = """
 [Context: ความรู้พื้นฐานเพื่อช่วยตีความผลกระทบรายบริษัทในกลุ่ม PTT]
 
 • PTTEP — สำรวจและผลิตปิโตรเลียม (E&P/Upstream)
-  - ใช้ชี้เมื่อข่าวแตะ: ราคาน้ำมัน/ก๊าซ, ความเสี่ยงซัพพลาย/แหล่งผลิต, ความคืบหน้าสำรวจ-พัฒนาแหล่ง, กฎระเบียบ/สัมปทาน (PSC), เหตุขัดข้องในแหล่ง/ท่อ
-  - คำพ้อง/สัญญาณในข่าว: upstream, E&P, แท่น/rig, field/reservoir, offshore/onshore, decommissioning
+  - ใช้เมื่อข่าวแตะ: ราคาน้ำมัน/ก๊าซ, ความเสี่ยงซัพพลาย/แหล่งผลิต, ความคืบหน้าสำรวจ/พัฒนาแหล่ง, สัมปทาน/PSC, เหตุขัดข้องแหล่ง/ท่อ
+  - คำพ้อง: upstream, E&P, rig/แท่น, field/reservoir, offshore/onshore
+• PTTLNG — โครงสร้างพื้นฐาน/สถานีรับ LNG และการรีก๊าซ (Map Ta Phut)
+  - ใช้เมื่อข่าวแตะ: นโยบายนำเข้า/โควตา, ขยายกำลังรีก๊าซ, ท่าเทียบ/คลัง, ค่าธรรมเนียม/ความปลอดภัย, ความแออัดโครงข่าย
+  - คำพ้อง: LNG terminal, receiving terminal, regas/รีก๊าซ, storage tank
+• PTTGL — การลงทุน/พอร์ต/เทรดดิ้ง LNG ระดับโลก (JV PTT & PTTEP)
+  - ใช้เมื่อข่าวแตะ: ดีลสัญญา LNG (SPA/HOA), สัดส่วนถือหุ้นโครงการ LNG, สเปรดราคา hub (JKM/TTF/HH), กลยุทธ์จัดหา/ส่งมอบ
+  - คำพ้อง: LNG portfolio, SPA, offtake, lifting, LNG JV, equity in liquefaction
+• PTTNGD — กระจายก๊าซภาคอุตสาหกรรม/เมือง (City/Industrial Gas Distribution)
+  - ใช้เมื่อข่าวแตะ: ดีมานด์ก๊าซอุตสาหกรรม/เมือง, ราคาก๊าซปลายทาง, fuel switch, ขยายโครงข่ายท่อ/ลูกค้า
+  - คำพ้อง: city gas, industrial gas, distribution network, pipeline expansion
 
-• PTTLNG — โครงสร้างพื้นฐาน/สถานีรับก๊าซ LNG และการรีก๊าซ (Map Ta Phut LNG Terminals)
-  - ใช้ชี้เมื่อข่าวแตะ: นโยบาย/โควตานำเข้า LNG, แผนขยายกำลังรีก๊าซ, ความพร้อมท่าเทียบเรือ/คลัง, ค่าธรรมเนียม/มาตรฐานความปลอดภัย, ความแออัดของโครงข่าย
-  - คำพ้อง/สัญญาณในข่าว: LNG terminal, receiving terminal, regas/รีก๊าซ, berthing jetty, storage tank, Map Ta Phut
+[แนวทางตัดสิน]
+- ราคาน้ำมัน/ซัพพลาย upstream → พิจารณา PTTEP ก่อน
+- โครงสร้างพื้นฐานรับ-รีก๊าซ/นโยบาย LNG → พิจารณา PTTLNG
+- ดีล/พอร์ต LNG ระดับโลก → พิจารณา PTTGL
+- ดีมานด์/ราคาก๊าซฝั่งลูกค้าอุตสาหกรรม/เมือง → พิจารณา PTTNGD
+"""
 
-• PTTGL — การลงทุน/พอร์ต/เทรดดิ้ง LNG ระดับโลก (JV ระหว่าง PTT และ PTTEP)
-  - ใช้ชี้เมื่อข่าวแตะ: ดีลสัญญาซื้อขาย LNG (SPA/HOA), สัดส่วนถือหุ้นในโครงการ LNG, โครงสร้างพอร์ต/การบริหารสเปรดราคา hub (JKM/TTF/HH), กลยุทธ์จัดหา/ส่งมอบ
-  - คำพ้อง/สัญญาณในข่าว: LNG portfolio, SPA, offtake, lifting, LNG JV, equity in liquefaction
+FEW_SHOT = """
+[ตัวอย่างรูปแบบที่ต้องการ]
+อินพุตตัวอย่าง:
+หัวข้อข่าว: Brent ขยับขึ้น 3% จากความตึงเครียดตะวันออกกลาง
+สรุปย่อ: ราคา Brent พุ่งจากความกังวล supply disruption
+เนื้อหาข่าว: ...
 
-• PTTNGD — กระจายก๊าซธรรมชาติภาคอุตสาหกรรม/เมือง (City/Industrial Gas Distribution)
-  - ใช้ชี้เมื่อข่าวแตะ: ดีมานด์ก๊าซในนิคม/โรงงาน, ราคาก๊าซปลายทาง/โครงสร้างอัตรา, การเปลี่ยนเชื้อเพลิง (fuel switch), ขยายโครงข่ายท่อเมือง/ลูกค้าอุตสาหกรรม
-  - คำพ้อง/สัญญาณในข่าว: city gas, industrial gas, distribution network, pipeline expansion, captive customer
-
-[แนวทางให้โมเดลตัดสิน]
-- ถ้าข่าวว่าด้วยราคาน้ำมัน/ซัพพลาย upstream → ให้พิจารณา PTTEP ก่อน
-- ถ้าข่าวว่าด้วยโครงสร้างพื้นฐานรับ-รีก๊าซ/นโยบายนำเข้า LNG → ให้พิจารณา PTTLNG
-- ถ้าข่าวว่าด้วยดีลสัญญา/พอร์ต LNG ระดับโลก → ให้พิจารณา PTTGL
-- ถ้าข่าวว่าด้วยดีมานด์/ราคาก๊าซฝั่งลูกค้าอุตสาหกรรม/เมือง → ให้พิจารณา PTTNGD
+คำตอบที่ถูกต้อง (ตัวอย่าง):
+- สรุปข่าว: ราคาน้ำมันดิบปรับขึ้นจากความเสี่ยงซัพพลายในตะวันออกกลาง ส่งผลต่อรายได้ธุรกิจ upstream
+- คะแนน: 4 (3 จากความผันผวนราคาน้ำมัน, 1 จากความเสี่ยงภูมิรัฐศาสตร์)
+- ผลกระทบต่อ ปตท.: กระทบต่อ PTTEP เพราะเป็นธุรกิจสำรวจและผลิต (upstream) ที่มี sensitivity ต่อราคาน้ำมัน
+- เหตุผลคะแนนรวม:
+  - 3 คะแนน: ราคาน้ำมันดิบปรับขึ้นชัดเจนกระทบต่อรายได้ upstream ของ PTTEP
+  - 1 คะแนน: ความตึงเครียดภูมิรัฐศาสตร์เพิ่มความเสี่ยง supply and logistics
 """
 
 def call_gemini(prompt, max_retries=MAX_RETRIES):
@@ -176,119 +189,51 @@ def extract_ptt_companies(text: str):
             companies.append(code)
     return companies
 
-# ================= JSON version (ไม่เพิ่มโควต้า) =================
-def gemini_summary_and_score_json(news):
-    """
-    ให้โมเดลตอบเป็น JSON เท่านั้น แล้วพาร์สอย่างทนทาน
-    ฟอร์แมต JSON:
-    {
-      "summary_th": "ข้อความ",
-      "score": 1..5,
-      "score_breakdown": [{"points": n, "reason": "ข้อความ"}, ...],
-      "impact": {"companies": ["PTTEP","PTTLNG","PTTGL","PTTNGD"], "reason": "ข้อความ"}
-    }
-    """
-    allowed_companies = {"PTTEP","PTTLNG","PTTGL","PTTNGD"}
+def gemini_summary_and_score(news):
+    # พรอมพ์แบบเก่า แต่เพิ่ม Context + Few-shot เพื่อความแม่นยำ
     prompt = f"""
 {PTT_CONTEXT}
+{FEW_SHOT}
 
-คุณเป็นนักวิเคราะห์ข่าวพลังงานสำหรับกลุ่ม ปตท. จงตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่นนอก JSON
+หัวข้อข่าว: {news['title']}
+สรุปย่อ: {news['summary']}
+เนื้อหาข่าว (ถ้ามี): {news.get('detail', '')}
 
-อินพุตข่าว:
-- หัวข้อ: {news['title']}
-- สรุปย่อ: {news['summary']}
-- เนื้อหา: {news.get('detail', '')}
+กรุณาทำ 4 อย่างต่อไปนี้ (ยึดรูปแบบคำตอบด้านล่างอย่างเคร่งครัด):
 
-สคีมา JSON:
-{{
-  "summary_th": "สรุปไทยแบบย่อ 1-2 ประโยค",
-  "score": 1,
-  "score_breakdown": [
-    {{"points": 2, "reason": "เหตุผลย่อ"}},
-    {{"points": 1, "reason": "เหตุผลย่อ"}}
-  ],
-  "impact": {{
-    "companies": ["PTTEP","PTTLNG","PTTGL","PTTNGD"],
-    "reason": "อธิบายสั้นว่าทำไมกระทบบริษัทใด"
-  }}
-}}
+1. สรุปข่าวนี้เป็นภาษาไทยอย่างกระชับ (1-2 ประโยค)
 
-ข้อกำหนด:
-- "score" เป็นจำนวนเต็ม 1..5
-- ผลรวม points ใน "score_breakdown" ต้องเท่ากับ "score"
-- "impact.companies" อนุญาตเฉพาะ PTTEP, PTTLNG, PTTGL, PTTNGD; ถ้าไม่เกี่ยวให้ []
-- ถ้าไม่แน่ใจ ให้เลือกแบบระมัดระวังและให้เหตุผลสั้นๆ
+2. ให้คะแนนความสำคัญของข่าวนี้ต่อกลุ่ม ปตท. (1-5 คะแนน)
+   แจกแจงว่าทำไมจึงได้แต่ละคะแนน โดยระบุเป็นรายการ:
+   - <คะแนน> คะแนน: <เหตุผล>
+
+3. วิเคราะห์ว่า ข่าวนี้มีผลกระทบต่อบริษัทใดในกลุ่ม PTT (อิง Context ข้างต้น)
+   บริษัทในกลุ่ม PTT ได้แก่:
+   - PTTEP – สำรวจและผลิตปิโตรเลียม (Upstream/E&P)
+   - PTTLNG – โครงสร้างพื้นฐาน/สถานี LNG และการรีก๊าซ
+   - PTTGL – การลงทุน/พอร์ต/เทรดดิ้ง LNG ระดับโลก
+   - PTTNGD – กระจายก๊าซธรรมชาติภาคอุตสาหกรรม/เมือง
+   ให้ระบุทีละบริษัท (1..หลายบริษัท) พร้อมเหตุผลเฉพาะ ถ้าไม่มีผลให้ระบุว่าไม่มีผลชัดเจน
+
+4. แสดงผลลัพธ์ในรูปแบบ **ด้านล่างนี้เท่านั้น**:
+- สรุปข่าว: <ข้อความ>
+- คะแนน: <คะแนนรวมตัวเลข> (<คะแนนย่อย> จาก..., ...)
+- ผลกระทบต่อ ปตท.: กระทบต่อ <ชื่อบริษัท 1, ชื่อบริษัท 2,...> เพราะ <เหตุผลสั้น>
+- เหตุผลคะแนนรวม:
+  - <คะแนน> คะแนน: <เหตุผล>
+  - <คะแนน> คะแนน: <เหตุผล>
+
+เงื่อนไขเพิ่มเติม:
+- คะแนนย่อยต้องรวมกันได้เท่ากับคะแนนรวม
+- ใช้เฉพาะชื่อบริษัท: PTTEP, PTTLNG, PTTGL, PTTNGD
 """
     try:
         resp = call_gemini(prompt)
-        raw = (getattr(resp, "text", "") or "").strip()
-        # เผื่อโมเดลห่อด้วย code fence
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE)
-        data = json.loads(raw)
-
-        # ตรวจ/ซ่อมค่า
-        if not isinstance(data, dict):
-            raise ValueError("LLM JSON is not an object")
-
-        summary = str(data.get("summary_th", "ไม่พบสรุปข่าว")).strip() or "ไม่พบสรุปข่าว"
-
-        try:
-            score = int(data.get("score", 3))
-        except Exception:
-            score = 3
-        score = max(1, min(5, score))
-
-        breakdown = data.get("score_breakdown") or []
-        if not isinstance(breakdown, list):
-            breakdown = []
-        # คุมผลรวมแต้มให้เท่าคะแนน
-        total = 0
-        fixed = []
-        for item in breakdown:
-            try:
-                pts = int(item.get("points", 0))
-                rsn = str(item.get("reason", "-")).strip() or "-"
-            except Exception:
-                pts, rsn = 0, "-"
-            fixed.append({"points": pts, "reason": rsn})
-            total += pts
-        if total != score:
-            # ปรับรายการสุดท้ายให้ผลรวมตรง
-            if fixed:
-                diff = score - total
-                fixed[-1]["points"] += diff
-            else:
-                fixed = [{"points": score, "reason": "คะแนนรวมปรับอัตโนมัติให้ตรงสเปค"}]
-
-        impact = data.get("impact") or {}
-        if not isinstance(impact, dict):
-            impact = {}
-        companies = impact.get("companies") or []
-        if not isinstance(companies, list):
-            companies = []
-        # กรองให้เหลือเฉพาะ allowed
-        companies = [c for c in companies if str(c).upper() in allowed_companies]
-        reason = str(impact.get("reason", "-")).strip() or "-"
-
-        return {
-            "summary_th": summary,
-            "score": score,
-            "score_breakdown": fixed,
-            "impact": {"companies": companies, "reason": reason}
-        }
-
+        return resp.text
     except Exception as e:
-        # Fallback ที่ไม่ทำให้ล้ม
-        return {
-            "summary_th": "ไม่สามารถพาร์ส JSON จากโมเดลได้",
-            "score": 3,
-            "score_breakdown": [{"points": 3, "reason": "Fallback: พาร์สไม่สำเร็จ"}],
-            "impact": {"companies": [], "reason": "-"},
-            "error": str(e)
-        }
+        return f"ERROR: {e}"
 
 def is_ptt_related_from_output(out_text: str) -> bool:
-    # ยังเก็บไว้เผื่อใช้งานที่อื่น แต่ในเวอร์ชัน JSON เราใช้ length ของ companies เป็นหลัก
     if not out_text or out_text.startswith("ERROR"):
         return False
     m = re.search(r"ผลกระทบต่อ\s*ปตท\.[：:]\s*(.*)", out_text)
@@ -297,19 +242,16 @@ def is_ptt_related_from_output(out_text: str) -> bool:
     return any(x in val for x in ["PTTEP","PTTLNG","PTTGL","PTTNGD"])
 
 def llm_ptt_subsidiary_impact_filter(news, llm_model):
-    # ฟิลเตอร์เดิม (ยัง 1 call/ข่าวเหมือนเดิม) — ไม่เพิ่มโควต้า
+    # ฟิลเตอร์ (คงจำนวน call เท่าเดิม) + เสริม Context
     prompt = f'''
 {PTT_CONTEXT}
 
-คุณคือผู้เชี่ยวชาญด้านการคัดกรองข่าวสำหรับบริษัทในเครือ ปตท. กรุณาวิเคราะห์ข่าวด้านล่างนี้ แล้วตอบเพียง "ใช่" หรือ "ไม่ใช่" เท่านั้น
+คุณคือผู้เชี่ยวชาญด้านการคัดกรองข่าวสำหรับบริษัทในเครือ ปตท.
+ตอบเพียง "ใช่" หรือ "ไม่ใช่" เท่านั้น ตามเกณฑ์:
+- "ใช่" ถ้าข่าวมีผลโดยตรง/อ้อมต่อ PTTEP, PTTLNG, PTTGL, หรือ PTTNGD
+- แม้ไม่มีชื่อบริษัทในข่าว แต่มีประเด็นที่กระทบธุรกิจตาม Context ข้างต้น ก็ให้ "ใช่"
+- ถ้าไม่เกี่ยวข้องกับธุรกิจหลักของบริษัทเหล่านี้ ให้ "ไม่ใช่"
 
-ให้ตอบ "ใช่" ถ้าเนื้อหาข่าวนี้
-- มีผลกระทบโดยตรงหรือโดยอ้อมต่อบริษัทเหล่านี้: PTTEP, PTTLNG, PTTGL, PTTNGD
-- แม้ในข่าวจะไม่ได้กล่าวถึงชื่อบริษัทเหล่านี้โดยตรง แต่มีประเด็นที่เกี่ยวข้องกับอุตสาหกรรม/ธุรกิจที่บริษัทเหล่านี้ดำเนินการ (เช่น ราคาน้ำมัน/ก๊าซ, LNG, โครงสร้างพื้นฐาน, ดีลสัญญา, ดีมานด์ภาคอุตสาหกรรม)
-
-หากข่าวไม่มีผลกระทบที่เกี่ยวข้องกับธุรกิจหลักของบริษัทเหล่านี้เลย ให้ตอบ "ไม่ใช่"
-ตอบเพียง "ใช่" หรือ "ไม่ใช่" เท่านั้น  
----
 ข่าว:
 {news['title']}
 {news['summary']}
@@ -530,32 +472,29 @@ def main():
 
     ptt_related_news = []
     for news in top_candidates:
-        # ===== เปลี่ยนมาใช้ JSON เวอร์ชัน (ไม่เพิ่มจำนวน call) =====
-        data = gemini_summary_and_score_json(news)
-        news['gemini_output'] = data
+        out = gemini_summary_and_score(news)
+        news['gemini_output'] = out
 
-        news['gemini_score'] = int(data.get('score', 3))
-        news['gemini_summary'] = data.get('summary_th', 'ไม่พบสรุปข่าว')
+        m_score = re.search(r"คะแนน[:：]\s*(\d+)", out or "")
+        news['gemini_score'] = int(m_score.group(1)) if m_score else 3
 
-        impact = data.get('impact', {}) or {}
-        news['gemini_reason'] = impact.get('reason', '-') or '-'
-        companies = impact.get('companies', []) or []
-        # ถ้ายังอยากเผื่อ LLM เขียนชื่อบริษัทในเหตุผล ให้ดึงเพิ่มจากข้อความด้วย
-        if not companies:
-            companies = extract_ptt_companies(news['gemini_reason'])
-        news['ptt_companies'] = companies
+        m_sum = re.search(r"สรุปข่าว[:：]\s*(.*)", out or "")
+        news['gemini_summary'] = m_sum.group(1).strip() if m_sum else "ไม่พบสรุปข่าว"
 
-        # ทำ breakdown เป็นข้อความสวยๆ
-        bd_lines = []
-        for item in data.get('score_breakdown', []):
-            try:
-                bd_lines.append(f"{int(item.get('points',0))} คะแนน: {str(item.get('reason','-')).strip()}")
-            except:
-                pass
-        news['score_breakdown'] = "\n".join(bd_lines) if bd_lines else "-"
+        m_reason = re.search(r"ผลกระทบต่อ\s*ปตท\.[：:]\s*(.*)", out or "")
+        news['gemini_reason'] = m_reason.group(1).strip() if m_reason else "-"
 
-        # เก็บข่าวที่มีรายชื่อบริษัทกระทบอย่างน้อย 1
-        if news['ptt_companies']:
+        news['ptt_companies'] = extract_ptt_companies(news.get('gemini_reason', ''))
+
+        m_bd = re.search(r"เหตุผลคะแนนรวม[:：]\s*(.*)", out or "", flags=re.DOTALL)
+        if m_bd:
+            score_bd_raw = m_bd.group(1).strip()
+            lines = [ln.strip() for ln in score_bd_raw.splitlines() if "คะแนน" in ln]
+            news['score_breakdown'] = "\n".join(lines) if lines else score_bd_raw
+        else:
+            news['score_breakdown'] = "-"
+
+        if is_ptt_related_from_output(out):
             ptt_related_news.append(news)
 
         time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))   # Sleep นานขึ้น
