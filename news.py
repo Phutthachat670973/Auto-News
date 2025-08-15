@@ -28,12 +28,17 @@ if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("ไม่พบ LINE_CHANNEL_ACCESS_TOKEN ใน Environment/Secrets")
 
 genai.configure(api_key=GEMINI_API_KEY)
-GEMINI_MODEL_NAME = "gemini-1.5-flash"
+
+# ใช้รุ่นเดียว: gemini-2.5-flash (แทน 1.5 ที่เลิกใช้งานแล้ว)
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
 model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 
-GEMINI_DAILY_BUDGET = 10
+# งบเรียกต่อวัน (ตั้งผ่าน ENV ได้) — ดีฟอลต์ 250 ให้สอดคล้อง RPD ของ 2.5-flash
+GEMINI_DAILY_BUDGET = int(os.getenv("GEMINI_DAILY_BUDGET", "250"))
 MAX_RETRIES = 6
-SLEEP_BETWEEN_CALLS = (4.2, 4.8)   # ปลอดภัยสำหรับ Gemini Free Tier (15 req/min)
+
+# ช่วงพักต่อคำขอ: 2.5-flash ~ RPM 10 → เว้น 6-7 วินาที
+SLEEP_BETWEEN_CALLS = (6.0, 7.0)
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
@@ -304,7 +309,6 @@ def gemini_summary_and_score(news):
         return resp.text
     except Exception as e:
         return f"ERROR: {e}"
-
 
 def is_ptt_related_from_output(out_text: str) -> bool:
     if not out_text or out_text.startswith("ERROR"):
