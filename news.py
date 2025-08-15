@@ -78,6 +78,13 @@ DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_c
 
 GEMINI_CALLS = 0
 
+# ---------- Helper: normalize โคลอนให้เป็น ":" เดียว ----------
+def _normalize_colons(text: str) -> str:
+    if not text:
+        return text
+    # แทนที่เครื่องหมายโคลอนทุกแบบให้เป็น ":" ตัวเดียว
+    return re.sub(r"[：﹕꞉︓⦂⸿˸]", ":", text)
+
 # ---------- Context + Few-shot สำหรับใส่ในพรอมพ์ ----------
 PTT_CONTEXT = """
 [Context: ความรู้พื้นฐานเพื่อช่วยตีความผลกระทบรายบริษัทในกลุ่ม PTT]
@@ -102,20 +109,77 @@ PTT_CONTEXT = """
 - ดีมานด์/ราคาก๊าซฝั่งลูกค้าอุตสาหกรรม/เมือง → พิจารณา PTTNGD
 """
 
+# Few-shot ตัวอย่างใหม่ (5 ข่าว)
 FEW_SHOT = """
-[ตัวอย่างรูปแบบที่ต้องการ]
-อินพุตตัวอย่าง:
-หัวข้อข่าว: Brent ขยับขึ้น 3% จากความตึงเครียดตะวันออกกลาง
-สรุปย่อ: ราคา Brent พุ่งจากความกังวล supply disruption
-เนื้อหาข่าว: ...
+[ตัวอย่าง 1]
+อินพุต:
+หัวข้อข่าว: Ukraine Hits Key Russian Pipeline Hub as Moscow Braces for Trump-Putin Talks
+สรุปย่อ: ยูเครนโจมตีสถานีสูบน้ำมันของรัสเซีย ทำให้เกิดความไม่แน่นอนด้านซัพพลาย
+เนื้อหาข่าว: น้ำมันดิบในยุโรปและเอเชียส่งผลต่อราคาน้ำมัน
 
-คำตอบที่ถูกต้อง (ตัวอย่าง):
-- สรุปข่าว: ราคาน้ำมันดิบปรับขึ้นจากความเสี่ยงซัพพลายในตะวันออกกลาง ส่งผลต่อรายได้ธุรกิจ upstream
-- คะแนน: 4 (3 จากความผันผวนราคาน้ำมัน, 1 จากความเสี่ยงภูมิรัฐศาสตร์)
-- ผลกระทบต่อ ปตท.: กระทบต่อ PTTEP เพราะเป็นธุรกิจสำรวจและผลิต (upstream) ที่มี sensitivity ต่อราคาน้ำมัน
+เอาต์พุต:
+- สรุปข่าว: ยูเครนโจมตีโครงสร้างพื้นฐานน้ำมันรัสเซีย เพิ่มความเสี่ยงซัพพลาย กดดันราคาน้ำมันปรับขึ้น
+- คะแนน: 5 (3 จากความเสี่ยง supply disruption upstream, 2 จากความตึงเครียดภูมิรัฐศาสตร์)
+- ผลกระทบต่อ ปตท.: กระทบต่อ PTTEP เพราะเป็นธุรกิจ upstream ที่อ่อนไหวต่อราคาน้ำมัน
 - เหตุผลคะแนนรวม:
-  - 3 คะแนน: ราคาน้ำมันดิบปรับขึ้นชัดเจนกระทบต่อรายได้ upstream ของ PTTEP
-  - 1 คะแนน: ความตึงเครียดภูมิรัฐศาสตร์เพิ่มความเสี่ยง supply and logistics
+  - 3 คะแนน: ความเสี่ยง supply disruption กระทบต่อรายได้ upstream ของ PTTEP
+  - 2 คะแนน: ความตึงเครียดภูมิรัฐศาสตร์เพิ่มความไม่แน่นอนด้านพลังงาน
+
+[ตัวอย่าง 2]
+อินพุต:
+หัวข้อข่าว: US Natural Gas Prices Slump On High Inventories, Record Production
+สรุปย่อ: ราคาแก๊สธรรมชาติในสหรัฐลดลงจากปริมาณสำรองสูงและการผลิตเพิ่มขึ้น
+เนื้อหาข่าว: อาจส่งผลต่อตลาดแก๊สทั่วโลก
+
+เอาต์พุต:
+- สรุปข่าว: ราคาแก๊สสหรัฐร่วงจากสำรองสูงและการผลิตเพิ่ม อาจกดดันราคา LNG ในตลาดโลก
+- คะแนน: 4 (2 จากราคาก๊าซโลกมีแนวโน้มลด, 2 จากผลกระทบต่อ margin ของ LNG import)
+- ผลกระทบต่อ ปตท.: กระทบต่อ PTTGL เพราะพอร์ต LNG อาจทำกำไรลดลง และกระทบ PTTNGD จากต้นทุนก๊าซปลายทางที่เปลี่ยนแปลง
+- เหตุผลคะแนนรวม:
+  - 2 คะแนน: ราคาก๊าซลดลงกระทบรายได้จากพอร์ต LNG ของ PTTGL
+  - 2 คะแนน: ราคาก๊าซที่ลดลงเปลี่ยนโครงสร้างต้นทุน PTTNGD
+
+[ตัวอย่าง 3]
+อินพุต:
+หัวข้อข่าว: KRG, Baghdad Strike Another Oil Deal
+สรุปย่อ: อิรักและเคอร์ดิสถานตกลงส่งออกน้ำมันร่วมกัน แต่ยังรอการอนุมัติจากตุรกี
+เนื้อหาข่าว: -
+
+เอาต์พุต:
+- สรุปข่าว: ดีลน้ำมันระหว่างอิรัก–เคอร์ดิสถานอาจเพิ่มซัพพลาย แต่ยังไม่แน่นอน อาจกดดันราคาน้ำมัน
+- คะแนน: 4 (2 จากความเป็นไปได้ของ supply เพิ่ม, 2 จากความไม่แน่นอนด้านภูมิรัฐศาสตร์)
+- ผลกระทบต่อ ปตท.: กระทบต่อ PTTEP เพราะซัพพลายเพิ่มอาจกดราคาน้ำมัน กระทบรายได้ upstream
+- เหตุผลคะแนนรวม:
+  - 2 คะแนน: ซัพพลายเพิ่มอาจกดราคาน้ำมัน
+  - 2 คะแนน: ความไม่แน่นอนทางภูมิรัฐศาสตร์ยังสูง
+
+[ตัวอย่าง 4]
+อินพุต:
+หัวข้อข่าว: Russia’s Fuel Exports Plummeted in July
+สรุปย่อ: การส่งออกน้ำมันกลั่นของรัสเซียลดลง 6.6% จากดีมานด์ในประเทศเพิ่ม
+เนื้อหาข่าว: ส่งผลต่อตลาดโลกเล็กน้อย
+
+เอาต์พุต:
+- สรุปข่าว: รัสเซียลดส่งออกน้ำมันกลั่นเพราะใช้ในประเทศมากขึ้น ผลต่อตลาดโลกจำกัด
+- คะแนน: 2 (1 จาก supply น้ำมันกลั่นโลกหดเล็กน้อย, 1 จากโอกาสหนุนราคาน้ำมันแบบจำกัด)
+- ผลกระทบต่อ ปตท.: กระทบ PTTEP เล็กน้อยผ่านราคาน้ำมัน และอาจกระทบ PTTGL ทางอ้อมต่อโครงสร้างราคา LNG
+- เหตุผลคะแนนรวม:
+  - 1 คะแนน: supply น้ำมันกลั่นลดอาจหนุนราคาเล็กน้อย
+  - 1 คะแนน: ผลต่อราคาเชื้อเพลิงอื่นมีจำกัด
+
+[ตัวอย่าง 5]
+อินพุต:
+หัวข้อข่าว: Green Hydrogen Revolution: How the Global South Powers the Energy Transition
+สรุปย่อ: รายงาน IRENA ชี้บทบาทประเทศกำลังพัฒนาในไฮโดรเจนสีเขียว ส่งผลต่อพลังงานในระยะยาว
+เนื้อหาข่าว: -
+
+เอาต์พุต:
+- สรุปข่าว: เทรนด์ไฮโดรเจนสีเขียวในประเทศกำลังพัฒนามีแนวโน้มเติบโต อาจสร้างตลาดพลังงานใหม่ระยะยาว
+- คะแนน: 4 (2 จากโอกาสขยายตลาดพลังงานสะอาด, 2 จากแรงกดดันให้ปรับพอร์ตลงทุนของ PTT)
+- ผลกระทบต่อ ปตท.: กระทบต่อ PTTEP, PTTLNG, PTTGL, PTTNGD ในเชิงกลยุทธ์การเปลี่ยนผ่านพลังงาน
+- เหตุผลคะแนนรวม:
+  - 2 คะแนน: โอกาสเติบโตของตลาดไฮโดรเจนสีเขียว
+  - 2 คะแนน: ความจำเป็นปรับกลยุทธ์/พอร์ตลงทุนของ PTT
 """
 
 def call_gemini(prompt, max_retries=MAX_RETRIES):
@@ -131,8 +195,8 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
         except Exception as e:
             err_str = str(e)
             if "429" in err_str and "retry_delay" in err_str:
-                import re
-                m = re.search(r'retry_delay\s*{[^}]*seconds:\s*(\d+)', err_str)
+                import re as _re
+                m = _re.search(r'retry_delay\s*{[^}]*seconds:\s*(\d+)', err_str)
                 wait_sec = int(m.group(1)) if m else 60
                 print(f"[Quota] โดน 429 รอ {wait_sec} วินาทีแล้วลองใหม่ (รอบที่ {attempt})")
                 time.sleep(wait_sec)
@@ -190,7 +254,7 @@ def extract_ptt_companies(text: str):
     return companies
 
 def gemini_summary_and_score(news):
-    # พรอมพ์แบบเก่า แต่เพิ่ม Context + Few-shot เพื่อความแม่นยำ
+    # พรอมพ์เข้มขึ้น: บังคับอธิบายกลไก supply/demand/price chain และเหตุผลรายบริษัท
     prompt = f"""
 {PTT_CONTEXT}
 {FEW_SHOT}
@@ -202,18 +266,24 @@ def gemini_summary_and_score(news):
 กรุณาทำ 4 อย่างต่อไปนี้ (ยึดรูปแบบคำตอบด้านล่างอย่างเคร่งครัด):
 
 1. สรุปข่าวนี้เป็นภาษาไทยอย่างกระชับ (1-2 ประโยค)
+   - ต้องอธิบาย "เหตุการณ์หลัก" และ "กลไกการส่งผล" ต่อราคา/ซัพพลาย/ดีมานด์ของน้ำมันหรือก๊าซ
+   - ถ้าผลกระทบต่อไทยมีจำกัด ให้ระบุว่าเป็นทางอ้อมหรือเล็กน้อย
 
 2. ให้คะแนนความสำคัญของข่าวนี้ต่อกลุ่ม ปตท. (1-5 คะแนน)
-   แจกแจงว่าทำไมจึงได้แต่ละคะแนน โดยระบุเป็นรายการ:
-   - <คะแนน> คะแนน: <เหตุผล>
+   - แจกแจงว่าทำไมจึงได้แต่ละคะแนน โดยต้องระบุ "ปัจจัย" + "เหตุผล"
+   - ตัวอย่าง:
+     - 3 คะแนน: ราคาน้ำมันดิบปรับขึ้น → เพิ่มรายได้ธุรกิจ upstream ของ PTTEP
+     - 1 คะแนน: ความเสี่ยงภูมิรัฐศาสตร์ → เพิ่มความไม่แน่นอน supply chain LNG
 
 3. วิเคราะห์ว่า ข่าวนี้มีผลกระทบต่อบริษัทใดในกลุ่ม PTT (อิง Context ข้างต้น)
-   บริษัทในกลุ่ม PTT ได้แก่:
-   - PTTEP – สำรวจและผลิตปิโตรเลียม (Upstream/E&P)
-   - PTTLNG – โครงสร้างพื้นฐาน/สถานี LNG และการรีก๊าซ
-   - PTTGL – การลงทุน/พอร์ต/เทรดดิ้ง LNG ระดับโลก
-   - PTTNGD – กระจายก๊าซธรรมชาติภาคอุตสาหกรรม/เมือง
-   ให้ระบุทีละบริษัท (1..หลายบริษัท) พร้อมเหตุผลเฉพาะ ถ้าไม่มีผลให้ระบุว่าไม่มีผลชัดเจน
+   - ใช้เฉพาะชื่อบริษัท: PTTEP, PTTLNG, PTTGL, PTTNGD
+   - อธิบาย "กระทบอย่างไร" แบบเฉพาะ เช่น:
+     - PTTEP: รายได้ upstream, ความเสี่ยงแหล่งผลิต/ท่อ, sensitivity ต่อราคา
+     - PTTLNG: ต้นทุน/ข้อจำกัดการรีก๊าซ/โควตานำเข้าในไทย
+     - PTTGL: margin/ความเสี่ยงพอร์ต LNG (SPA/offtake/spread JKM/TTF/HH)
+     - PTTNGD: ดีมานด์/ราคาปลายทาง/ขยายท่อ
+   - ถ้ากระทบหลายบริษัท ให้แยกเหตุผลเป็นข้อๆ
+   - ถ้าไม่กระทบ ให้ระบุว่า "ไม่มีผลกระทบชัดเจน"
 
 4. แสดงผลลัพธ์ในรูปแบบ **ด้านล่างนี้เท่านั้น**:
 - สรุปข่าว: <ข้อความ>
@@ -224,6 +294,8 @@ def gemini_summary_and_score(news):
   - <คะแนน> คะแนน: <เหตุผล>
 
 เงื่อนไขเพิ่มเติม:
+- ต้องมีคำอธิบายเชื่อมโยง supply/demand/price chain ทุกครั้ง
+- ห้ามใช้คำกว้าง ๆ เช่น "กระทบต่อราคา" หรือ "กระทบต่อกำไร" โดยไม่บอกกลไก
 - คะแนนย่อยต้องรวมกันได้เท่ากับคะแนนรวม
 - ใช้เฉพาะชื่อบริษัท: PTTEP, PTTLNG, PTTGL, PTTNGD
 """
@@ -236,7 +308,8 @@ def gemini_summary_and_score(news):
 def is_ptt_related_from_output(out_text: str) -> bool:
     if not out_text or out_text.startswith("ERROR"):
         return False
-    m = re.search(r"ผลกระทบต่อ\s*ปตท\.[：:]\s*(.*)", out_text)
+    out_text = _normalize_colons(out_text)
+    m = re.search(r"ผลกระทบต่อ\s*ปตท\.\s*:\s*(.*)", out_text)
     if not m: return False
     val = m.group(1).strip()
     return any(x in val for x in ["PTTEP","PTTLNG","PTTGL","PTTNGD"])
@@ -259,7 +332,7 @@ def llm_ptt_subsidiary_impact_filter(news, llm_model):
 '''
     try:
         resp = llm_model.generate_content(prompt)
-        ans = resp.text.strip().replace("\n", "")
+        ans = (resp.text or "").strip().replace("\n", "")
         return ans.startswith("ใช่")
     except Exception as e:
         print("[ERROR] LLM Filter:", e)
@@ -282,7 +355,7 @@ def _chunk(lst, n):
         yield lst[i:i+n]
 
 def create_flex_message(news_items):
-    import re
+    import re as _re
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
 
     def join_companies(codes):
@@ -294,7 +367,7 @@ def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
         bd_text = (item.get("score_breakdown") or "-")
-        bd_clean = re.sub(r"^- ", "", bd_text, flags=re.MULTILINE)
+        bd_clean = _re.sub(r"^[-•]\s*", "", bd_text, flags=_re.MULTILINE)
 
         impact_line = {
             "type": "text",
@@ -305,6 +378,11 @@ def create_flex_message(news_items):
             "wrap": True,
             "margin": "sm"
         }
+
+        # กันภาพ/URL เพี้ยน
+        img = item.get("image") or DEFAULT_ICON_URL
+        if not (str(img).startswith("http://") or str(img).startswith("https://")):
+            img = DEFAULT_ICON_URL
 
         body_contents = [
             {
@@ -380,7 +458,7 @@ def create_flex_message(news_items):
             "size": "mega",
             "hero": {
                 "type": "image",
-                "url": item.get("image") or "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png",
+                "url": img,
                 "size": "full",
                 "aspectRatio": "16:9",
                 "aspectMode": "cover"
@@ -473,23 +551,29 @@ def main():
     ptt_related_news = []
     for news in top_candidates:
         out = gemini_summary_and_score(news)
+        out = _normalize_colons(out)  # ทำให้รูปแบบโคลอนคงที่ก่อน regex
         news['gemini_output'] = out
 
-        m_score = re.search(r"คะแนน[:：]\s*(\d+)", out or "")
+        m_score  = re.search(r"คะแนน:\s*(\d+)", out or "")
         news['gemini_score'] = int(m_score.group(1)) if m_score else 3
 
-        m_sum = re.search(r"สรุปข่าว[:：]\s*(.*)", out or "")
+        m_sum    = re.search(r"สรุปข่าว:\s*(.*)", out or "")
         news['gemini_summary'] = m_sum.group(1).strip() if m_sum else "ไม่พบสรุปข่าว"
 
-        m_reason = re.search(r"ผลกระทบต่อ\s*ปตท\.[：:]\s*(.*)", out or "")
+        m_reason = re.search(r"ผลกระทบต่อ\s*ปตท\.\s*:\s*(.*)", out or "")
         news['gemini_reason'] = m_reason.group(1).strip() if m_reason else "-"
 
         news['ptt_companies'] = extract_ptt_companies(news.get('gemini_reason', ''))
 
-        m_bd = re.search(r"เหตุผลคะแนนรวม[:：]\s*(.*)", out or "", flags=re.DOTALL)
+        m_bd     = re.search(r"เหตุผลคะแนนรวม\s*:\s*(.*)", out or "", flags=re.DOTALL)
         if m_bd:
             score_bd_raw = m_bd.group(1).strip()
-            lines = [ln.strip() for ln in score_bd_raw.splitlines() if "คะแนน" in ln]
+            lines = []
+            for ln in score_bd_raw.splitlines():
+                ln = ln.strip()
+                ln = re.sub(r"^[-•]\s*", "", ln)  # ตัด bullet
+                if "คะแนน" in ln:
+                    lines.append(ln)
             news['score_breakdown'] = "\n".join(lines) if lines else score_bd_raw
         else:
             news['score_breakdown'] = "-"
@@ -516,7 +600,10 @@ def main():
         return
 
     for item in top_news_to_send:
-        item["image"] = fetch_article_image(item["link"]) or ""
+        img = fetch_article_image(item["link"]) or ""
+        if not (str(img).startswith("http://") or str(img).startswith("https://")):
+            img = DEFAULT_ICON_URL
+        item["image"] = img
 
     carousels = create_flex_message(top_news_to_send)
     broadcast_flex_message(LINE_CHANNEL_ACCESS_TOKEN, carousels)
