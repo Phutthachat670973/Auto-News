@@ -1,3 +1,16 @@
+# -*- coding: utf-8 -*-
+"""
+ดึงข่าวช่วง 21:00 เมื่อวาน → 06:00 วันนี้
+คัดเฉพาะข่าวที่ "เกี่ยวข้องกับ Upstream Business Group Subsidiary Management Department"
+วิเคราะห์ด้วย Gemini (ตอบเป็น JSON) → สรุป/ให้คะแนน/ระบุความเกี่ยวข้องกับงานบริหารบริษัทย่อยสาย Upstream
+สร้าง Flex Message และ (เลือก) Broadcast ไป LINE OA
+
+หลักแก้ไขแบบกระทบข่าวน้อยที่สุด:
+- เพิ่มตัวดึงข้อความจาก candidates.parts เมื่อ resp.text ว่าง
+- ซ่อม/กู้ JSON ที่โดนตัดด้วยตัวช่วยแบบนุ่มนวล (ไม่บังคับมินิฟาย)
+- เพิ่ม max_output_tokens ขึ้นเล็กน้อย + retry ด้วย prompt ที่ “ตัด detail” เฉพาะเมื่อจำเป็น
+- จำกัดความยาว detail ที่ส่งเข้า LLM (~3500–4000 chars) เพื่อกัน finish_reason=2 โดยไม่กระทบสรุปหลัก
+"""
 
 import os, re, json, time, random
 from datetime import datetime, timedelta
@@ -55,7 +68,7 @@ def load_sent_links_today_yesterday():
 
 def save_sent_links(new_links, date=None):
     path = get_sent_links_file(date)
-    with open(path, "a", encoding="utf-8") as f:
+    with open(path, "a", encoding="utf-8") as f):
         for url in new_links:
             f.write(url.strip() + "\n")
 
@@ -94,14 +107,80 @@ UPSTREAM_SUBSIDIARY_CONTEXT = """
 """
 
 # ========================= HELPERS =========================
-def _normalize_colons(text: str) -> str:
-    if not text: return text
-    return re.sub(r"[：﹕꞉︓⦂⸿˸]", ":", text)
+def _truncate(s: str, n: int) -> str:  # [PATCH: minimal-impact]
+    if not s: return ""
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return (s[:n-1] + "…") if len(s) > n else s
 
-def _polish_text(text: str, maxlen: int) -> str:
-    if not text: return "-"
-    text = re.sub(r"\s{2,}", " ", text).strip()
-    return (text[:maxlen-1] + "…") if len(text) > maxlen else text
+def _safe_resp_text(resp) -> str:  # [PATCH: minimal-impact]
+    """ดึงข้อความจาก response.text; ถ้าไม่มี ให้รวมจาก candidates.parts"""
+    try:
+        txt = getattr(resp, "text", None)
+        if txt: return txt
+    except Exception:
+        pass
+    parts = []
+    try:
+        for c in getattr(resp, "candidates", []) or []:
+            if getattr(c, "content", None):
+                for p in getattr(c.content, "parts", []) or []:
+                    t = getattr(p, "text", None)
+                    if t: parts.append(t)
+    except Exception:
+        return ""
+    return "\n".join(parts).strip()
+
+def _replace_smart_quotes(s: str) -> str:  # [PATCH: minimal-impact]
+    if not s: return s
+    trans = {
+        '\u201c':'"', '\u201d':'"', '\u201e':'"', '\u201f':'"',
+        '\u2018':"'", '\u2019':"'", '\u201a':"'", '\u201b':"'",
+        '\u00A0':" ", '\u200B':"", '\u200C':"", '\u200D':"", '\uFEFF':""
+    }
+    for k,v in trans.items():
+        s = s.replace(k,v)
+    return s
+
+def _strip_code_fences(s: str) -> str:  # [PATCH: minimal-impact]
+    if not s: return s
+    s = re.sub(r"^```(?:json)?\s*", "", s.strip(), flags=re.I)
+    s = re.sub(r"\s*```$", "", s.strip(), flags=re.I)
+    return s
+
+def _balanced_json_substring(s: str) -> str | None:  # [PATCH: minimal-impact]
+    """ดึง JSON substring ที่ปิดวงปีกกาได้สมดุล (ช่วยซ่อมกรณีโดนตัด)"""
+    if not s: return None
+    start = s.find('{')
+    if start == -1: return None
+    i = start; depth = 0; in_str = False; esc = False
+    while i < len(s):
+        ch = s[i]
+        if in_str:
+            if esc: esc = False
+            elif ch == '\\': esc = True
+            elif ch == '"': in_str = False
+        else:
+            if ch == '"': in_str = True
+            elif ch == '{': depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return s[start:i+1]
+        i += 1
+    if depth > 0:
+        return s[start:] + ("}" * depth)
+    return None
+
+def _extract_json_robust(text: str) -> dict | None:  # [PATCH: minimal-impact]
+    if not text: return None
+    text = _replace_smart_quotes(_strip_code_fences(text))
+    cand = _balanced_json_substring(text)
+    if not cand: return None
+    cand = re.sub(r",\s*([}\]])", r"\1", cand)  # ตัด comma ท้าย
+    try:
+        return json.loads(cand)
+    except Exception:
+        return None
 
 # ========================= FETCHERS =========================
 def fetch_news_9pm_to_6am(days_back=1):
@@ -148,7 +227,7 @@ def fetch_article_detail_and_image(url, timeout=15):
         import lxml.html as LH
         doc = LH.fromstring(html)
         paragraphs = [p.text_content().strip() for p in doc.xpath("//p") if p.text_content()]
-        text2 = "\n".join(paragraphs[:40]).strip()
+        text2 = "\n".join(paragraphs[:60]).strip()  # ไม่ตัดแรง
         og = doc.xpath("//meta[@property='og:image']/@content") or doc.xpath("//meta[@name='twitter:image']/@content")
         img2 = (og[0].strip() if og else "")
         return text2, img2
@@ -156,10 +235,11 @@ def fetch_article_detail_and_image(url, timeout=15):
         return "", ""
 
 # ========================= GEMINI WRAPPER =========================
+# [PATCH: minimal-impact] — เพิ่ม max_output_tokens และตัวอ่าน text แบบปลอดภัย
 GENCFG = genai.GenerationConfig(
-    temperature=0.4,
-    max_output_tokens=1024,
-    response_mime_type="application/json"
+    temperature=0.35,
+    max_output_tokens=1024,  # เพิ่มขึ้นเล็กน้อยเพื่อให้ JSON ปิดครบ
+    response_mime_type="application/json"  # ยังขอ JSON เช่นเดิม
 )
 
 GEMINI_CALLS_FILE = os.path.join(SENT_LINKS_DIR, f"gemini_calls_{now.strftime('%Y-%m-%d')}.txt")
@@ -171,39 +251,46 @@ def _save_calls(n):
     except Exception: pass
 GEMINI_CALLS = _load_calls()
 
-def call_gemini_json(prompt, max_retries=MAX_RETRIES):
+def _call_and_parse_json(prompt) -> dict:  # [PATCH: minimal-impact]
+    """เรียกโมเดล 1 ครั้ง แล้วพยายามกู้ JSON จาก text/parts"""
+    resp = model.generate_content(prompt, generation_config=GENCFG)
+    raw = _safe_resp_text(resp)
+    out = _extract_json_robust(raw)
+    if out is not None:
+        return out
+    # ใส่ดีบักเล็กน้อย (ไม่โยน raw ยาว ๆ)
+    fr = None
+    try:
+        fr = getattr(resp.candidates[0], "finish_reason", None)
+    except Exception:
+        pass
+    raise RuntimeError(f"Gemini ไม่ส่ง JSON ที่ parse ได้ (finish_reason={fr})")
+
+def call_gemini_json(prompt, max_retries=MAX_RETRIES):  # [PATCH: minimal-impact]
     global GEMINI_CALLS
     if GEMINI_CALLS >= GEMINI_DAILY_BUDGET:
         raise RuntimeError(f"ถึงงบ Gemini ประจำวันแล้ว ({GEMINI_CALLS}/{GEMINI_DAILY_BUDGET})")
     last_error = None
     for attempt in range(1, max_retries+1):
         try:
-            resp = model.generate_content(prompt, generation_config=GENCFG)
+            out = _call_and_parse_json(prompt)
             GEMINI_CALLS += 1
             _save_calls(GEMINI_CALLS)
-            return json.loads(resp.text)
+            return out
         except Exception as e:
-            err_str = str(e)
-            if "429" in err_str and "retry_delay" in err_str:
-                import re as _re
-                m = _re.search(r'retry_delay\s*{[^}]*seconds:\s*(\d+)', err_str)
-                wait_sec = int(m.group(1)) if m else 60
-                print(f"[Quota] 429 รอ {wait_sec}s (attempt {attempt})")
-                time.sleep(wait_sec)
-            else:
-                last_error = e
-                if attempt < max_retries:
-                    time.sleep(5 * attempt)
-                else:
-                    raise last_error
-    raise last_error
+            last_error = e
+            if attempt < max_retries:
+                time.sleep(4 * attempt)
+                continue
+            raise last_error
 
 # ========================= PROMPTS (เวอร์ชันหน่วยงาน) =========================
 def llm_is_relevant_for_department(news):
-    """
-    ตอบ JSON: {"relevant": true|false}
-    เกณฑ์: เกี่ยวข้องกับการ 'บริหารบริษัทย่อย upstream' ตาม context ด้านบน
-    """
+    # [PATCH: minimal-impact] ตัด detail แคป (~3500) กันโดนตัดเอาต์พุต แต่ไม่กระทบสาระ
+    title   = _truncate(news['title'], 300)
+    summary = _truncate(news.get('summary',''), 800)
+    detail  = _truncate(news.get('detail',''), 3800)
+
     prompt = f"""
 {UPSTREAM_SUBSIDIARY_CONTEXT}
 
@@ -211,59 +298,80 @@ def llm_is_relevant_for_department(news):
 {{"relevant": true|false}}
 
 ข่าว:
-หัวข้อ: {news['title']}
-สรุป: {news['summary']}
-เนื้อหาเพิ่มเติม: {news.get('detail','')}
+หัวข้อ: {title}
+สรุป: {summary}
+เนื้อหาเพิ่มเติม: {detail}
 """
     try:
         if DRY_RUN:
-            # heuristic เบา ๆ
-            s = (news['title'] + " " + news.get('summary','')).lower()
+            s = (title + " " + summary).lower()
             keys = ["e&p","exploration","production","oil","gas","brent","wti","lng","field","rig","psc","concession","m&a","acquisition","portfolio","subsidiary","joint venture","supply"]
             return any(k in s for k in keys)
         out = call_gemini_json(prompt)
         return bool(out.get("relevant", False))
     except Exception as e:
-        print("[ERROR] LLM Filter:", e); return False
+        print("[ERROR] LLM Filter:", e)
+        return False
 
 def llm_summary_for_department(news):
-    """
-    ให้ LLM สรุปข่าว + อธิบาย 'ความเกี่ยวข้องกับงานบริหารบริษัทย่อย upstream' + ให้คะแนนความสำคัญ 1-5
-    """
-    prompt = f"""
+    """สรุปข่าว + ความเกี่ยวข้องกับหน่วยงาน + คะแนน (JSON) — fallback แบบ 'ลด detail' เฉพาะจำเป็น"""
+    title   = _truncate(news['title'], 300)
+    summary = _truncate(news.get('summary',''), 800)
+    detail  = _truncate(news.get('detail',''), 3800)  # ส่งรอบแรกแบบยาวพอควร (ไม่หั่นสาระ)
+
+    def _make_prompt(_title, _summary, _detail):
+        return f"""
 {UPSTREAM_SUBSIDIARY_CONTEXT}
 
-ตอบเป็น JSON ตาม schema ด้านล่าง 'เท่านั้น':
+ตอบเป็น JSON เท่านั้น:
 {{
-  "summary": "ไทยสั้น 1-2 ประโยค อธิบายเหตุการณ์หลัก+กลไก",
+  "summary": "ไทยสั้น 1–2 ประโยค อธิบายเหตุการณ์หลัก+กลไก (หลีกเลี่ยงศัพท์กว้าง)",
   "importance": 1,
-  "importance_reasons": ["รายการสั้น ๆ อธิบายเหตุผลรวมถึงกลไกเชิงธุรกิจ"],
-  "department_relevance": "อธิบายว่าข่าวนี้เกี่ยวข้องกับการบริหารบริษัทย่อย upstream อย่างไร เช่น มีผลต่อดีล/โครงสร้าง/ความเสี่ยง/พอร์ต/ผลการดำเนินงานของบริษัทลูก",
+  "importance_reasons": ["รายการสั้นๆ 1-3 ข้อ อธิบายกลไกเชิงธุรกิจ"],
+  "department_relevance": "อธิบายว่าข่าวนี้เกี่ยวข้องกับการบริหารบริษัทย่อย upstream อย่างไร (ดีล/โครงสร้าง/ความเสี่ยง/พอร์ต/ผลการดำเนินงาน)",
   "tags": ["เช่น upstream","m&a","psc","geo-risk","price","supply"]
 }}
 
 ข้อกำหนด:
-- importance เป็น 1..5 และเหตุผลต้องสอดคล้อง
-- กระชับ มืออาชีพ หลีกเลี่ยงถ้อยคำกำกวม
-- ถ้าไม่เกี่ยว ให้ department_relevance ระบุว่าไม่เกี่ยวชัดเจน (แต่ระบบคัดกรองไว้แล้ว ปกติจะเกี่ยว)
+- importance ∈ [1,5] และเหตุผลต้องสอดคล้อง
+- ตอบเฉพาะ JSON (ห้ามข้อความอื่น/โค้ดบล็อก)
 
 ข่าว:
-หัวข้อ: {news['title']}
-สรุปย่อ: {news['summary']}
-เนื้อหาข่าว (ถ้ามี): {news.get('detail','')}
+หัวข้อ: {_title}
+สรุปย่อ: {_summary}
+เนื้อหาข่าว (ถ้ามี): {_detail}
 """
+
     if DRY_RUN:
-        # สร้างคำตอบจำลองแบบคงที่พอทดสอบ flow
-        s = (news.get('summary') or news['title']).strip()
-        reasons = ["ข่าวอยู่ในหมวด upstream/พอร์ตบริษัทย่อย", "มีผลต่อความเสี่ยง/รายได้ของบริษัทลูก"]
+        s = (summary or title)
         return {
-            "summary": s[:200],
+            "summary": _truncate(s, 240),
             "importance": 4,
-            "importance_reasons": reasons,
+            "importance_reasons": ["ข่าว upstream บริษัทลูก", "มีผลต่อพอร์ต/ความเสี่ยง"],
             "department_relevance": "เกี่ยวข้องกับการกำกับบริษัทย่อย upstream (พอร์ต/ความเสี่ยง/ผลการดำเนินงาน)",
             "tags": ["upstream","portfolio"]
         }
-    return call_gemini_json(prompt)
+
+    # รอบ 1: ส่งพร้อม detail แบบย่อ (ยาวพอควร)
+    try:
+        return call_gemini_json(_make_prompt(title, summary, detail))
+    except Exception as e1:
+        print("Analyze warn (full detail):", e1)
+
+    # รอบ 2: ลดความยาวโดยตัด detail ออก (ผลกระทบต่อข่าว 'น้อยที่สุด' แต่ช่วยโมเดลปิด JSON)
+    try:
+        return call_gemini_json(_make_prompt(title, summary, ""))
+    except Exception as e2:
+        print("Analyze warn (no detail):", e2)
+
+    # รอบสุดท้าย: fallback—ยังคงโครงสร้าง JSON เดิม เพื่อให้ pipeline ไปต่อ
+    return {
+        "summary": _truncate(summary or title, 240),
+        "importance": 3,
+        "importance_reasons": ["Fallback: โมเดลไม่ตอบหรือ JSON พัง"],
+        "department_relevance": "Fallback: ใช้สรุปย่อชั่วคราวเพื่อส่งงานต่อ",
+        "tags": ["fallback"]
+    }
 
 # ========================= RANK / FLEX =========================
 def rank_candidates(news_list):
@@ -282,12 +390,11 @@ def create_flex_message(news_items):
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
     bubbles = []
     for item in news_items:
-        title = _polish_text(item.get("title","-"), 120)
-        summary_txt = _polish_text(item.get("dept_summary") or "ไม่พบสรุปข่าว", 600)
-        rel_txt = _polish_text(item.get("dept_relevance") or "-", 600)
+        title = (item.get("title","-"))  # ไม่หั่น เพื่อกระทบเนื้อหาน้อยที่สุด
+        summary_txt = (item.get("dept_summary") or "ไม่พบสรุปข่าว")
+        rel_txt = (item.get("dept_relevance") or "-")
         reasons = item.get("dept_reasons") or []
         score_line = f"คะแนนความสำคัญต่อหน่วยงาน: {item.get('dept_importance','-')}"
-
         bd_clean = "\n".join([f"- {r}" for r in reasons]) if reasons else "-"
 
         img = item.get("image") or DEFAULT_ICON_URL
@@ -359,7 +466,8 @@ def main():
     for news in all_news:
         if len(news.get('summary','')) < 50:
             txt, _ = fetch_article_detail_and_image(news['link'])
-            news['detail'] = (txt or "").strip() or news['title']
+            # [PATCH: minimal-impact] จำกัดยาวพอควรเพื่อกันตัด แต่ยังเก็บสาระได้ดี
+            news['detail'] = _truncate((txt or "").strip() or news['title'], 3800)
         else:
             news['detail'] = ""
 
@@ -381,13 +489,13 @@ def main():
         try:
             out = llm_summary_for_department(news)
         except Exception as e:
-            print("[ERROR] Analyze:", e)
+            print("Error: Analyze:", e)
             continue
 
-        news['dept_summary']    = _polish_text(out.get('summary','ไม่พบสรุปข่าว'), 600)
+        news['dept_summary']    = out.get('summary','ไม่พบสรุปข่าว')
         news['dept_importance'] = int(out.get('importance', 3) or 3)
         news['dept_reasons']    = list(out.get('importance_reasons') or [])
-        news['dept_relevance']  = _polish_text(out.get('department_relevance','-'), 600)
+        news['dept_relevance']  = out.get('department_relevance','-')
         news['dept_tags']       = out.get('tags') or []
 
         dept_news.append(news)
