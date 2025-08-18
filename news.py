@@ -6,14 +6,17 @@
 สร้าง Flex Message และ (เลือก) Broadcast ไป LINE OA
 
 หลักแก้ไขแบบกระทบข่าวน้อยที่สุด:
+- แก้ไวยากรณ์ save_sent_links (วงเล็บเกิน)
+- รองรับ Python 3.9: เปลี่ยน type hint แบบ `str | None` → `Optional[str]` และ `dict | None` → `Optional[dict]`
 - เพิ่มตัวดึงข้อความจาก candidates.parts เมื่อ resp.text ว่าง
 - ซ่อม/กู้ JSON ที่โดนตัดด้วยตัวช่วยแบบนุ่มนวล (ไม่บังคับมินิฟาย)
-- เพิ่ม max_output_tokens ขึ้นเล็กน้อย + retry ด้วย prompt ที่ “ตัด detail” เฉพาะเมื่อจำเป็น
-- จำกัดความยาว detail ที่ส่งเข้า LLM (~3500–4000 chars) เพื่อกัน finish_reason=2 โดยไม่กระทบสรุปหลัก
+- จำกัดความยาว detail ที่ส่งเข้า LLM (~3800 chars) เพื่อกัน finish_reason=2 โดยไม่กระทบสาระ
 """
 
 import os, re, json, time, random
 from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List  # <- รองรับ Python 3.9
+
 import feedparser
 from dateutil import parser as dateutil_parser
 import pytz
@@ -68,7 +71,8 @@ def load_sent_links_today_yesterday():
 
 def save_sent_links(new_links, date=None):
     path = get_sent_links_file(date)
-    with open(path, "a", encoding="utf-8") as f):
+    # FIX: ตัดวงเล็บเกินหลัง as f
+    with open(path, "a", encoding="utf-8") as f:
         for url in new_links:
             f.write(url.strip() + "\n")
 
@@ -107,19 +111,19 @@ UPSTREAM_SUBSIDIARY_CONTEXT = """
 """
 
 # ========================= HELPERS =========================
-def _truncate(s: str, n: int) -> str:  # [PATCH: minimal-impact]
+def _truncate(s: str, n: int) -> str:
     if not s: return ""
     s = re.sub(r"\s{2,}", " ", s).strip()
     return (s[:n-1] + "…") if len(s) > n else s
 
-def _safe_resp_text(resp) -> str:  # [PATCH: minimal-impact]
+def _safe_resp_text(resp) -> str:
     """ดึงข้อความจาก response.text; ถ้าไม่มี ให้รวมจาก candidates.parts"""
     try:
         txt = getattr(resp, "text", None)
         if txt: return txt
     except Exception:
         pass
-    parts = []
+    parts: List[str] = []
     try:
         for c in getattr(resp, "candidates", []) or []:
             if getattr(c, "content", None):
@@ -130,7 +134,7 @@ def _safe_resp_text(resp) -> str:  # [PATCH: minimal-impact]
         return ""
     return "\n".join(parts).strip()
 
-def _replace_smart_quotes(s: str) -> str:  # [PATCH: minimal-impact]
+def _replace_smart_quotes(s: str) -> str:
     if not s: return s
     trans = {
         '\u201c':'"', '\u201d':'"', '\u201e':'"', '\u201f':'"',
@@ -141,13 +145,13 @@ def _replace_smart_quotes(s: str) -> str:  # [PATCH: minimal-impact]
         s = s.replace(k,v)
     return s
 
-def _strip_code_fences(s: str) -> str:  # [PATCH: minimal-impact]
+def _strip_code_fences(s: str) -> str:
     if not s: return s
     s = re.sub(r"^```(?:json)?\s*", "", s.strip(), flags=re.I)
     s = re.sub(r"\s*```$", "", s.strip(), flags=re.I)
     return s
 
-def _balanced_json_substring(s: str) -> str | None:  # [PATCH: minimal-impact]
+def _balanced_json_substring(s: str) -> Optional[str]:
     """ดึง JSON substring ที่ปิดวงปีกกาได้สมดุล (ช่วยซ่อมกรณีโดนตัด)"""
     if not s: return None
     start = s.find('{')
@@ -171,7 +175,7 @@ def _balanced_json_substring(s: str) -> str | None:  # [PATCH: minimal-impact]
         return s[start:] + ("}" * depth)
     return None
 
-def _extract_json_robust(text: str) -> dict | None:  # [PATCH: minimal-impact]
+def _extract_json_robust(text: str) -> Optional[dict]:
     if not text: return None
     text = _replace_smart_quotes(_strip_code_fences(text))
     cand = _balanced_json_substring(text)
@@ -235,11 +239,10 @@ def fetch_article_detail_and_image(url, timeout=15):
         return "", ""
 
 # ========================= GEMINI WRAPPER =========================
-# [PATCH: minimal-impact] — เพิ่ม max_output_tokens และตัวอ่าน text แบบปลอดภัย
 GENCFG = genai.GenerationConfig(
     temperature=0.35,
     max_output_tokens=1024,  # เพิ่มขึ้นเล็กน้อยเพื่อให้ JSON ปิดครบ
-    response_mime_type="application/json"  # ยังขอ JSON เช่นเดิม
+    response_mime_type="application/json"
 )
 
 GEMINI_CALLS_FILE = os.path.join(SENT_LINKS_DIR, f"gemini_calls_{now.strftime('%Y-%m-%d')}.txt")
@@ -251,14 +254,13 @@ def _save_calls(n):
     except Exception: pass
 GEMINI_CALLS = _load_calls()
 
-def _call_and_parse_json(prompt) -> dict:  # [PATCH: minimal-impact]
+def _call_and_parse_json(prompt) -> dict:
     """เรียกโมเดล 1 ครั้ง แล้วพยายามกู้ JSON จาก text/parts"""
     resp = model.generate_content(prompt, generation_config=GENCFG)
     raw = _safe_resp_text(resp)
     out = _extract_json_robust(raw)
     if out is not None:
         return out
-    # ใส่ดีบักเล็กน้อย (ไม่โยน raw ยาว ๆ)
     fr = None
     try:
         fr = getattr(resp.candidates[0], "finish_reason", None)
@@ -266,7 +268,7 @@ def _call_and_parse_json(prompt) -> dict:  # [PATCH: minimal-impact]
         pass
     raise RuntimeError(f"Gemini ไม่ส่ง JSON ที่ parse ได้ (finish_reason={fr})")
 
-def call_gemini_json(prompt, max_retries=MAX_RETRIES):  # [PATCH: minimal-impact]
+def call_gemini_json(prompt, max_retries=MAX_RETRIES):
     global GEMINI_CALLS
     if GEMINI_CALLS >= GEMINI_DAILY_BUDGET:
         raise RuntimeError(f"ถึงงบ Gemini ประจำวันแล้ว ({GEMINI_CALLS}/{GEMINI_DAILY_BUDGET})")
@@ -286,7 +288,6 @@ def call_gemini_json(prompt, max_retries=MAX_RETRIES):  # [PATCH: minimal-impact
 
 # ========================= PROMPTS (เวอร์ชันหน่วยงาน) =========================
 def llm_is_relevant_for_department(news):
-    # [PATCH: minimal-impact] ตัด detail แคป (~3500) กันโดนตัดเอาต์พุต แต่ไม่กระทบสาระ
     title   = _truncate(news['title'], 300)
     summary = _truncate(news.get('summary',''), 800)
     detail  = _truncate(news.get('detail',''), 3800)
@@ -317,7 +318,7 @@ def llm_summary_for_department(news):
     """สรุปข่าว + ความเกี่ยวข้องกับหน่วยงาน + คะแนน (JSON) — fallback แบบ 'ลด detail' เฉพาะจำเป็น"""
     title   = _truncate(news['title'], 300)
     summary = _truncate(news.get('summary',''), 800)
-    detail  = _truncate(news.get('detail',''), 3800)  # ส่งรอบแรกแบบยาวพอควร (ไม่หั่นสาระ)
+    detail  = _truncate(news.get('detail',''), 3800)
 
     def _make_prompt(_title, _summary, _detail):
         return f"""
@@ -352,13 +353,13 @@ def llm_summary_for_department(news):
             "tags": ["upstream","portfolio"]
         }
 
-    # รอบ 1: ส่งพร้อม detail แบบย่อ (ยาวพอควร)
+    # รอบ 1: พร้อม detail แบบย่อ
     try:
         return call_gemini_json(_make_prompt(title, summary, detail))
     except Exception as e1:
         print("Analyze warn (full detail):", e1)
 
-    # รอบ 2: ลดความยาวโดยตัด detail ออก (ผลกระทบต่อข่าว 'น้อยที่สุด' แต่ช่วยโมเดลปิด JSON)
+    # รอบ 2: ตัด detail ออก (กระทบข่าวน้อยที่สุด แต่ช่วยโมเดลปิด JSON)
     try:
         return call_gemini_json(_make_prompt(title, summary, ""))
     except Exception as e2:
@@ -390,7 +391,7 @@ def create_flex_message(news_items):
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
     bubbles = []
     for item in news_items:
-        title = (item.get("title","-"))  # ไม่หั่น เพื่อกระทบเนื้อหาน้อยที่สุด
+        title = (item.get("title","-"))
         summary_txt = (item.get("dept_summary") or "ไม่พบสรุปข่าว")
         rel_txt = (item.get("dept_relevance") or "-")
         reasons = item.get("dept_reasons") or []
@@ -466,7 +467,6 @@ def main():
     for news in all_news:
         if len(news.get('summary','')) < 50:
             txt, _ = fetch_article_detail_and_image(news['link'])
-            # [PATCH: minimal-impact] จำกัดยาวพอควรเพื่อกันตัด แต่ยังเก็บสาระได้ดี
             news['detail'] = _truncate((txt or "").strip() or news['title'], 3800)
         else:
             news['detail'] = ""
