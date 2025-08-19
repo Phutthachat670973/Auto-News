@@ -1,24 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-PTT News Pipeline — Upstream Business Group Subsidiary Management Department edition
-
-สิ่งที่ทำ:
-- ดึงข่าวช่วง 21:00 ของเมื่อวาน → 06:00 ของวันนี้ จากฟีดพลังงาน/เศรษฐกิจหลัก
-- คัดกรองข่าวด้วย LLM (ตอบแค่ "ใช่/ไม่ใช่") โดยยึด Upstream-first (PTTEP ก่อน)
-- วิเคราะห์/สรุป/ให้คะแนน ด้วย LLM ที่บังคับคืนค่าเป็น JSON ตาม schema เดียวกันทุกข่าว
-- กันลิงก์ซ้ำวันนี้-เมื่อวาน (normalize ลบ utm_* / fbclid / gclid ฯลฯ)
-- ดึงรูปพาดหัวแบบเบา (requests หา og:image) → ส่ง LINE Flex Message
-- มี DRY_RUN ให้ลองยิงดู log ก่อนส่งจริง
-
-ENV ที่ต้องตั้ง:
-- GEMINI_API_KEY
-- LINE_CHANNEL_ACCESS_TOKEN
-ตัวเลือก:
-- GEMINI_MODEL_NAME (default: gemini-2.5-flash)
-- GEMINI_DAILY_BUDGET (default: 250)
-- DRY_RUN = "true"/"false" (default: false)
-"""
-
 import os
 import re
 import json
