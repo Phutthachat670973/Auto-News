@@ -132,7 +132,7 @@ def fetch_article_image(url: str) -> str:
     except Exception:
         return ""
 
-# ========================= Upstream & Gas Context (จากรูป + อธิบายปกติ) =========================
+# ========================= Upstream & Gas Context =========================
 PTT_CONTEXT = """
 [บริบทธุรกิจปิโตรเลียมขั้นต้นและก๊าซธรรมชาติของกลุ่ม ปตท. — ฉบับอธิบายง่าย]
 
@@ -164,7 +164,6 @@ PTT_CONTEXT = """
    - PTTLNG     : นำเข้า จัดเก็บ และแปรรูป LNG
    - PTTGL / ระบบท่อก๊าซ : ขนส่งก๊าซผ่านท่อและโครงข่ายก๊าซธรรมชาติ
    - PTTNGD     : การจัดจำหน่ายก๊าซธรรมชาติไปยังลูกค้าอุตสาหกรรม/ผู้ใช้ปลายทาง
-   - รวมถึงโรงไฟฟ้าและผู้ใช้ก๊าซรายใหญ่ที่เชื่อมต่อกับระบบของ ปตท.
 
 [เกณฑ์ใช้คัดกรองว่า "ข่าวเกี่ยวข้องกับธุรกิจนี้หรือไม่"]
 
@@ -204,7 +203,7 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
                 raise last_error
     raise last_error
 
-# ===== Filter: ใช่/ไม่ใช่ (ใช้บริบทจากแผนภาพธุรกิจ ปตท.) =====
+# ===== Filter: ใช่/ไม่ใช่ =====
 def llm_ptt_subsidiary_impact_filter(news):
     prompt = f'''
 {PTT_CONTEXT}
@@ -230,7 +229,7 @@ def llm_ptt_subsidiary_impact_filter(news):
         print("[ERROR] LLM Filter:", e)
         return False
 
-# ===== Tag ข่าว: สรุป + ติดแท็กบริษัท / ประเด็น / ภูมิภาค (ไม่มีคะแนน) =====
+# ===== Tag ข่าว: สรุป + บริษัท / ประเด็น / ภูมิภาค =====
 def gemini_tag_news(news):
     schema = {
         "type": "object",
@@ -303,7 +302,7 @@ def gemini_tag_news(news):
   • ให้เลือก region หลักที่เกี่ยวข้องกับเหตุการณ์ในข่าว
 - impact_reason:
   • เขียนอธิบาย 1–3 ประโยคว่า ข่าวนี้จะไปกระทบห่วงโซ่ธุรกิจของกลุ่ม ปตท. อย่างไร
-  • ถ้า impact_companies เป็น [] (ไม่เกี่ยวกับบริษัทใดโดยตรง) ให้เขียนในเชิงภาพรวมตลาด/ราคา
+  • ถ้า impact_companies เป็น [] ให้เขียนในเชิงภาพรวมตลาด/ราคา
 
 ห้ามใส่คำอธิบายอื่นนอกจาก JSON ตาม schema ข้างต้น
 """
@@ -312,7 +311,6 @@ def gemini_tag_news(news):
         resp = call_gemini(prompt)
         raw = (resp.text or "").strip()
 
-        # ตัด ```json ... ``` ออก ถ้ามี
         if raw.startswith("```"):
             raw = re.sub(r"^```(json)?", "", raw).strip()
             raw = re.sub(r"```$", "", raw).strip()
@@ -322,7 +320,6 @@ def gemini_tag_news(news):
 
     except Exception as e:
         print("[WARN] JSON parse fail in gemini_tag_news:", e)
-        # fallback ให้โครงสร้างไม่พัง
         return {
             "summary": news.get("summary") or news.get("title") or "ไม่สามารถสรุปข่าวได้",
             "impact_companies": [],
@@ -385,13 +382,13 @@ def fetch_news_9pm_to_6am():
             uniq.append(n)
     return uniq
 
-# --------- Coverage-first selection (เน้นครอบคลุมบริษัท + ประเด็น) ----------
+# --------- Coverage-first selection ----------
 KEY_COMPANIES = ["PTTEP", "PTTLNG", "PTTGL", "PTTNGD"]
 KEY_TOPICS = ["supply_disruption", "price_move", "policy", "investment", "geopolitics"]
 
 def select_news_coverage_first(news_list, max_items=10):
     """
-    เลือกข่าวโดยเน้นความครอบคลุม:
+    เลือกข่าว/กลุ่มข่าวโดยเน้นความครอบคลุม:
     1) พยายามให้มีข่าวของทุกบริษัทหลักเท่าที่เป็นไปได้
     2) พยายามให้มีทุก topic_type สำคัญเท่าที่เป็นไปได้
     3) ที่เหลือเติมด้วยข่าวใหม่สุด (published ใหม่สุดก่อน)
@@ -399,7 +396,6 @@ def select_news_coverage_first(news_list, max_items=10):
     if not news_list:
         return []
 
-    # จัดเรียงข่าวทั้งหมดตามเวลาใหม่สุดก่อน
     sorted_news = sorted(news_list, key=lambda n: n.get("published"), reverse=True)
 
     selected = []
@@ -415,7 +411,7 @@ def select_news_coverage_first(news_list, max_items=10):
         used_ids.add(key)
         return True
 
-    # รอบที่ 1: ครอบคลุมบริษัทก่อน
+    # รอบที่ 1: ครอบคลุมบริษัท
     for comp in KEY_COMPANIES:
         if len(selected) >= max_items:
             break
@@ -444,6 +440,102 @@ def select_news_coverage_first(news_list, max_items=10):
 
     return selected
 
+# --------- Grouping ข่าวตาม topic + region ----------
+def group_related_news(news_list, min_group_size=3):
+    """
+    รับข่าวที่ tag แล้ว (มี topic_type, region)
+    คืน list ที่มีทั้ง:
+      - single ข่าวปกติ (dict เดิม)
+      - group ข่าว (dict ใหม่ is_group=True และมี news_items เป็น list ข่าวย่อย)
+    """
+    buckets = {}
+    for n in news_list:
+        key = (n.get("topic_type", "other"), n.get("region", "other"))
+        buckets.setdefault(key, []).append(n)
+
+    grouped_items = []
+
+    for (topic, region), items in buckets.items():
+        if len(items) >= min_group_size:
+            all_companies = []
+            for it in items:
+                all_companies.extend(it.get("ptt_companies") or [])
+            all_companies = list(dict.fromkeys(all_companies))
+
+            items_sorted = sorted(items, key=lambda x: x.get("published"), reverse=True)
+            anchor = items_sorted[0]
+
+            group_obj = {
+                "is_group": True,
+                "topic_type": topic,
+                "region": region,
+                "ptt_companies": all_companies,
+                "news_items": items_sorted,
+
+                "title": anchor.get("title", "-"),
+                "site": "หลายแหล่งข่าว",
+                "category": anchor.get("category", ""),
+                "date": anchor.get("date", ""),
+                "published": anchor.get("published"),
+                "link": anchor.get("link", ""),
+            }
+            grouped_items.append(group_obj)
+        else:
+            grouped_items.extend(items)
+
+    return grouped_items
+
+def gemini_summarize_group(group):
+    """
+    สร้าง meta-summary สำหรับกลุ่มข่าว (เช่น geopolitics + middle_east ที่มีหลายข่าว)
+    """
+    items = group.get("news_items", [])
+    if not items:
+        return {
+            "summary": "ไม่พบข่าวในกลุ่ม",
+            "impact_reason": "-"
+        }
+
+    lines = []
+    for idx, n in enumerate(items, 1):
+        line = f"{idx}. {n.get('title','-')} — {n.get('summary','')}"
+        lines.append(line)
+    news_block = "\n".join(lines)
+
+    prompt = f"""
+{PTT_CONTEXT}
+
+บทบาทของคุณ: Analyst ที่ต้องสรุป "ภาพรวม" ของชุดข่าวหลายข่าวที่พูดถึงประเด็นเดียวกัน
+จุดประสงค์: ทำให้ผู้บริหารอ่าน bubble เดียวแล้วเข้าใจว่า เกิดอะไรขึ้นในประเด็นนี้ โดยไม่ต้องอ่านทุกข่าวย่อย
+
+กลุ่มข่าว (หัวข้อและสรุปย่อย):
+{news_block}
+
+ให้ตอบกลับเป็น JSON รูปแบบ:
+{{
+  "summary": "<สรุปภาพรวมของทั้งกลุ่ม 3–5 ประโยค>",
+  "impact_reason": "<อธิบายสั้น ๆ ว่ากลุ่มข่าวนี้กระทบกลุ่ม ปตท. อย่างไร โดยโยงกับ upstream/gas value chain>"
+}}
+
+ห้ามตอบคำอธิบายอื่น นอกจาก JSON ตามรูปแบบข้างต้น
+"""
+
+    try:
+        resp = call_gemini(prompt)
+        raw = (resp.text or "").strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(json)?", "", raw).strip()
+            raw = re.sub(r"```$", "", raw).strip()
+        data = json.loads(raw)
+        return data
+    except Exception as e:
+        print("[WARN] JSON parse fail in gemini_summarize_group:", e)
+        return {
+            "summary": "ไม่สามารถสรุปภาพรวมของกลุ่มข่าวได้",
+            "impact_reason": "-"
+        }
+
+# --------- Labels สำหรับ Flex ---------
 TOPIC_LABELS_TH = {
     "supply_disruption": "Supply ขัดข้อง/ลดลง",
     "price_move": "ราคาน้ำมัน/ก๊าซเปลี่ยน",
@@ -498,10 +590,48 @@ def create_flex_message(news_items):
             "margin": "sm"
         }
 
+        # ถ้าเป็นกลุ่มข่าว → แสดง list ข่าวย่อย
+        group_sublist_box = None
+        if item.get("is_group"):
+            sub_items = item.get("news_items", [])[:5]
+            sub_lines = []
+            for sub in sub_items:
+                line = f"• [{sub.get('site','')}] {sub.get('title','-')}"
+                sub_lines.append(line)
+            sub_text = "\n".join(sub_lines) if sub_lines else "-"
+
+            group_sublist_box = {
+                "type": "box",
+                "layout": "vertical",
+                "margin": "md",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": "ข่าวย่อยในกลุ่มนี้:",
+                        "size": "xs",
+                        "weight": "bold",
+                        "color": "#000000",
+                        "wrap": True
+                    },
+                    {
+                        "type": "text",
+                        "text": sub_text,
+                        "size": "xs",
+                        "color": "#444444",
+                        "wrap": True
+                    }
+                ]
+            }
+
+        title_text = item.get("title", "-")
+        if item.get("is_group"):
+            count_sub = len(item.get("news_items", []))
+            title_text = f"{topic_label} ({region_label}) – {count_sub} ข่าวสำคัญ"
+
         body_contents = [
             {
                 "type": "text",
-                "text": item.get("title", "-"),
+                "text": title_text,
                 "weight": "bold",
                 "size": "lg",
                 "wrap": True,
@@ -570,6 +700,9 @@ def create_flex_message(news_items):
                 ]
             }
         ]
+
+        if group_sublist_box:
+            body_contents.append(group_sublist_box)
 
         bubble = {
             "type": "bubble",
@@ -655,7 +788,7 @@ def main():
 
     SLEEP_MIN, SLEEP_MAX = SLEEP_BETWEEN_CALLS
 
-    # 1) LLM Filter: เลือกเฉพาะข่าวที่เกี่ยวกับ Upstream/Gas
+    # 1) Filter: เลือกข่าวที่เกี่ยวข้องกับ Upstream/Gas
     filtered_news = []
     for news in all_news:
         news['detail'] = news['title'] if len((news.get('summary') or '')) < 50 else ''
@@ -668,7 +801,7 @@ def main():
         print("ไม่มีข่าวเกี่ยวข้อง")
         return
 
-    # 2) LLM Tagging: สรุป + ติดแท็กบริษัท/ประเด็น/ภูมิภาค
+    # 2) Tagging: สรุป + tag บริษัท/ประเด็น/ภูมิภาค
     tagged_news = []
     print(f"ส่งให้ Gemini ติดแท็ก {len(filtered_news)} ข่าว")
     for news in filtered_news:
@@ -676,7 +809,7 @@ def main():
 
         news['gemini_summary'] = _normalize_colons(tag.get('summary', '')).strip() or 'ไม่พบสรุปข่าว'
         companies = [c for c in (tag.get('impact_companies') or []) if c in {"PTTEP", "PTTLNG", "PTTGL", "PTTNGD"}]
-        news['ptt_companies'] = list(dict.fromkeys(companies))  # dedup
+        news['ptt_companies'] = list(dict.fromkeys(companies))
         news['topic_type'] = tag.get('topic_type', 'other')
         news['region'] = tag.get('region', 'other')
         news['gemini_reason'] = _polish_impact_text(tag.get('impact_reason', '').strip()) or '-'
@@ -691,8 +824,18 @@ def main():
         print("ไม่พบข่าวที่ผูกกับบริษัทในเครือ PTT โดยตรง")
         return
 
-    # 3) เลือกชุดข่าวแบบ Coverage-first (ไม่ใช้คะแนน)
-    top_news = select_news_coverage_first(tagged_news, max_items=10)
+    # 3) Grouping: ยุบข่าวที่ topic+region เดียวกัน (ถ้ามี >= 3 ข่าว)
+    collapsed_list = group_related_news(tagged_news, min_group_size=3)
+
+    # 4) ทำ meta-summary สำหรับกลุ่มข่าว
+    for item in collapsed_list:
+        if item.get("is_group"):
+            data = gemini_summarize_group(item)
+            item["gemini_summary"] = _normalize_colons(data.get("summary", "")).strip()
+            item["gemini_reason"] = _polish_impact_text(data.get("impact_reason", "").strip() or "-")
+
+    # 5) เลือกชุดข่าว/กลุ่มข่าวแบบ coverage-first (ไม่เกิน 10 bubble)
+    top_news = select_news_coverage_first(collapsed_list, max_items=10)
 
     sent_links = load_sent_links_today_yesterday()
     top_news_to_send = [n for n in top_news if _normalize_link(n.get('link', '')) not in sent_links]
@@ -700,14 +843,14 @@ def main():
         print("ข่าววันนี้/เมื่อวานส่งครบแล้ว")
         return
 
-    # 4) ดึงรูปข่าว
+    # 6) ดึงรูปข่าว
     for item in top_news_to_send:
         img = fetch_article_image(item.get("link", "")) or ""
         if not (str(img).startswith("http://") or str(img).startswith("https://")):
             img = DEFAULT_ICON_URL
         item["image"] = img
 
-    # 5) ส่งเข้า LINE
+    # 7) ส่งเข้า LINE
     carousels = create_flex_message(top_news_to_send)
     broadcast_flex_message(LINE_CHANNEL_ACCESS_TOKEN, carousels)
     save_sent_links([n.get("link", "") for n in top_news_to_send])
