@@ -1,15 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-สคริปต์: ส่งสรุปข่าวพลังงาน/เศรษฐกิจไปยัง LINE (Flex Message) โดยใช้ฟีด RSS + สรุปด้วย Gemini
-— ฉบับฝังพรอมพ์จากรูป "ธุรกิจปิโตรเลียมขั้นต้นและก๊าซธรรมชาติ" (Upstream & Gas Business)
-
-ไฮไลท์สิ่งที่เปลี่ยน:
-1) PTT_CONTEXT ← ครอบคลุม Upstream + Gas (LNG, Gas Separation, NGV, SPP/IPP)
-2) llm_ptt_subsidiary_impact_filter() ← ใช้เกณฑ์จากรูปอย่างชัดเจน
-3) gemini_summary_and_score() ← บังคับ schema + ให้เหตุผลผูก “กลไกกระทบ” ต่อ PTTEP/PTTLNG/PTTGL/PTTNGD
-4) rank_candidates() ← เพิ่ม keyword_boost สำหรับ LNG/ก๊าซ/โรงแยก/NGV/SPP-IPP/FSRU/ท่อก๊าซ ฯลฯ
-"""
-
 import os
 import re
 import json
