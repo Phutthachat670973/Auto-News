@@ -1,330 +1,465 @@
-# ------------------- ส่วนนำเข้า Library -------------------
-import feedparser
+import os
+import re
+import json
+import time
+import random
 from datetime import datetime, timedelta
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+
+import feedparser
+from dateutil import parser as dateutil_parser
 import pytz
 import requests
-from transformers import pipeline
-import re
-from bs4 import BeautifulSoup
-import os
-from dateutil import parser as dateutil_parser
-from pathlib import Path
-from newspaper import Article
+import google.generativeai as genai
 
-# ------------------- ตั้งค่าโมเดล -------------------
-summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+# ===== .env =====
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
-# ------------------- ตั้งค่า API -------------------
-DEEPL_API_KEY = os.getenv("DEEPL_API_KEY") or "995e3d74-5184-444b-9fd9-a82a116c55cf:fx"
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+# ========================= CONFIG =========================
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+if not GEMINI_API_KEY:
+    raise RuntimeError("ไม่พบ GEMINI_API_KEY ใน Environment/Secrets")
 if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise ValueError("Missing LINE_CHANNEL_ACCESS_TOKEN.")
+    raise RuntimeError("ไม่พบ LINE_CHANNEL_ACCESS_TOKEN ใน Environment/Secrets")
 
-# ------------------- ตั้งค่า Timezone -------------------
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+
+GEMINI_DAILY_BUDGET = int(os.getenv("GEMINI_DAILY_BUDGET", "250"))
+MAX_RETRIES = 6
+SLEEP_BETWEEN_CALLS = (6.0, 7.0)
+DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
+
 bangkok_tz = pytz.timezone("Asia/Bangkok")
-now_thai = datetime.now(bangkok_tz)
-today_thai = now_thai.date()
-yesterday_thai = today_thai - timedelta(days=1)
+now = datetime.now(bangkok_tz)
 
-# ------------------- ลบไฟล์ข่าวเก่า -------------------
-def cleanup_old_sent_links(folder="sent_links", keep_days=5):
-    cutoff_date = today_thai - timedelta(days=keep_days)
-    if not os.path.exists(folder):
-        return
-    for filename in os.listdir(folder):
-        if filename.endswith(".txt"):
-            try:
-                file_date = datetime.strptime(filename.replace(".txt", ""), "%Y-%m-%d").date()
-                if file_date < cutoff_date:
-                    os.remove(os.path.join(folder, filename))
-            except:
+S = requests.Session()
+S.headers.update({"User-Agent": "Mozilla/5.0"})
+TIMEOUT = 15
+
+SENT_LINKS_DIR = "sent_links"
+os.makedirs(SENT_LINKS_DIR, exist_ok=True)
+
+def _normalize_link(url: str) -> str:
+    try:
+        p = urlparse(url)
+        netloc = p.netloc.lower()
+        scheme = (p.scheme or "https").lower()
+        bad_keys = {"fbclid", "gclid", "ref", "ref_", "mc_cid", "mc_eid"}
+        q = []
+        for k, v in parse_qsl(p.query, keep_blank_values=True):
+            if k.startswith("utm_") or k in bad_keys:
                 continue
+            q.append((k, v))
+        return urlunparse(p._replace(scheme=scheme, netloc=netloc, query=urlencode(q)))
+    except Exception:
+        return (url or "").strip()
 
-# ------------------- แหล่งข่าว -------------------
+def get_sent_links_file(date=None):
+    if date is None:
+        date = datetime.now(bangkok_tz).strftime("%Y-%m-%d")
+    return os.path.join(SENT_LINKS_DIR, f"{date}.txt")
+
+def load_sent_links_today_yesterday():
+    sent_links = set()
+    for i in range(2):
+        date = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+        path = get_sent_links_file(date)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    url = _normalize_link(line.strip())
+                    if url:
+                        sent_links.add(url)
+    return sent_links
+
+def save_sent_links(new_links, date=None):
+    path = get_sent_links_file(date)
+    with open(path, "a", encoding="utf-8") as f:
+        for url in new_links:
+            f.write(_normalize_link(url) + "\n")
+
+# ========================= FEEDS =========================
 news_sources = {
-    "BBC Economy": {"type": "rss", "url": "https://feeds.bbci.co.uk/news/rss.xml"},
-    "CNBC": {"type": "rss", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
+    "Oilprice": {"url": "https://oilprice.com/rss/main", "category": "Energy", "site": "Oilprice"},
+    "CleanTechnica": {"url": "https://cleantechnica.com/feed/", "category": "Energy", "site": "CleanTechnica"},
+    "HydrogenFuelNews": {"url": "https://www.hydrogenfuelnews.com/feed/", "category": "Energy", "site": "Hydrogen Fuel News"},
+    "Economist": {"url": "https://www.economist.com/latest/rss.xml", "category": "Economy", "site": "Economist"},
+    "YahooFinance": {"url": "https://finance.yahoo.com/news/rssindex", "category": "Economy", "site": "Yahoo Finance"},
 }
+DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
+GEMINI_CALLS = 0
 
-# ------------------- แปลภาษา -------------------
-def translate_en_to_th(text):
-    url = "https://api-free.deepl.com/v2/translate"
-    params = {
-        "auth_key": DEEPL_API_KEY,
-        "text": text,
-        "source_lang": "EN",
-        "target_lang": "TH"
-    }
-    try:
-        res = requests.post(url, data=params, timeout=10)
-        return res.json()["translations"][0]["text"]
-    except Exception as e:
-        return f"[แปลไม่ได้] {e}"
+# ========================= Helpers =========================
+COLON_RX = re.compile(r"[：﹕꞉︓⦂⸿˸]")
+def _normalize_colons(text: str) -> str:
+    return COLON_RX.sub(":", text or "")
 
-# ------------------- ดึงเนื้อหาข่าวจากหน้าเว็บ -------------------
-def fetch_full_article_text(url):
+def _polish_impact_text(text: str) -> str:
+    if not text:
+        return text
+    text = re.sub(r"\((?:[^)]*(?:บวก|ลบ|ไม่ชัดเจน|สั้น|กลาง|ยาว)[^)]*)\)", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"\s*,\s*,", ", ", text)
+    text = re.sub(r"\s*,\s*\.", ".", text)
+    return text.strip()
+
+def fetch_article_image(url: str) -> str:
     try:
-        article = Article(url)
-        article.download()
-        article.parse()
-        return article.text.strip()
-    except Exception as e:
-        print(f"⚠️ ไม่สามารถดึงเนื้อหา: {url} | {e}")
+        r = S.get(url, timeout=TIMEOUT)
+        if r.status_code >= 400:
+            return ""
+        html = r.text
+        m = re.search(r'<meta[^>]+property=[\'\"]og:image[\'\"][^>]+content=[\'\"]([^\'\"]+)[\'\"]', html, re.I)
+        if m: return m.group(1)
+        m = re.search(r'<meta[^>]+name=[\'\"]twitter:image[\'\"][^>]+content=[\'\"]([^\'\"]+)[\'\"]', html, re.I)
+        if m: return m.group(1)
+        m = re.search(r'<img[^>]+src=[\'\"]([^\'\"]+)[\'\"]', html, re.I)
+        if m:
+            src = m.group(1)
+            if src.startswith("//"):
+                parsed = urlparse(url); return f"{parsed.scheme}:{src}"
+            if src.startswith("/"):
+                parsed = urlparse(url); return f"{parsed.scheme}://{parsed.netloc}{src}"
+            return src
+        return ""
+    except Exception:
         return ""
 
-# ------------------- สรุป + แปล -------------------
-def summarize_and_translate(title, full_text, link=None):
-    # ถ้าเนื้อหาน้อยเกินไป ให้พยายาม fetch จากเว็บใหม่
-    if len(full_text.split()) < 50 and link:
-        full_text = fetch_full_article_text(link)
+# ========================= Upstream & Gas Context (จากรูป) =========================
+PTT_CONTEXT = """
+[PTT Group — Upstream & Natural Gas Business Context (จากเอกสารธุรกิจปิโตรเลียมขั้นต้นและก๊าซธรรมชาติ)]
 
-    if not full_text or len(full_text.strip()) < 30:
-        return title, "ไม่สามารถดึงเนื้อหาข่าวได้", ""
+เป้าหมาย: คัดเลือกและสรุปเฉพาะข่าวที่ "เกี่ยวข้องเชิงสาระสำคัญ" กับ
+1) ธุรกิจปิโตรเลียมขั้นต้น (Upstream / PTTEP) — สำรวจและผลิตในไทย/ต่างประเทศ (~50 โครงการใน 12 ประเทศ)
+2) ธุรกิจก๊าซธรรมชาติ (PTTLNG, PTTGL, PTTNGD) — ครอบคลุมการจัดหา/นำเข้า LNG, ขนส่ง/ท่อ, โรงแยกก๊าซ, การจัดจำหน่าย,
+   NGV (ก๊าซยานยนต์), และการใช้ก๊าซเป็นเชื้อเพลิงสำหรับโรงไฟฟ้า SPP/IPP
 
-    input_words = full_text.split()
-    input_trimmed = " ".join(input_words[:600])
+ให้ถือว่าข่าวสำคัญเมื่อมี "กลไกกระทบ" ต่อราคาหรือความมั่นคงด้าน supply-demand ของน้ำมัน/ก๊าซ หรือขีดความสามารถของกิจการ
+(ผลการผลิต ต้นทุน รายได้ กำไร ความเสี่ยง โอกาสการลงทุน โครงสร้างตลาด/นโยบาย)
 
+ตัวอย่างหัวข้อที่นับเป็น "เกี่ยวข้อง":
+• ราคาน้ำมันดิบ Brent/WTI และราคาก๊าซ JKM/TTF/LNG (spot/contract) ผันผวนโดดเด่น
+• เหตุขัดข้องหรือเหตุการณ์ในแหล่งผลิต/ท่อส่ง/โรงแยกก๊าซ/คลัง LNG/ท่าเทียบเรือ/FSRU
+• นโยบาย ภาษี สัมปทาน/PSC การกำกับดูแล ที่กระทบ upstream และธุรกิจก๊าซ
+• การลงทุน/ดีล M&A/FID/ฟาร์มอิน-ฟาร์มเอาท์/การค้นพบเชิงพาณิชย์
+• โครงการ LNG terminal, regasification, storage, gas separation plant, NGV, และโรงไฟฟ้า SPP/IPP ที่ใช้ก๊าซ
+• ปัจจัยภูมิรัฐศาสตร์/สงคราม/ภัยธรรมชาติที่เปลี่ยนสมดุล supply-demand น้ำมันและก๊าซ
+
+สิ่งที่ "ไม่ใช่":
+• ข่าว downstream/PR/EV/การตลาดน้ำมันสำเร็จรูป ที่ไม่เชื่อมโยงสู่กลไก upstream หรือธุรกิจก๊าซของ PTT Group
+"""
+
+# ========================= Gemini Wrapper =========================
+def call_gemini(prompt, max_retries=MAX_RETRIES):
+    global GEMINI_CALLS
+    if GEMINI_CALLS >= GEMINI_DAILY_BUDGET:
+        raise RuntimeError(f"ถึงงบ Gemini ประจำวันแล้ว ({GEMINI_CALLS}/{GEMINI_DAILY_BUDGET})")
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = model.generate_content(prompt)
+            GEMINI_CALLS += 1
+            return resp
+        except Exception as e:
+            err_str = str(e)
+            if attempt < max_retries and any(x in err_str for x in ["429","exhausted","temporarily","unavailable","deadline","500","503"]):
+                time.sleep(min(60, 5 * attempt)); continue
+            last_error = e
+            if attempt < max_retries: time.sleep(3 * attempt)
+            else: raise last_error
+    raise last_error
+
+# ===== Filter: ใช่/ไม่ใช่ (ฝังคอนเท็กซ์จากรูป) =====
+def llm_ptt_subsidiary_impact_filter(news):
+    prompt = f'''
+{PTT_CONTEXT}
+
+บทบาทของคุณ: News Screener ของ PTT Group (Upstream & Gas)
+คำตอบที่อนุญาต: "ใช่" หรือ "ไม่ใช่" เท่านั้น
+
+เกณฑ์ "ใช่":
+- Upstream/PTTEP: exploration, appraisal, development, production, reserve, PSC, สัมปทาน, M&A/FID, supply disruption,
+  ราคาน้ำมัน/ก๊าซ (Brent, WTI, JKM, TTF, LNG spot/contract)
+- Gas/PTTLNG-PTTGL-PTTNGD: LNG import/export/terminal/regas/storage/FSRU, gas separation plant, pipeline/ท่อส่ง,
+  distribution/NGV, ก๊าซเชื้อเพลิงสำหรับ SPP/IPP, นโยบายที่กระทบต้นทุน/กำลังผลิต/ความมั่นคง
+- ปัจจัยโลก/ภูมิรัฐศาสตร์/ภัยพิบัติที่พลิก supply-demand น้ำมัน/ก๊าซของภูมิภาค/ไทย
+
+เกณฑ์ "ไม่ใช่": downstream/PR/EV หรือตลาดน้ำมันสำเร็จรูปที่ไม่โยงกลไกต่อ upstream/gas
+
+ข่าว:
+หัวข้อ: {news['title']}
+สรุป: {news['summary']}
+เนื้อหา: {news.get('detail','')}
+'''
     try:
-        token_count = len(input_trimmed.split())
-        max_len = max(40, min(200, int(token_count * 0.5)))
-        result = summarizer(input_trimmed, max_length=max_len, min_length=40, do_sample=False)
-        summary_en = result[0]['summary_text']
+        resp = call_gemini(prompt)
+        ans = (resp.text or "").strip().replace("\n", "")
+        return ans.startswith("ใช่")
     except Exception as e:
-        print(f"❌ Summary Error: {e}")
-        summary_en = f"{title}\nเนื้อหาบทความไม่สามารถสรุปได้อัตโนมัติ โปรดคลิกลิงก์เพื่ออ่านเพิ่มเติม"
+        print("[ERROR] LLM Filter:", e)
+        return False
 
-    # แปล title และ summary แยกกัน
+# ===== Summarize & Score (ยึดกลไกกระทบต่อบริษัทในเครือ) =====
+def gemini_summary_and_score(news):
+    schema = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "score": {"type": "integer"},
+            "score_breakdown": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"points":{"type":"integer"}, "reason":{"type":"string"}}, "required": ["points","reason"]}
+            },
+            "impact_companies": {"type": "array", "items": {"type": "string", "enum": ["PTTEP","PTTLNG","PTTGL","PTTNGD"]}},
+            "impact_reason": {"type": "string"}
+        },
+        "required": ["summary","score","score_breakdown","impact_companies","impact_reason"]
+    }
+    prompt = f"""
+{PTT_CONTEXT}
+
+บทบาท: Analyst — อธิบายกลไกกระทบแบบกระชับ เน้น upstream/gas ก่อน
+อินพุตข่าว:
+หัวข้อ: {news['title']}
+สรุป: {news['summary']}
+เนื้อหา: {news.get('detail','')}
+
+ตอบกลับ **เฉพาะ JSON** ตาม schema ต่อไปนี้:
+{json.dumps(schema, ensure_ascii=False)}
+
+ข้อกำหนด:
+- summary: ชี้เหตุการณ์ + กลไก (เช่น ท่อก๊าซขัดข้อง → JKM↑ → นำเข้า LNG ไทยต้นทุน↑ (PTTLNG) / Brent↑ → margin PTTEP↑)
+- score: 1–5 (ผลกระทบสาระสำคัญต่อ Upstream/Gas เป็นหลัก)
+- score_breakdown: รวมแต้ม = score (แจกแจงเหตุผล เช่น supply, price, policy, capacity, FX)
+- impact_companies: เลือกไม่เกิน 2 และให้ PTTEP นำถ้าเกี่ยว supply/price/PSC/production
+- impact_reason: ชี้ชัด “เพราะอะไร/ช่องทางไหน” (หลีกเลี่ยงคำกว้าง ๆ)
+"""
     try:
-        title_th = translate_en_to_th(title)
+        resp = call_gemini(prompt)
+        raw = (resp.text or "").strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(json)?", "", raw).strip()
+            raw = re.sub(r"```$", "", raw).strip()
+        data = json.loads(raw)
+        return data
     except Exception as e:
-        title_th = f"[หัวข้อแปลไม่ได้] {e}"
+        print("[WARN] JSON parse fail:", e)
+        return {
+            "summary": "ไม่สามารถแปลง JSON ได้",
+            "score": 3,
+            "score_breakdown": [{"points":2,"reason":"default"},{"points":1,"reason":"fallback"}],
+            "impact_companies": [],
+            "impact_reason": "-",
+        }
 
-    try:
-        summary_th = translate_en_to_th(summary_en)
-    except Exception as e:
-        summary_th = f"[สรุปแปลไม่ได้] {e}"
+# ========================= Logic =========================
+def is_ptt_related_from_output(impact_companies) -> bool:
+    return bool(impact_companies)
 
-    return title_th.strip(), summary_th.strip(), summary_en.strip()
+def fetch_news_9pm_to_6am():
+    now_local = datetime.now(bangkok_tz)
+    start_time = (now_local - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
+    end_time = now_local.replace(hour=6, minute=0, second=0, microsecond=0)
 
-# ------------------- จัดหมวดหมู่ -------------------
-candidate_labels = ["Economy", "Energy", "Environment", "Politics", "Technology", "Middle East", "Other"]
-def classify_category(entry):
-    try:
-        text = entry.title + " " + getattr(entry, 'summary', '')
-        return classifier(text, candidate_labels)['labels'][0]
-    except:
-        return "Other"
+    all_news = []
+    for _, info in news_sources.items():
+        try:
+            feed = feedparser.parse(info["url"])
+            for entry in feed.entries:
+                pub_str = getattr(entry, "published", None) or getattr(entry, "updated", None)
+                if not pub_str and getattr(entry, "published_parsed", None):
+                    t = entry.published_parsed
+                    pub_dt = datetime(*t[:6], tzinfo=pytz.UTC).astimezone(bangkok_tz)
+                else:
+                    if not pub_str:
+                        continue
+                    pub_dt = dateutil_parser.parse(pub_str)
+                    if pub_dt.tzinfo is None:
+                        pub_dt = pytz.UTC.localize(pub_dt)
+                    pub_dt = pub_dt.astimezone(bangkok_tz)
 
-# ------------------- ดึงภาพข่าว -------------------
-def extract_image(entry):
-    if hasattr(entry, 'media_content'):
-        for media in entry.media_content:
-            if 'url' in media:
-                return media['url']
-    try:
-        res = requests.get(entry.link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        soup = BeautifulSoup(res.text, "html.parser")
-        og = soup.find("meta", property="og:image")
-        return og["content"] if og and og.get("content") else None
-    except:
-        return None
+                if not (start_time <= pub_dt <= end_time):
+                    continue
 
-# ------------------- ดึงข่าวจาก Al Jazeera -------------------
-def fetch_aljazeera_articles():
-    articles = []
-    try:
-        resp = requests.get("https://www.aljazeera.com/middle-east/", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        soup = BeautifulSoup(resp.content, "html.parser")
-        for a in soup.select('a.u-clickable-card__link')[:5]:
-            title = a.get_text(strip=True)
-            link = "https://www.aljazeera.com" + a['href']
-            image = extract_image_from_aljazeera(link)
-            articles.append({
-                "source": "Al Jazeera",
-                "title": title,
-                "summary": fetch_full_article_text(link),
-                "link": link,
-                "image": image,
-                "published": now_thai,
-                "category": "Middle East"
-            })
-    except Exception as e:
-        print(f"⚠️ Al Jazeera Error: {e}")
-    return articles
+                summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
+                link = getattr(entry, "link", "")
+                title = getattr(entry, "title", "-")
 
-def extract_image_from_aljazeera(link):
-    try:
-        res = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        soup = BeautifulSoup(res.content, "html.parser")
-        meta = soup.find("meta", property="og:image")
-        return meta["content"] if meta else None
-    except:
-        return None
+                all_news.append({
+                    "site": info["site"], "category": info["category"], "title": title,
+                    "summary": summary, "link": link, "published": pub_dt,
+                    "date": pub_dt.strftime("%d/%m/%Y %H:%M"),
+                })
+        except Exception as e:
+            print(f"[WARN] อ่านฟีด {info['site']} ล้มเหลว: {e}")
 
-# ------------------- Flex Message -------------------
+    # de-dup by normalized URL
+    seen, uniq = set(), []
+    for n in all_news:
+        key = _normalize_link(n.get("link", ""))
+        if key and key not in seen:
+            seen.add(key); uniq.append(n)
+    return uniq
+
+# ---- Keyword boost ชี้เฉพาะ “ก๊าซ/LNG/โรงแยก/NGV/SPP-IPP/FSRU/ท่อก๊าซ” ฯลฯ ----
+GAS_KEYWORDS = [
+    "LNG","JKM","TTF","regas","FSRU","terminal","storage","gas separation","โรงแยกก๊าซ",
+    "pipeline","ท่อก๊าซ","NGV","SPP","IPP","methane","นโยบายก๊าซ","gas price","spot cargo",
+    "PTTLNG","PTTGL","PTTNGD","PTTEP","PSC","สัมปทาน","production","offshore","well","field",
+]
+def _kw_boost(text: str) -> float:
+    text_low = (text or "").lower()
+    hits = sum(1 for k in GAS_KEYWORDS if k.lower() in text_low)
+    # cap boost เพื่อไม่ให้แรงเกิน
+    return min(hits * 0.35, 2.0)
+
+def rank_candidates(news_list, use_keyword_boost=True):
+    ranked = []
+    for n in news_list:
+        age_h = (now - n["published"]).total_seconds() / 3600.0
+        recency = max(0.0, (72.0 - min(72.0, age_h))) / 72.0 * 3.0
+        cat_w = {"Energy": 3.0, "Economy": 2.0, "Politics": 1.0}.get(n["category"], 1.0)
+        length = min(len(n.get("summary", "")) / 500.0, 1.0)
+        boost = _kw_boost(n.get("title","") + " " + n.get("summary","")) if use_keyword_boost else 0.0
+        score = recency + cat_w + length + boost
+        ranked.append((score, n))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    return [n for _, n in ranked]
+
 def create_flex_message(news_items):
+    now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
+    def join_companies(codes):
+        codes = codes or []; return ", ".join(codes) if codes else "ไม่มีระบุ"
     bubbles = []
     for item in news_items:
+        bd = item.get("score_breakdown", [])
+        bd_lines = [f"- {x.get('points', 0)} คะแนน: {x.get('reason', '-')}\n" for x in bd]
+        bd_clean = "".join(bd_lines).strip() or "-"
+        impact_line = {"type":"text","text":f"กระทบ: {join_companies(item.get('ptt_companies'))}",
+                       "size":"xs","color":"#000000","weight":"bold","wrap":True,"margin":"sm"}
+        img = item.get("image") or DEFAULT_ICON_URL
+        if not (str(img).startswith("http://") or str(img).startswith("https://")):
+            img = DEFAULT_ICON_URL
+        body_contents = [
+            {"type":"text","text":item.get("title","-"),"weight":"bold","size":"lg","wrap":True,"color":"#111111"},
+            {"type":"box","layout":"horizontal","margin":"sm","contents":[
+                {"type":"text","text":f"🗓 {item.get('date','-')}","size":"xs","color":"#aaaaaa","flex":5},
+                {"type":"text","text":f"📌 {item.get('category','')}","size":"xs","color":"#888888","align":"end","flex":5}
+            ]},
+            {"type":"text","text":f"🌍 {item.get('site','')}","size":"xs","color":"#448AFF","margin":"sm"},
+            impact_line,
+            {"type":"text","text":item.get("gemini_summary") or "ไม่พบสรุปข่าว","size":"md","wrap":True,"margin":"md","color":"#1A237E","weight":"bold"},
+            {"type":"box","layout":"vertical","margin":"lg","contents":[
+                {"type":"text","text":"ผลกระทบ / เหตุผลคะแนน","weight":"bold","size":"lg","color":"#D32F2F"},
+                {"type":"text","text":(item.get("gemini_reason") or "-"),"size":"md","wrap":True,"color":"#C62828","weight":"bold"},
+                {"type":"text","text":f"คะแนนรวม: {item.get('gemini_score','-')} คะแนน","size":"lg","wrap":True,"color":"#000000","weight":"bold"},
+                {"type":"text","text":bd_clean,"size":"sm","wrap":True,"color":"#8E0000","weight":"bold"}
+            ]}
+        ]
         bubble = {
-            "type": "bubble",
-            "size": "mega",
-            "hero": {
-                "type": "image",
-                "url": item["image"] or "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png",
-                "size": "full",
-                "aspectRatio": "20:13",
-                "aspectMode": "cover"
-            },
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "md",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": item.get("title_th", item["title"]),
-                        "weight": "bold",
-                        "size": "md",
-                        "wrap": True,
-                        "margin": "none"
-                    },
-                    {
-                        "type": "box",
-                        "layout": "horizontal",
-                        "contents": [
-                            {
-                                "type": "text",
-                                "text": f"🗓 {item['published'].strftime('%d/%m/%Y')}",
-                                "size": "xs",
-                                "color": "#888888",
-                                "flex": 2
-                            },
-                            {
-                                "type": "text",
-                                "text": f"📌 {item['category']}",
-                                "size": "xs",
-                                "color": "#AAAAAA",
-                                "align": "end",
-                                "flex": 3
-                            }
-                        ]
-                    },
-                    {
-                        "type": "text",
-                        "text": f"📣 {item['source']}",
-                        "size": "xs",
-                        "color": "#AAAAAA",
-                        "margin": "sm"
-                    },
-                    {
-                        "type": "text",
-                        "text": item.get("summary_th", ""),
-                        "size": "sm",
-                        "wrap": True,
-                        "margin": "md",
-                        "maxLines": 8
-                    }
-                    # <<< ลบกล่องผลกระทบออกแล้ว >>>
-                ]
-            },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "link",
-                        "height": "sm",
-                        "action": {
-                            "type": "uri",
-                            "label": "อ่านต่อ",
-                            "uri": item['link']
-                        }
-                    }
-                ]
-            }
+            "type":"bubble","size":"mega",
+            "hero":{"type":"image","url":img,"size":"full","aspectRatio":"16:9","aspectMode":"cover"},
+            "body":{"type":"box","layout":"vertical","spacing":"md","contents":body_contents},
+            "footer":{"type":"box","layout":"vertical","spacing":"sm","contents":[
+                {"type":"text","text":"หมายเหตุ: การวิเคราะห์อยู่ในช่วงทดสอบ","size":"xs","color":"#FF0000","wrap":True,"margin":"md"},
+                {"type":"button","style":"primary","color":"#1DB446","action":{"type":"uri","label":"อ่านต่อ","uri":item.get("link","#")}}
+            ]}
         }
         bubbles.append(bubble)
+    carousels = []
+    for i in range(0, len(bubbles), 10):
+        carousels.append({"type":"flex","altText":f"ข่าวเกี่ยวข้องกับ ปตท. {now_thai}",
+                          "contents":{"type":"carousel","contents":bubbles[i:i+10]}})
+    return carousels
 
-    return [{
-        "type": "flex",
-        "altText": f"ข่าวประจำวันที่ {now_thai.strftime('%d/%m/%Y')}",
-        "contents": {
-            "type": "carousel",
-            "contents": bubbles[i:i+10]
-        }
-    } for i in range(0, len(bubbles), 10)]
-
-# ------------------- ส่งเข้า LINE -------------------
-def send_text_and_flex_to_line(header_text, flex_messages):
+def broadcast_flex_message(access_token, flex_carousels):
     url = 'https://api.line.me/v2/bot/message/broadcast'
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}'
-    }
-    requests.post(url, headers=headers, json={"messages": [{"type": "text", "text": header_text}]})
-    for msg in flex_messages:
-        requests.post(url, headers=headers, json={"messages": [msg]})
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"}
+    for idx, carousel in enumerate(flex_carousels, 1):
+        payload = {"messages": [carousel]}
+        if DRY_RUN:
+            print(f"[DRY_RUN] Carousel #{idx}: {json.dumps(payload)[:500]}...")
+            continue
+        try:
+            resp = S.post(url, headers=headers, json=payload, timeout=TIMEOUT)
+            print(f"Broadcast #{idx} status:", resp.status_code, getattr(resp, "text", ""))
+            if resp.status_code >= 300: break
+            time.sleep(1.2)
+        except Exception as e:
+            print("[LINE ERROR]", e); break
 
-# ------------------- เริ่มต้น -------------------
-cleanup_old_sent_links()
-sent_dir = Path("sent_links")
-sent_dir.mkdir(exist_ok=True)
-today_file = sent_dir / f"{today_thai}.txt"
-yesterday_file = sent_dir / f"{yesterday_thai}.txt"
-sent_links = set()
-for f in [today_file, yesterday_file]:
-    if f.exists():
-        sent_links.update(f.read_text(encoding="utf-8").splitlines())
+# ========================= MAIN =========================
+def main():
+    all_news = fetch_news_9pm_to_6am()
+    print(f"ดึงข่าวช่วง 21:00 เมื่อวาน ถึง 06:00 วันนี้: {len(all_news)} รายการ")
+    if not all_news:
+        print("ไม่พบข่าว"); return
 
-all_news = []
+    SLEEP_MIN, SLEEP_MAX = SLEEP_BETWEEN_CALLS
 
-# --- ข่าวจาก RSS ---
-for source, info in news_sources.items():
-    if info["type"] == "rss":
-        feed = feedparser.parse(info["url"])
-        for entry in feed.entries:
-            pub_date = dateutil_parser.parse(entry.published) if hasattr(entry, "published") else now_thai
-            local_date = pub_date.astimezone(bangkok_tz).date()
-            if entry.link in sent_links or local_date not in [today_thai, yesterday_thai]:
-                continue
-            full_text = fetch_full_article_text(entry.link)
-            if len(full_text.split()) < 50:
-                continue
-            all_news.append({
-                "source": source,
-                "title": entry.title,
-                "summary": full_text,
-                "link": entry.link,
-                "image": extract_image(entry),
-                "published": pub_date.astimezone(bangkok_tz),
-                "category": classify_category(entry)
-            })
-            sent_links.add(entry.link)
+    filtered_news = []
+    for news in all_news:
+        news['detail'] = news['title'] if len((news.get('summary') or '')) < 50 else ''
+        if llm_ptt_subsidiary_impact_filter(news):
+            filtered_news.append(news)
+        time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
+    print(f"ข่าวผ่านฟิลเตอร์ (เกี่ยวข้อง Upstream/Gas): {len(filtered_news)} ข่าว")
+    if not filtered_news:
+        print("ไม่มีข่าวเกี่ยวข้อง"); return
 
-# --- ดึงข่าวจาก Al Jazeera และบันทึกลิงก์ ---
-for item in fetch_aljazeera_articles():
-    if item["link"] not in sent_links:
-        all_news.append(item)
-        sent_links.add(item["link"])
+    ranked = rank_candidates(filtered_news, use_keyword_boost=True)
+    top_candidates = ranked[: min(10, len(ranked))]
+    print(f"ส่งให้ Gemini วิเคราะห์ {len(top_candidates)} ข่าว")
 
-# --- กรองหมวดหมู่ที่ต้องการ ---
-allowed_categories = {"Politics", "Economy", "Energy", "Middle East"}
-all_news = [n for n in all_news if n["category"] in allowed_categories]
+    ptt_related_news = []
+    for news in top_candidates:
+        data = gemini_summary_and_score(news)
+        news['gemini_summary'] = _normalize_colons(data.get('summary','')).strip() or 'ไม่พบสรุปข่าว'
+        score = int(data.get('score', 3)); news['gemini_score'] = max(1, min(5, score))
+        bd = data.get('score_breakdown', []); total_points = sum(int(x.get('points',0)) for x in bd)
+        if bd and total_points != news['gemini_score']:
+            diff = news['gemini_score'] - total_points
+            bd[-1]['points'] = int(bd[-1].get('points',0)) + diff
+        news['score_breakdown'] = bd
+        reason = _polish_impact_text(data.get('impact_reason','').strip()); news['gemini_reason'] = reason or '-'
+        companies = [c for c in data.get('impact_companies', []) if c in {"PTTEP","PTTLNG","PTTGL","PTTNGD"}]
+        news['ptt_companies'] = list(dict.fromkeys(companies))
+        if is_ptt_related_from_output(companies):
+            ptt_related_news.append(news)
+        time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
+    print(f"ใช้ Gemini ไปแล้ว: {GEMINI_CALLS}/{GEMINI_DAILY_BUDGET} calls")
 
-# --- สรุป + แปล ล่วงหน้าก่อนสร้าง Flex Message ---
-news_with_translate = []
-for n in all_news:
-    title_th, summary_th, summary_en = summarize_and_translate(n['title'], n['summary'], n['link'])
-    n['title_th'] = title_th
-    n['summary_th'] = summary_th
-    news_with_translate.append(n)
+    if not ptt_related_news:
+        print("ไม่พบข่าวที่มีรายชื่อบริษัทในเครือ PTT"); return
 
-# --- ส่งเข้า LINE ---
-if news_with_translate:
-    order = ["Middle East", "Energy", "Politics", "Economy", "Environment", "Technology", "Other"]
-    news_with_translate.sort(key=lambda x: order.index(x["category"]) if x["category"] in order else len(order))
-    flex_msgs = create_flex_message(news_with_translate)
-    send_text_and_flex_to_line("📊 ข่าวการเมือง เศรษฐกิจ พลังงาน ประจำวันนี้", flex_msgs)
-    today_file.write_text("\n".join(sorted(sent_links)), encoding="utf-8")
+    ptt_related_news.sort(key=lambda n: (n.get('gemini_score', 0), n.get('published', datetime.min)), reverse=True)
+    top_news = ptt_related_news[:10]
+
+    sent_links = load_sent_links_today_yesterday()
+    top_news_to_send = [n for n in top_news if _normalize_link(n.get('link','')) not in sent_links]
+    if not top_news_to_send:
+        print("ข่าววันนี้/เมื่อวานส่งครบแล้ว"); return
+
+    for item in top_news_to_send:
+        img = fetch_article_image(item.get("link","")) or ""
+        if not (str(img).startswith("http://") or str(img).startswith("https://")):
+            img = DEFAULT_ICON_URL
+        item["image"] = img
+
+    carousels = create_flex_message(top_news_to_send)
+    broadcast_flex_message(LINE_CHANNEL_ACCESS_TOKEN, carousels)
+    save_sent_links([n.get("link","") for n in top_news_to_send])
+    print("เสร็จสิ้น.")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("[ERROR]", e)
