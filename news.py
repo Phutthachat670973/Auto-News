@@ -670,7 +670,7 @@ def create_flex_message(news_items):
             },
             {
                 "type": "text",
-                "text": "อ่านแบบคนทั่วไป:",
+                "text": "หมายเหตุ:",
                 "size": "xs",
                 "weight": "bold",
                 "color": "#000000",
