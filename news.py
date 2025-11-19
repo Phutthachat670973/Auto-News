@@ -1,19 +1,18 @@
-import os          # จัดการตัวแปรสภาพแวดล้อม / ไฟล์ / โฟลเดอร์
-import re          # ใช้ regex เอาไว้จัดการ/ค้นหา/แก้ไขข้อความ
-import json        # แปลงข้อมูลเป็น JSON และอ่าน JSON
-import time        # ใช้หน่วงเวลา (sleep) ระหว่างการเรียก API
-import random      # ใช้สุ่มตัวเลข เช่น สุ่มเวลาหน่วง
-from datetime import datetime, timedelta   # จัดการวันที่และเวลา
+import os          # จัดการตัวแปรสภาพแวดล้อม และไฟล์/โฟลเดอร์
+import re          # ใช้ regex ค้นหา/แทนที่ข้อความ
+import json        # แปลงข้อมูลไป-กลับเป็น JSON
+import time        # ใช้ sleep หน่วงเวลา
+import random      # ใช้สุ่มตัวเลข (เช่น เวลาหน่วง)
+from datetime import datetime, timedelta   # ใช้งานวันที่และเวลา
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode  # แยก/ประกอบ URL และ query string
 
-import feedparser   # ใช้อ่าน RSS feed ข่าวจากเว็บต่าง ๆ
-from dateutil import parser as dateutil_parser  # แปลง string เวลาให้เป็น datetime
-import pytz         # ใช้จัดการ timezone (เช่น Asia/Bangkok)
-import requests     # ใช้ยิง HTTP request ไปยังเว็บ/API
-import google.generativeai as genai  # ใช้เรียกโมเดล Gemini ของ Google
+import feedparser   # อ่าน RSS feed ข่าว
+from dateutil import parser as dateutil_parser  # แปลง string เวลาเป็น datetime
+import pytz         # จัดการ timezone (เช่น Asia/Bangkok)
+import requests     # ยิง HTTP request ไปยังเว็บ/API
+import google.generativeai as genai  # เรียกใช้โมเดล Gemini
 
-# ===== .env =====
-# พยายามโหลดค่า config จากไฟล์ .env (ถ้ามี) เช่น API KEY ต่าง ๆ
+# ===== โหลดค่าจาก .env (ถ้ามี) =====
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -21,81 +20,81 @@ except Exception:
     pass
 
 # ========================= CONFIG =========================
-# ดึง KEY ต่าง ๆ จาก Environment (เช่นจาก .env หรือ Secrets)
+# ดึงค่า config จาก Environment (เช่น .env หรือ Secrets)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 
-# ถ้าไม่มี GEMINI_API_KEY ให้หยุดโปรแกรมพร้อมแจ้งเตือน
+# ถ้าไม่มี GEMINI_API_KEY ให้หยุดโปรแกรม
 if not GEMINI_API_KEY:
     raise RuntimeError("ไม่พบ GEMINI_API_KEY ใน Environment/Secrets")
 
-# ถ้าไม่มี Line Access Token ก็หยุดเช่นกัน
+# ถ้าไม่มี LINE_CHANNEL_ACCESS_TOKEN ให้หยุดโปรแกรมเช่นกัน
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("ไม่พบ LINE_CHANNEL_ACCESS_TOKEN ใน Environment/Secrets")
 
-# ตั้งชื่อโมเดล Gemini (ถ้าไม่กำหนดจะใช้ gemini-2.5-flash)
+# ชื่อโมเดล Gemini (ถ้าไม่ได้กำหนด ใช้ค่าเริ่มต้น gemini-2.5-flash)
 GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
 
-# บอกไลบรารีให้ใช้ API KEY อันนี้
+# ตั้งค่า API KEY ให้ไลบรารี Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 
-# สร้างตัวแปรโมเดล Gemini เอาไว้เรียกใช้งาน
+# สร้างออบเจ็กต์โมเดลไว้เรียกใช้งาน
 model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 
-# จำกัดจำนวนครั้งที่เรียก Gemini ต่อวัน (เพื่อคุมค่าใช้จ่าย)
+# จำกัดจำนวนครั้งเรียก Gemini ต่อวัน (กันงบไหล)
 GEMINI_DAILY_BUDGET = int(os.getenv("GEMINI_DAILY_BUDGET", "250"))
 
-# จำนวนครั้งสูงสุดในการ retry เวลา Gemini มีปัญหา
+# จำนวนครั้งสูงสุดที่ยอมให้ retry เวลาเรียก Gemini แล้ว error
 MAX_RETRIES = 6
 
-# เวลาหน่วง (วินาที) แบบสุ่มระหว่างแต่ละการเรียก Gemini (ลดโอกาสโดน block)
+# ช่วงเวลา delay แบบสุ่มระหว่างการเรียก Gemini แต่ละครั้ง
 SLEEP_BETWEEN_CALLS = (6.0, 7.0)
 
-# DRY_RUN = true จะไม่ยิงไปที่ LINE จริง แค่ print ให้ดู (ใช้ทดสอบ)
+# ถ้า DRY_RUN = true จะไม่ยิงไป LINE จริง แค่ print payload (ใช้ตอนเทส)
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
-# ตั้ง timezone เป็นกรุงเทพ
+# ตั้ง timezone เป็น Asia/Bangkok
 bangkok_tz = pytz.timezone("Asia/Bangkok")
-now = datetime.now(bangkok_tz)  # เวลา ณ ขณะนี้ในไทย
+now = datetime.now(bangkok_tz)
 
-# สร้าง session ของ requests เพื่อ reuse connection และตั้ง Header
+# ใช้ requests.Session เพื่อ reuse connection และตั้ง Header กลาง
 S = requests.Session()
 S.headers.update({"User-Agent": "Mozilla/5.0"})
-TIMEOUT = 15  # จำกัด timeout เวลาเรียกเว็บ
+TIMEOUT = 15  # timeout สูงสุดตอนเรียกเว็บ (วินาที)
 
-# โฟลเดอร์เก็บรายการลิงก์ข่าวที่เคยส่งแล้ว (กันส่งซ้ำ)
+# โฟลเดอร์เก็บ “ลิงก์ข่าวที่ส่งไปแล้ว” แยกตามวัน (กันส่งซ้ำ)
 SENT_LINKS_DIR = "sent_links"
 os.makedirs(SENT_LINKS_DIR, exist_ok=True)
 
 # ========================= Helpers =========================
 def _normalize_link(url: str) -> str:
     """
-    ฟังก์ชันนี้ ‘ล้าง’ URL:
-    - เปลี่ยน scheme และ host ให้เป็นตัวเล็ก
-    - ลบพวก utm_*, fbclid, gclid, ref ที่เป็น tracking ออก
-    เพื่อให้ใช้เทียบกันได้ว่าเป็นลิงก์เดียวกันหรือไม่
+    ทำ URL ให้เป็นรูปแบบมาตรฐาน เพื่อใช้เทียบว่าซ้ำกันไหม เช่น
+    - บังคับ scheme/host เป็นตัวเล็ก
+    - ลบ query พวก utm_*, fbclid, gclid, ref ที่เป็น tracking ออก
     """
     try:
         p = urlparse(url)
         netloc = p.netloc.lower()
         scheme = (p.scheme or "https").lower()
-        # ชุดพารามิเตอร์ที่ไม่สนใจ (ลบออก)
+
+        # ชื่อพารามิเตอร์ที่ไม่สนใจ
         bad_keys = {"fbclid", "gclid", "ref", "ref_", "mc_cid", "mc_eid"}
         q = []
         for k, v in parse_qsl(p.query, keep_blank_values=True):
-            # ถ้าเป็น utm_* หรือ key ที่ไม่สนใจจะไม่นำมาใช้
+            # ตัด utm_* และ key ที่ไม่ใช้ทิ้ง
             if k.startswith("utm_") or k in bad_keys:
                 continue
             q.append((k, v))
         return urlunparse(p._replace(scheme=scheme, netloc=netloc, query=urlencode(q)))
     except Exception:
-        # ถ้าแปลงไม่ได้ก็คืนข้อความเดิม
+        # ถ้าพัง ให้คืนค่าเดิม (หลัง strip)
         return (url or "").strip()
 
 def get_sent_links_file(date=None):
     """
-    คืน path ไฟล์ที่เก็บลิงก์ข่าวที่ส่งไปแล้วของ ‘วันนั้น’
-    เช่น sent_links/2025-11-19.txt
+    คืน path ของไฟล์ที่เก็บลิงก์ข่าว "ที่ส่งแล้ว" ประจำวันนั้น
+    ตัวอย่าง: sent_links/2025-11-19.txt
     """
     if date is None:
         date = datetime.now(bangkok_tz).strftime("%Y-%m-%d")
@@ -103,8 +102,10 @@ def get_sent_links_file(date=None):
 
 def load_sent_links_today_yesterday():
     """
-    อ่านลิสต์ลิงก์ข่าวที่เคยส่ง ‘วันนี้และเมื่อวาน’
-    เพื่อกันส่งข่าวซ้ำในสองวันนี้
+    โหลดลิงก์ข่าวที่ส่งไปแล้วใน:
+    - วันนี้
+    - เมื่อวาน
+    แล้วรวมเป็น set เดียว (ใช้กันส่งซ้ำ 2 วันล่าสุด)
     """
     sent_links = set()
     for i in range(2):
@@ -120,8 +121,8 @@ def load_sent_links_today_yesterday():
 
 def save_sent_links(new_links, date=None):
     """
-    บันทึกลิงก์ข่าวที่ส่งออกไปแล้ว ใส่ไฟล์ของวันนั้น
-    (เพื่อเอาไว้เช็คครั้งต่อไป)
+    เพิ่มลิงก์ข่าวที่เพิ่งส่งไปแล้ว ลงไฟล์ของวันนั้น
+    (เอาไว้กันส่งซ้ำในอนาคต)
     """
     path = get_sent_links_file(date)
     with open(path, "a", encoding="utf-8") as f:
@@ -130,10 +131,10 @@ def save_sent_links(new_links, date=None):
 
 def _polish_impact_text(text: str) -> str:
     """
-    ทำความสะอาดข้อความผลกระทบ:
-    - ตัดวงเล็บที่ใส่คำว่า (บวก/ลบ/ไม่ชัดเจน/สั้น/กลาง/ยาว) ออก
+    ทำความสะอาดข้อความ impact_reason:
+    - ลบวงเล็บที่มีคำว่า (บวก/ลบ/ไม่ชัดเจน/สั้น/กลาง/ยาว)
     - ลดช่องว่างซ้ำ
-    - แก้คอมมา , , ให้สวยขึ้น
+    - แก้ , , หรือ , . ให้ถูกต้อง
     """
     if not text:
         return text
@@ -144,7 +145,7 @@ def _polish_impact_text(text: str) -> str:
     return text.strip()
 
 # ========================= FEEDS =========================
-# แหล่งข่าวที่เราจะดึงข้อมูล (RSS feed)
+# รายชื่อ RSS feed ที่ใช้ดึงข่าว
 news_sources = {
     "Oilprice": {"url": "https://oilprice.com/rss/main", "category": "Energy", "site": "Oilprice"},
     "CleanTechnica": {"url": "https://cleantechnica.com/feed/", "category": "Energy", "site": "CleanTechnica"},
@@ -153,29 +154,29 @@ news_sources = {
     "YahooFinance": {"url": "https://finance.yahoo.com/news/rssindex", "category": "Economy", "site": "Yahoo Finance"},
 }
 
-# รูป default ถ้าหาข่าวไม่เจอรูป
+# รูป default ถ้าหา URL รูปจากข่าวไม่ได้
 DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
-# ตัวนับจำนวนครั้งที่เรียก Gemini วันนี้
+# ตัวนับจำนวนครั้งที่เรียก Gemini ในวันปัจจุบัน
 GEMINI_CALLS = 0
 
-# regex เอาไว้แทนที่เครื่องหมาย : แบบแปลก ๆ ให้เป็น ":" ปกติ
+# regex ไว้แปลงเครื่องหมาย : เวอร์ชันแปลก ๆ ให้เป็น ":" ปกติ
 COLON_RX = re.compile(r"[：﹕꞉︓⦂⸿˸]")
 
 def _normalize_colons(text: str) -> str:
     """
-    แปลงเครื่องหมายโคลอนที่เป็นเวอร์ชันต่าง ๆ ให้เป็น ":" แบบปกติ
-    เพื่อให้ข้อความดูเรียบร้อย
+    แทนที่โคลอนตัวแปลก ๆ ให้เป็น ":" ปกติ
     """
     return COLON_RX.sub(":", text or "")
 
 def fetch_article_image(url: str) -> str:
     """
-    พยายามดึงรูปประกอบข่าวจากหน้าเว็บ:
-    - ดูจาก meta og:image
-    - ถ้าไม่มีลอง twitter:image
-    - ถ้ายังไม่มีลอง img แรกในหน้า
-    ถ้าทำไม่ได้เลย return "" (ว่าง)
+    พยายามหา URL รูปประกอบจากหน้าเว็บข่าว:
+    ลำดับการหา:
+    1) meta property="og:image"
+    2) meta name="twitter:image"
+    3) src ของ <img> ตัวแรก
+    ถ้าหาไม่ได้ คืน string ว่าง
     """
     try:
         r = S.get(url, timeout=TIMEOUT)
@@ -183,37 +184,36 @@ def fetch_article_image(url: str) -> str:
             return ""
         html = r.text
 
-        # หา meta property="og:image"
+        # หา meta og:image
         m = re.search(r'<meta[^>]+property=[\'\"]og:image[\'\"][^>]+content=[\'\"]([^\'\"]+)[\'\"]', html, re.I)
         if m:
             return m.group(1)
 
-        # หา meta name="twitter:image"
+        # หา meta twitter:image
         m = re.search(r'<meta[^>]+name=[\'\"]twitter:image[\'\"][^>]+content=[\'\"]([^\'\"]+)[\'\"]', html, re.I)
         if m:
             return m.group(1)
 
-        # ถ้าไม่เจอ ลองใช้ <img> ตัวแรกในหน้า
+        # หา <img> ตัวแรก
         m = re.search(r'<img[^>]+src=[\'\"]([^\'\"]+)[\'\"]', html, re.I)
         if m:
             src = m.group(1)
-            # กรณีเริ่มด้วย // ให้เอา scheme เดิมมาต่อ
+            # ถ้าเริ่มด้วย // ให้ใช้ scheme เดิมต่อให้ครบ
             if src.startswith("//"):
                 parsed = urlparse(url)
                 return f"{parsed.scheme}:{src}"
-            # กรณีเป็น path เริ่มด้วย / ให้ต่อโดเมน
+            # ถ้าเป็น path เริ่มด้วย / ให้ต่อโดเมน
             if src.startswith("/"):
                 parsed = urlparse(url)
                 return f"{parsed.scheme}://{parsed.netloc}{src}"
             return src
         return ""
     except Exception:
-        # ถ้าดึงไม่ได้ก็คืนค่าว่าง
+        # ถ้า error ให้ใช้รูป default แทน (คืน "")
         return ""
 
 # ========================= Upstream & Gas Context =========================
-# ข้อความบริบทอธิบายว่าธุรกิจ Upstream และก๊าซของกลุ่ม ปตท. คืออะไร
-# และเกณฑ์ว่า "ข่าวแบบไหน" ถือว่าเกี่ยวข้องอย่างมีนัยสำคัญ
+# ข้อความบริบทที่ใช้ใน prompt (ไม่แก้เนื้อหาเพื่อไม่ให้ Logic เปลี่ยน)
 PTT_CONTEXT = """
 [บริบทธุรกิจปิโตรเลียมขั้นต้นและก๊าซธรรมชาติของกลุ่ม ปตท. — ฉบับย่อ]
 
@@ -249,15 +249,15 @@ PTT_CONTEXT = """
 # ========================= Gemini Wrapper =========================
 def call_gemini(prompt, max_retries=MAX_RETRIES):
     """
-    ฟังก์ชันกลางในการเรียก Gemini:
+    ฟังก์ชันกลางสำหรับเรียกใช้ Gemini:
     - เช็คว่ายังไม่เกินโควตาวันนี้
-    - ถ้า error เช่น 429/500 จะลอง retry ซ้ำได้ถึง MAX_RETRIES
-    - หน่วงเวลาเล็กน้อยระหว่าง retry เพื่อลดโอกาสโดน block
+    - ถ้า error ชั่วคราว (429/500 ฯลฯ) จะลองใหม่สูงสุด max_retries ครั้ง
+    - มีการหน่วงเวลาระหว่างแต่ละรอบ retry
     """
     global GEMINI_CALLS
     if GEMINI_CALLS >= GEMINI_DAILY_BUDGET:
-        # หมายเหตุ: ตรงข้อความมีพิมพ์ผิดเล็กน้อย (เจ็ด) ในชื่อแปร แต่แนวคิดคือแจ้งว่าเกินงบแล้ว
-        raise RuntimeError(f"ถึงงบ Gemini ประจำวันแล้ว ({GEMINI_CALLS}/{GEMINI_DAILY_BUDเจ็ดGET})")
+        raise RuntimeError(f"ถึงงบ Gemini ประจำวันแล้ว ({GEMINI_CALLS}/{GEMINI_DAILY_BUDGET})")
+
     last_error = None
     for attempt in range(1, max_retries + 1):
         try:
@@ -266,7 +266,7 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
             return resp
         except Exception as e:
             err_str = str(e)
-            # ถ้าเป็น error แบบชั่วคราว ให้ลองใหม่พร้อมหน่วงเวลา
+            # ถ้าเป็น error ชั่วคราว ให้ลองใหม่พร้อม delay
             if attempt < max_retries and any(x in err_str for x in ["429","exhausted","temporarily","unavailable","deadline","500","503"]):
                 time.sleep(min(60, 5 * attempt))
                 continue
@@ -274,17 +274,17 @@ def call_gemini(prompt, max_retries=MAX_RETRIES):
             if attempt < max_retries:
                 time.sleep(3 * attempt)
             else:
-                # ถ้าครบจำนวน retry แล้วยัง error ก็โยน error ออกไป
+                # หมดสิทธิ์ retry แล้วให้โยน error กลับ
                 raise last_error
     raise last_error
 
 # ===== Filter: ใช่/ไม่ใช่ =====
 def llm_ptt_subsidiary_impact_filter(news):
     """
-    ใช้ Gemini ช่วยตัดสินว่า “ข่าวนี้เกี่ยวข้องอย่างมีนัยสำคัญกับ Upstream/Gas ของกลุ่ม ปตท. หรือไม่”
-    - ส่งข้อความบริบท + ข่าวไปให้ Gemini
-    - ให้ตอบแค่ "ใช่" หรือ "ไม่ใช่"
-    - ฟังก์ชันนี้จะ return True ถ้า Gemini ตอบว่า "ใช่"
+    ใช้ Gemini ช่วยตอบว่า
+    “ข่าวนี้เกี่ยวข้องอย่างมีนัยสำคัญกับ Upstream/Gas ของกลุ่ม ปตท. หรือไม่”
+    - ถ้าตอบ "ใช่" → คืนค่า True
+    - ถ้าตอบ "ไม่ใช่" หรือ error → คืนค่า False
     """
     prompt = f'''
 {PTT_CONTEXT}
@@ -305,23 +305,22 @@ def llm_ptt_subsidiary_impact_filter(news):
     try:
         resp = call_gemini(prompt)
         ans = (resp.text or "").strip().replace("\n", "")
-        return ans.startswith("ใช่")  # ถ้าขึ้นต้นด้วย "ใช่" ถือว่าเกี่ยวข้อง
+        return ans.startswith("ใช่")
     except Exception as e:
         print("[ERROR] LLM Filter:", e)
-        # ถ้า error ให้ถือว่าตกไป (ไม่เลือก)
+        # ถ้าเรียก LLM ไม่ได้ ให้มองว่าข่าวนี้ "ไม่ผ่าน"
         return False
 
 # ===== Tag ข่าว: สรุป + บริษัท / ประเด็น / ภูมิภาค =====
 def gemini_tag_news(news):
     """
-    ส่งข่าวให้ Gemini ช่วย:
-    - เขียน summary ข่าวสั้น ๆ
-    - ติดแท็กว่าเกี่ยวกับบริษัทในเครือไหนบ้าง (PTTEP / PTTLNG / PTTGL / PTTNGD)
-    - จัดประเภทข่าว (topic_type) เช่น price_move, supply_disruption ฯลฯ
-    - ระบุ region เช่น asia, us, middle_east
-    - เขียน impact_reason ว่ากระทบกลุ่ม ปตท. อย่างไร
+    ใช้ Gemini ช่วย:
+    - เขียนสรุปข่าวแบบสั้น
+    - ติด tag บริษัทในเครือ (PTTEP / PTTLNG / PTTGL / PTTNGD)
+    - ระบุประเภทข่าว (topic_type)
+    - ระบุ region
+    - เขียน impact_reason ว่ากระทบ PTT ยังไง
     """
-    # กำหนด schema JSON ที่อยากให้ Gemini ตอบกลับมา
     schema = {
         "type": "object",
         "properties": {
@@ -360,12 +359,11 @@ def gemini_tag_news(news):
         "required": ["summary", "impact_companies", "topic_type", "region", "impact_reason"]
     }
 
-    # prompt บอกบทบาทและรูปแบบ JSON ที่ต้องการ
     prompt = f"""
 {PTT_CONTEXT}
 
 บทบาทของคุณ: Analyst ของกลุ่ม ปตท. (เฉพาะธุรกิจปิโตรเลียมขั้นต้นและก๊าซธรรมชาติ)
-งานของคุณคือ "สรุปข่าว และติดแท็ก" ให้สอดคล้องกับ value chain และเกณฑ์ 4 ข้อด้านบน
+หน้าที่: "สรุปข่าว และติดแท็ก" ตาม value chain และเกณฑ์ 4 ข้อด้านบน
 
 อินพุตข่าว:
 หัวข้อ: {news['title']}
@@ -375,41 +373,31 @@ def gemini_tag_news(news):
 ให้ตอบกลับเป็น JSON ตาม schema นี้เท่านั้น:
 {json.dumps(schema, ensure_ascii=False)}
 
-คำอธิบาย field:
-- summary:
-  • เขียนสั้น ๆ ให้เห็นว่าเกิดอะไรขึ้น ที่ไหน เกี่ยวกับน้ำมัน/ก๊าซ/โครงสร้างพื้นฐานอย่างไร
-- impact_companies:
-  • เลือกจาก ["PTTEP","PTTLNG","PTTGL","PTTNGD"] ได้ 0–2 บริษัท
-- topic_type:
-  • supply_disruption = ซัพพลายหาย/สะดุด (หยุดผลิต, ท่อเสีย, LNG ติด, โรงแยก/ท่าเรือมีปัญหา)
-  • price_move        = ราคาน้ำมัน/ก๊าซ/LNG ผันผวนมีนัย
-  • policy            = นโยบาย/ภาษี/กฎระเบียบ/มาตรการรัฐ
-  • investment        = โครงการลงทุน, FID, M&A, ขยายกำลังผลิตใหม่
-  • geopolitics       = ภูมิรัฐศาสตร์/สงคราม/ความขัดแย้งระหว่างประเทศ
-  • other             = เกี่ยวข้อง Upstream/Gas แต่ไม่เข้าหมวดด้านบน
-- region:
-  • global, asia, europe, middle_east, us, other
-- impact_reason:
-  • อธิบาย 1–3 ประโยคว่า ข่าวนี้จะไปกระทบกลุ่ม ปตท. ผ่านช่องทางไหน เช่น รายได้ PTTEP, ต้นทุน LNG, ความเสี่ยงซัพพลาย ฯลฯ
+คำอธิบาย field แบบย่อ:
+- summary: สรุปว่าเกิดอะไร ที่ไหน เกี่ยวกับน้ำมัน/ก๊าซ/โครงสร้างพื้นฐานอย่างไร
+- impact_companies: เลือก 0–2 บริษัทจาก ["PTTEP","PTTLNG","PTTGL","PTTNGD"]
+- topic_type: ประเภทข่าว (price_move, policy ฯลฯ)
+- region: พื้นที่ที่เกี่ยวข้อง (global, asia, us ฯลฯ)
+- impact_reason: อธิบายสั้น ๆ ว่าข่าวนี้กระทบกลุ่ม ปตท. ผ่านช่องทางไหน
 
-ห้ามใส่คำอธิบายอื่นนอกจาก JSON ตาม schema ข้างต้น
+ห้ามตอบอย่างอื่น นอกจาก JSON ตาม schema
 """
 
     try:
         resp = call_gemini(prompt)
         raw = (resp.text or "").strip()
 
-        # ถ้า Gemini ใส่ ```json ... ``` มา ให้ตัดออก
+        # เผื่อ Gemini ใส่ ```json ... ```
         if raw.startswith("```"):
             raw = re.sub(r"^```(json)?", "", raw).strip()
             raw = re.sub(r"```$", "", raw).strip()
 
-        data = json.loads(raw)  # แปลงเป็น dict
+        data = json.loads(raw)
         return data
 
     except Exception as e:
         print("[WARN] JSON parse fail in gemini_tag_news:", e)
-        # ถ้าแปลง JSON ไม่ได้ ให้ใช้ค่า fallback
+        # ถ้า parse ไม่ได้ ใช้ค่า fallback
         return {
             "summary": news.get("summary") or news.get("title") or "ไม่สามารถสรุปข่าวได้",
             "impact_companies": [],
@@ -421,32 +409,30 @@ def gemini_tag_news(news):
 # ========================= Logic =========================
 def is_ptt_related_from_output(impact_companies) -> bool:
     """
-    ถือว่าข่าวนี้เกี่ยวกับ PTT ถ้ามีรายชื่อบริษัทใน impact_companies อย่างน้อย 1 ตัว
+    ข่าวถือว่าเกี่ยวข้องกับ PTT ถ้ามีชื่อบริษัทอย่างน้อย 1 ตัวใน impact_companies
     """
     return bool(impact_companies)
 
 def fetch_news_9pm_to_6am():
     """
-    ดึงข่าวจาก RSS ทุกแหล่ง ระหว่างเวลา:
-    - 21:00 เมื่อวาน
-    - ถึง 06:00 วันนี้ (เวลาไทย)
-    และคืนเป็น list ของข่าวที่อยู่ในช่วงเวลานี้
+    ดึงข่าวจาก RSS ทุกแหล่ง ในช่วงเวลา:
+    - 21:00 ของเมื่อวาน
+    - ถึง 06:00 ของวันนี้ (เวลาไทย)
+    คืนค่าเป็น list ของ dict ข่าวที่อยู่ในช่วงเวลานี้
     """
     now_local = datetime.now(bangkok_tz)
-    # เริ่มนับตั้งแต่ 21:00 ของเมื่อวาน
     start_time = (now_local - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
-    # จบที่ 06:00 ของวันนี้
     end_time = now_local.replace(hour=6, minute=0, second=0, microsecond=0)
 
     all_news = []
     for _, info in news_sources.items():
         try:
-            feed = feedparser.parse(info["url"])  # อ่าน RSS ของแหล่งข่าว
+            feed = feedparser.parse(info["url"])
             for entry in feed.entries:
-                # พยายามอ่านเวลาเผยแพร่
+                # พยายามอ่านเวลาที่ลงข่าว
                 pub_str = getattr(entry, "published", None) or getattr(entry, "updated", None)
                 if not pub_str and getattr(entry, "published_parsed", None):
-                    # แบบที่เก็บเป็น struct_time
+                    # กรณีเก็บเป็น struct_time
                     t = entry.published_parsed
                     pub_dt = datetime(*t[:6], tzinfo=pytz.UTC).astimezone(bangkok_tz)
                 else:
@@ -454,15 +440,14 @@ def fetch_news_9pm_to_6am():
                         continue
                     pub_dt = dateutil_parser.parse(pub_str)
                     if pub_dt.tzinfo is None:
-                        # ถ้าไม่มี timezone สมมติว่าเป็น UTC
+                        # ถ้าไม่มี timezone ให้ถือว่าเป็น UTC
                         pub_dt = pytz.UTC.localize(pub_dt)
                     pub_dt = pub_dt.astimezone(bangkok_tz)
 
-                # ถ้าเวลาไม่อยู่ในช่วงที่ต้องการให้ข้าม
+                # ข้ามถ้าไม่อยู่ในช่วงเวลาเป้าหมาย
                 if not (start_time <= pub_dt <= end_time):
                     continue
 
-                # สรุปข่าวจาก RSS
                 summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
                 link = getattr(entry, "link", "")
                 title = getattr(entry, "title", "-")
@@ -479,7 +464,7 @@ def fetch_news_9pm_to_6am():
         except Exception as e:
             print(f"[WARN] อ่านฟีด {info['site']} ล้มเหลว: {e}")
 
-    # ลบข่าวที่ซ้ำกัน โดยอิงจาก URL ที่ normalize แล้ว
+    # ลบข่าวซ้ำโดยดูจาก URL ที่ normalize แล้ว
     seen, uniq = set(), []
     for n in all_news:
         key = _normalize_link(n.get("link", ""))
@@ -489,23 +474,23 @@ def fetch_news_9pm_to_6am():
     return uniq
 
 # --------- Coverage-first selection ----------
-# บริษัทในเครือหลักที่ให้ความสำคัญ
+# บริษัทในเครือที่โฟกัสเป็นหลัก
 KEY_COMPANIES = ["PTTEP", "PTTLNG", "PTTGL", "PTTNGD"]
 
-# ประเภทข่าวหลักที่อยากให้ cover ให้ครบ
+# ประเภทข่าวหลักที่อยากให้มีตัวแทนครบ (ถ้าเป็นไปได้)
 KEY_TOPICS = ["supply_disruption", "price_move", "policy", "investment", "geopolitics"]
 
 def select_news_coverage_first(news_list, max_items=10):
     """
-    เลือกข่าว/กลุ่มข่าวโดยเน้น "ความครอบคลุม":
-    1) พยายามมีข่าวที่แตะทุกบริษัทหลัก (เท่าที่มีข้อมูล)
-    2) พยายามมีทุกประเภท topic_type สำคัญ
-    3) ที่เหลือใช้ข่าวใหม่ล่าสุดจนเต็ม max_items
+    เลือกข่าว/กลุ่มข่าว โดยพยายามให้:
+    1) ครอบคลุมบริษัทหลักในเครือให้มากที่สุด
+    2) ครอบคลุมประเภทข่าวสำคัญ (topic_type) ให้หลากหลาย
+    3) ถ้ายังไม่เต็ม quota ให้เติมข่าวใหม่ ๆ ไปจนถึง max_items
     """
     if not news_list:
         return []
 
-    # เรียงข่าวจากใหม่ไปเก่า
+    # เรียงจากข่าวใหม่ไปเก่า
     sorted_news = sorted(news_list, key=lambda n: n.get("published"), reverse=True)
 
     selected = []
@@ -513,7 +498,9 @@ def select_news_coverage_first(news_list, max_items=10):
 
     def _add_if_not_selected(candidate):
         """
-        ฟังก์ชันช่วย: ถ้าข่าว/กลุ่มข่าวนี้ยังไม่เลือก และจำนวนยังไม่เต็ม ก็เพิ่มเข้า list
+        เพิ่มข่าวเข้า selected ถ้า:
+        - ยังไม่เคยเลือก
+        - ยังไม่เกินจำนวน max_items
         """
         key = _normalize_link(candidate.get("link", "")) or id(candidate)
         if key in used_ids:
@@ -524,7 +511,7 @@ def select_news_coverage_first(news_list, max_items=10):
         used_ids.add(key)
         return True
 
-    # รอบที่ 1: เน้นให้ครบทุกบริษัท (ถ้ามี)
+    # รอบที่ 1: พยายามให้มีข่าวของแต่ละบริษัท
     for comp in KEY_COMPANIES:
         if len(selected) >= max_items:
             break
@@ -534,11 +521,10 @@ def select_news_coverage_first(news_list, max_items=10):
                 if _add_if_not_selected(n):
                     break
 
-    # รอบที่ 2: เน้นให้ครบทุก topic_type
+    # รอบที่ 2: พยายามให้มีทุก topic_type
     for topic in KEY_TOPICS:
         if len(selected) >= max_items:
             break
-        # ถ้าใน selected มี topic นี้แล้ว ข้าม
         if any((x.get("topic_type") == topic) for x in selected):
             continue
         for n in sorted_news:
@@ -546,7 +532,7 @@ def select_news_coverage_first(news_list, max_items=10):
                 if _add_if_not_selected(n):
                     break
 
-    # รอบที่ 3: เติมด้วยข่าวใหม่ ๆ จนเต็มโควตา
+    # รอบที่ 3: เติมข่าวใหม่ ๆ จนเต็มจำนวน
     for n in sorted_news:
         if len(selected) >= max_items:
             break
@@ -557,11 +543,10 @@ def select_news_coverage_first(news_list, max_items=10):
 # --------- Grouping ข่าวตาม topic + region ----------
 def group_related_news(news_list, min_group_size=3):
     """
-    รับ list ข่าวที่มี tag (topic_type, region) แล้ว
-    จากนั้น:
-    - ข่าวที่ topic + region ซ้ำกันหลายข่าว จะถูก ‘รวมเป็นกลุ่ม’ ถ้าจำนวน >= min_group_size
-    - ได้ผลลัพธ์เป็น list ที่มีทั้งข่าวเดี่ยว และ 'กลุ่มข่าว'
-      กลุ่มข่าวจะ structure เป็น dict ใหม่มี is_group=True และ news_items เป็น list ข่าวย่อย
+    จัดกลุ่มข่าวตาม (topic_type, region)
+    - ถ้าในกลุ่มเดียวกันมีข่าว >= min_group_size → รวมเป็น "กลุ่มข่าว"
+    - ถ้าน้อยกว่านั้น → เป็นข่าวเดี่ยวเหมือนเดิม
+    ผลลัพธ์คือ list ที่มีทั้ง item แบบข่าวเดี่ยว และแบบกลุ่มข่าว (is_group=True)
     """
     buckets = {}
     for n in news_list:
@@ -572,14 +557,14 @@ def group_related_news(news_list, min_group_size=3):
 
     for (topic, region), items in buckets.items():
         if len(items) >= min_group_size:
-            # รวมเป็นกลุ่ม
+            # รวมเป็นกลุ่มข่าว
             all_companies = []
             for it in items:
                 all_companies.extend(it.get("ptt_companies") or [])
-            # ลบชื่อบริษัทซ้ำ โดยรักษา order
+            # ลบชื่อบริษัทที่ซ้ำ (แต่คงลำดับ)
             all_companies = list(dict.fromkeys(all_companies))
 
-            # เรียงข่าวในกลุ่มจากใหม่ไปเก่า
+            # เรียงข่าวย่อยในกลุ่มจากใหม่ไปเก่า
             items_sorted = sorted(items, key=lambda x: x.get("published"), reverse=True)
             anchor = items_sorted[0]  # ใช้ข่าวใหม่สุดเป็น anchor
 
@@ -590,7 +575,7 @@ def group_related_news(news_list, min_group_size=3):
                 "ptt_companies": all_companies,
                 "news_items": items_sorted,
 
-                # ข้อมูลหัวเรื่อง/เวลา/ลิงก์ ใช้ตาม anchor
+                # meta หลักใช้จากข่าว anchor
                 "title": anchor.get("title", "-"),
                 "site": "หลายแหล่งข่าว",
                 "category": anchor.get("category", ""),
@@ -600,16 +585,16 @@ def group_related_news(news_list, min_group_size=3):
             }
             grouped_items.append(group_obj)
         else:
-            # ถ้าจำนวนน้อยกว่า min_group_size ให้คงเป็นข่าวเดี่ยว
+            # กลุ่มเล็ก → ใช้ข่าวเดี่ยวตามเดิม
             grouped_items.extend(items)
 
     return grouped_items
 
 def gemini_summarize_group(group):
     """
-    ใช้ Gemini เขียนสรุป ‘ภาพรวม’ ของกลุ่มข่าว (เช่น กลุ่ม geopolitics ใน Middle East หลายข่าว)
-    - รวมหัวข้อ + สรุปสั้น ๆ ของแต่ละข่าวในกลุ่ม
-    - ให้ Gemini เขียน summary และ impact_reason ระดับ ‘กลุ่ม’
+    ใช้ Gemini สรุป “ภาพรวมของกลุ่มข่าว” เช่น
+    - ข่าว geopolitics ใน Middle East หลายข่าว
+    ให้ได้ summary+impact_reason ในมุมมองรวมของทั้งกลุ่ม
     """
     items = group.get("news_items", [])
     if not items:
@@ -618,7 +603,7 @@ def gemini_summarize_group(group):
             "impact_reason": "-"
         }
 
-    # ทำข้อความรวมข่าวทุกข่าวในกลุ่มให้ Gemini อ่าน
+    # รวมหัวข้อ + สรุปของข่าวย่อยทั้งหมดเป็นบล็อกเดียว
     lines = []
     for idx, n in enumerate(items, 1):
         line = f"{idx}. {n.get('title','-')} — {n.get('summary','')}"
@@ -629,7 +614,7 @@ def gemini_summarize_group(group):
 {PTT_CONTEXT}
 
 บทบาทของคุณ: Analyst ที่ต้องสรุป "ภาพรวม" ของชุดข่าวหลายข่าวในประเด็นเดียวกัน
-จุดประสงค์: ทำให้ผู้บริหารอ่าน bubble เดียวแล้วเข้าใจภาพรวมของกลุ่มข่าวนี้
+เป้าหมาย: ผู้บริหารอ่านบับเบิลเดียวแล้วเข้าใจภาพรวมของกลุ่มข่าวนี้
 
 กลุ่มข่าว (หัวข้อและสรุปย่อย):
 {news_block}
@@ -637,10 +622,10 @@ def gemini_summarize_group(group):
 ให้ตอบกลับเป็น JSON รูปแบบ:
 {{
   "summary": "<สรุปภาพรวมของทั้งกลุ่ม 3–5 ประโยค>",
-  "impact_reason": "<อธิบายสั้น ๆ ว่ากลุ่มข่าวนี้กระทบกลุ่ม ปตท. อย่างไร โดยโยงกับ upstream/gas value chain>"
+  "impact_reason": "<สรุปว่ากลุ่มข่าวนี้กระทบกลุ่ม ปตท. ผ่าน upstream/gas อย่างไร>"
 }}
 
-ห้ามตอบคำอธิบายอื่น นอกจาก JSON ตามรูปแบบข้างต้น
+ห้ามตอบอย่างอื่น นอกจาก JSON ตามรูปแบบข้างต้น
 """
 
     try:
@@ -653,14 +638,14 @@ def gemini_summarize_group(group):
         return data
     except Exception as e:
         print("[WARN] JSON parse fail in gemini_summarize_group:", e)
-        # fallback ถ้า parse JSON ไม่ได้
+        # ถ้า parse JSON ไม่ได้ ให้ส่งข้อความ fallback
         return {
             "summary": "ไม่สามารถสรุปภาพรวมของกลุ่มข่าวได้",
             "impact_reason": "-"
         }
 
 # --------- Labels & Human-friendly text ----------
-# map code topic → ข้อความภาษาไทยสำหรับแสดงใน LINE
+# map topic_type → ป้ายภาษาไทยไว้แสดงใน LINE
 TOPIC_LABELS_TH = {
     "supply_disruption": "Supply ขัดข้อง/ลดลง",
     "price_move": "ราคาน้ำมัน/ก๊าซเปลี่ยน",
@@ -670,7 +655,7 @@ TOPIC_LABELS_TH = {
     "other": "อื่น ๆ ที่เกี่ยวกับ Upstream/ก๊าซ",
 }
 
-# map region code → ป้ายภาษาไทย
+# map region → ป้ายภาษาไทย/อังกฤษสั้น ๆ
 REGION_LABELS_TH = {
     "global": "Global",
     "asia": "Asia",
@@ -680,7 +665,7 @@ REGION_LABELS_TH = {
     "other": "อื่น ๆ",
 }
 
-# ข้อความอธิบายชนิดของ topic แบบมนุษย์อ่านง่าย
+# ข้อความอธิบายประเภทข่าวแบบที่คนอ่านแล้วเข้าใจทันที
 HUMAN_TOPIC_EXPLANATION = {
     "price_move": "ข่าวนี้เกี่ยวกับการเปลี่ยนแปลงราคาน้ำมันหรือก๊าซ ซึ่งอาจกระทบรายได้ของ PTTEP และต้นทุนก๊าซ/LNG ของกลุ่ม ปตท.",
     "supply_disruption": "ข่าวนี้สะท้อนความเสี่ยงด้านซัพพลาย เช่น การหยุดผลิต ท่อก๊าซเสีย หรือเหตุการณ์ที่ทำให้ปริมาณก๊าซ/น้ำมันในตลาดลดลง",
@@ -692,18 +677,19 @@ HUMAN_TOPIC_EXPLANATION = {
 
 def create_flex_message(news_items):
     """
-    แปลงข่าว (after tag/group/summarize) ให้เป็น Flex Message ของ LINE:
-    - แต่ละข่าว → 1 bubble
-    - แสดงรูป, หัวข้อ, เวลา, แหล่งข่าว, สรุปจาก Gemini, ผลกระทบต่อ PTT
-    - ถ้าเป็น ‘กลุ่มข่าว’ จะแสดง list ข่าวย่อยใน bubble ด้วย
-    - คืนค่าเป็น list ของ Flex (แต่ละตัวมี carousel 10 bubble)
+    แปลงรายการข่าวที่ผ่านการ tag/group/summarize แล้ว
+    ให้กลายเป็น Flex Message ของ LINE:
+    - ข่าว/กลุ่มข่าว 1 รายการ = 1 bubble
+    - แสดงรูป, หัวข้อ, เวลา, แหล่งข่าว, summary, impact
+    - ถ้าเป็นกลุ่มข่าวแสดงข่าวย่อยภายใน bubble ด้วย
+    คืนค่าเป็น list ของ message object (แบบ carousel ละ 10 bubble)
     """
     now_thai = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
 
     def join_companies(codes):
         """
-        แปลง list เช่น ["PTTEP","PTTLNG"] → "PTTEP, PTTLNG"
-        ถ้าว่างให้ใช้คำว่า "ไม่มีระบุ"
+        แปลง ["PTTEP","PTTLNG"] → "PTTEP, PTTLNG"
+        ถ้า list ว่าง → "ไม่มีระบุ"
         """
         codes = codes or []
         return ", ".join(codes) if codes else "ไม่มีระบุ"
@@ -711,7 +697,6 @@ def create_flex_message(news_items):
     bubbles = []
     for item in news_items:
         img = item.get("image") or DEFAULT_ICON_URL
-        # ถ้ารูปไม่ใช่ URL ที่ขึ้นต้นด้วย http ก็ใช้ default
         if not (str(img).startswith("http://") or str(img).startswith("https://")):
             img = DEFAULT_ICON_URL
 
@@ -721,7 +706,7 @@ def create_flex_message(news_items):
         region_label = REGION_LABELS_TH.get(region_key, "อื่น ๆ")
         human_note = HUMAN_TOPIC_EXPLANATION.get(topic_key, HUMAN_TOPIC_EXPLANATION["other"])
 
-        # บรรทัดแสดงผลว่า "กระทบบริษัทไหนบ้าง"
+        # แสดงว่ากระทบบริษัทในเครือไหนบ้าง
         impact_line = {
             "type": "text",
             "text": f"กระทบ: {join_companies(item.get('ptt_companies'))}",
@@ -732,7 +717,7 @@ def create_flex_message(news_items):
             "margin": "sm"
         }
 
-        # บรรทัดแสดงประเภทข่าวและภูมิภาค
+        # แสดงประเภทข่าว + ภูมิภาค
         meta_line = {
             "type": "text",
             "text": f"ประเภท: {topic_label} | ภูมิภาค: {region_label}",
@@ -742,10 +727,10 @@ def create_flex_message(news_items):
             "margin": "sm"
         }
 
-        # ถ้าเป็น ‘กลุ่มข่าว’ ให้เตรียม box แสดงรายการข่าวย่อย
+        # ถ้าเป็นกลุ่มข่าวให้เตรียมกล่องรายการข่าวย่อย
         group_sublist_box = None
         if item.get("is_group"):
-            sub_items = item.get("news_items", [])[:5]  # แสดงข่าวย่อยได้สูงสุด 5 รายการ
+            sub_items = item.get("news_items", [])[:5]  # โชว์ข่าวย่อยได้สูงสุด 5 รายการ
             sub_lines = []
             for sub in sub_items:
                 line = f"• [{sub.get('site','')}] {sub.get('title','-')}"
@@ -775,13 +760,13 @@ def create_flex_message(news_items):
                 ]
             }
 
-        # ตั้งชื่อ title สำหรับข่าวเดี่ยว/กลุ่มข่าว
+        # กำหนด title สำหรับข่าวเดี่ยว/กลุ่มข่าว
         title_text = item.get("title", "-")
         if item.get("is_group"):
             count_sub = len(item.get("news_items", []))
             title_text = f"{topic_label} ({region_label}) – {count_sub} ข่าวสำคัญ"
 
-        # เนื้อหาใน body ของ bubble
+        # ส่วน body ของ bubble
         body_contents = [
             {
                 "type": "text",
@@ -871,11 +856,10 @@ def create_flex_message(news_items):
             }
         ]
 
-        # ถ้ามีกล่องข่าวย่อย ก็เพิ่มเข้าไปใน body
+        # ถ้าเป็นกลุ่มข่าว ให้แปะกล่องรายการข่าวย่อยเพิ่มเข้าไป
         if group_sublist_box:
             body_contents.append(group_sublist_box)
 
-        # ประกอบ bubble ของ Flex Message
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -920,7 +904,7 @@ def create_flex_message(news_items):
         }
         bubbles.append(bubble)
 
-    # LINE จำกัด 1 carousel มีได้หลาย bubble (ที่นี่แบ่งทีละ 10 bubble ต่อ 1 message)
+    # แบ่ง bubbles เป็นหลาย carousel (ละครั้งส่งได้สูงสุด ~10 bubble)
     carousels = []
     for i in range(0, len(bubbles), 10):
         carousels.append({
@@ -935,24 +919,24 @@ def create_flex_message(news_items):
 
 def broadcast_flex_message(access_token, flex_carousels):
     """
-    ส่ง Flex Message ไปยัง LINE Broadcast (กระจายให้ผู้ใช้ทุกคนที่ add bot)
-    - ถ้า DRY_RUN = True จะไม่ยิงจริง แค่ print ตัว payload ให้ดู
+    ส่ง Flex Message ออก LINE Broadcast:
+    - ถ้า DRY_RUN = True → แค่ print payload ไม่ยิงจริง
+    - ถ้า error (เช่น 400/500) จะหยุดส่ง carousel ถัดไป
     """
     url = 'https://api.line.me/v2/bot/message/broadcast'
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"}
     for idx, carousel in enumerate(flex_carousels, 1):
         payload = {"messages": [carousel]}
         if DRY_RUN:
-            # โหมดทดลอง: แสดงข้อความที่ “จะ” ส่ง
             print(f"[DRY_RUN] Carousel #{idx}: {json.dumps(payload)[:500]}...")
             continue
         try:
             resp = S.post(url, headers=headers, json=payload, timeout=TIMEOUT)
             print(f"Broadcast #{idx} status:", resp.status_code, getattr(resp, "text", ""))
             if resp.status_code >= 300:
-                # ถ้าส่งแล้ว error (เช่น 400/401/500) ให้หยุดไม่ส่งต่อ
+                # ถ้าส่งไม่ผ่าน ให้หยุดไม่ส่งต่อ
                 break
-            time.sleep(1.2)  # หน่วงเล็กน้อย ระหว่างการส่งแต่ละ carousel
+            time.sleep(1.2)
         except Exception as e:
             print("[LINE ERROR]", e)
             break
@@ -960,15 +944,16 @@ def broadcast_flex_message(access_token, flex_carousels):
 # ========================= MAIN =========================
 def main():
     """
-    ฟังก์ชันหลักของสคริปต์นี้:
+    ลำดับการทำงานหลัก:
     1) ดึงข่าวช่วง 21:00 เมื่อวาน – 06:00 วันนี้
-    2) ใช้ Gemini ช่วยกรองว่าข่าวไหนเกี่ยวกับ Upstream/Gas ของกลุ่ม ปตท.
-    3) ใช้ Gemini ติดแท็กข่าว + สรุปผลกระทบ
-    4) รวมข่าวที่ topic+region เดียวกันเป็นกลุ่ม
-    5) เลือกข่าว/กลุ่มข่าวแบบคุมความครอบคลุม (บริษัท/ประเภทข่าว)
-    6) กันส่งข่าวซ้ำ (เทียบกับที่เคยส่งไปแล้ววันนี้/เมื่อวาน)
+    2) ใช้ Gemini กรองว่าเกี่ยวกับ Upstream/Gas ของกลุ่ม ปตท. หรือไม่
+    3) ใช้ Gemini ติดแท็ก + สรุป และบอกผลกระทบ
+    4) รวมข่าวที่ topic+region เดียวกันให้เป็น “กลุ่มข่าว”
+    5) เลือกข่าว/กลุ่มข่าวแบบ coverage-first (ตามบริษัท/ประเภทข่าว)
+    6) กันส่งข่าวซ้ำ (เช็ควันนี้+เมื่อวาน)
     7) ดึงรูปประกอบข่าว
-    8) แปลงเป็น Flex Message แล้ว broadcast ออก LINE
+    8) สร้าง Flex Message แล้ว broadcast ทาง LINE
+    9) บันทึกลิงก์ที่ส่งแล้วลงไฟล์ของวันนี้
     """
 
     # 1) ดึงข่าวช่วงเวลาเป้าหมาย
@@ -980,14 +965,13 @@ def main():
 
     SLEEP_MIN, SLEEP_MAX = SLEEP_BETWEEN_CALLS
 
-    # 2) Filter: เลือกเฉพาะข่าวที่ "เกี่ยวข้อง" กับ Upstream/Gas ตาม Gemini
+    # 2) Filter: ให้ Gemini ช่วยเช็คว่าเกี่ยวข้อง Upstream/Gas ไหม
     filtered_news = []
     for news in all_news:
-        # ถ้าข้อความ summary สั้นมาก ให้ส่ง title เข้าไปเป็น detail เพิ่มให้ LLM ใช้ตัดสิน
+        # ถ้า summary จาก RSS สั้นมาก ให้ใส่ title ไปใน field detail เผื่อ LLM ใช้ประกอบการตัดสิน
         news['detail'] = news['title'] if len((news.get('summary') or '')) < 50 else ''
         if llm_ptt_subsidiary_impact_filter(news):
             filtered_news.append(news)
-        # หน่วงเวลาสุ่มเล็กน้อย เพื่อลดโหลด Gemini
         time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
 
     print(f"ข่าวผ่านฟิลเตอร์ (เกี่ยวข้อง Upstream/Gas): {len(filtered_news)} ข่าว")
@@ -995,25 +979,24 @@ def main():
         print("ไม่มีข่าวเกี่ยวข้อง")
         return
 
-    # 3) Tagging: ให้ Gemini เขียนสรุป + tag บริษัท / topic / region ให้แต่ละข่าว
+    # 3) Tagging: ใช้ Gemini เขียนสรุป + ติด tag บริษัท/topic/region ให้แต่ละข่าว
     tagged_news = []
     print(f"ส่งให้ Gemini ติดแท็ก {len(filtered_news)} ข่าว")
     for news in filtered_news:
         tag = gemini_tag_news(news)
 
-        # สรุปข่าวจาก Gemini
         news['gemini_summary'] = _normalize_colons(tag.get('summary', '')).strip() or 'ไม่พบสรุปข่าว'
 
-        # เลือกเฉพาะบริษัทที่อยู่ในเครือ PTT จริง ๆ
+        # เลือกเฉพาะบริษัทที่อยู่ในเครือ PTT
         companies = [c for c in (tag.get('impact_companies') or []) if c in {"PTTEP", "PTTLNG", "PTTGL", "PTTNGD"}]
-        # ลบซ้ำ
         news['ptt_companies'] = list(dict.fromkeys(companies))
         news['topic_type'] = tag.get('topic_type', 'other')
         news['region'] = tag.get('region', 'other')
-        # ข้อความอธิบายผลกระทบ (เกลาข้อความเล็กน้อย)
+
+        # เกลาข้อความ impact_reason
         news['gemini_reason'] = _polish_impact_text(tag.get('impact_reason', '').strip()) or '-'
 
-        # เลือกเฉพาะข่าวที่ Gemini ผูกกับบริษัทในเครืออย่างน้อยหนึ่งราย
+        # เลือกเฉพาะข่าวที่ผูกกับบริษัทในเครืออย่างน้อยหนึ่งราย
         if is_ptt_related_from_output(news['ptt_companies']):
             tagged_news.append(news)
 
@@ -1024,45 +1007,45 @@ def main():
         print("ไม่พบข่าวที่ผูกกับบริษัทในเครือ PTT โดยตรง")
         return
 
-    # 4) Grouping: ยุบข่าว topic+region เดียวกันเป็น "กลุ่มข่าว" (ถ้ามี >= 3 ข่าว)
+    # 4) Grouping: รวมข่าวที่ topic+region เดียวกันให้เป็นกลุ่ม (ถ้ามี >= 3 ข่าว)
     collapsed_list = group_related_news(tagged_news, min_group_size=3)
 
-    # 5) ทำ meta-summary สำหรับ ‘กลุ่มข่าว’ แต่ละกลุ่ม
+    # 5) ถ้าเป็นกลุ่มข่าว ให้ขอ meta-summary ระดับกลุ่มจาก Gemini
     for item in collapsed_list:
         if item.get("is_group"):
             data = gemini_summarize_group(item)
             item["gemini_summary"] = _normalize_colons(data.get("summary", "")).strip()
             item["gemini_reason"] = _polish_impact_text(data.get("impact_reason", "").strip() or "-")
 
-    # 6) เลือกชุดข่าว/กลุ่มข่าวแบบ coverage-first (ไม่เกิน 10 bubble)
+    # 6) เลือกข่าว/กลุ่มข่าวแบบ coverage-first (ไม่เกิน 10 bubble)
     top_news = select_news_coverage_first(collapsed_list, max_items=10)
 
-    # กันส่งข่าวซ้ำ: โหลดลิงก์ที่เคยส่งวันนี้และเมื่อวานมาเปรียบเทียบ
+    # กันส่งข่าวซ้ำ 2 วันล่าสุด
     sent_links = load_sent_links_today_yesterday()
     top_news_to_send = [n for n in top_news if _normalize_link(n.get('link', '')) not in sent_links]
     if not top_news_to_send:
         print("ข่าววันนี้/เมื่อวานส่งครบแล้ว")
         return
 
-    # 7) พยายามดึงรูปประกอบข่าวแต่ละข่าว
+    # 7) พยายามดึงรูปประกอบของแต่ละข่าว
     for item in top_news_to_send:
         img = fetch_article_image(item.get("link", "")) or ""
         if not (str(img).startswith("http://") or str(img).startswith("https://")):
             img = DEFAULT_ICON_URL
         item["image"] = img
 
-    # 8) แปลงเป็น Flex Message → ส่งเข้า LINE Broadcast
+    # 8) แปลงเป็น Flex Message แล้ว broadcast ทาง LINE
     carousels = create_flex_message(top_news_to_send)
     broadcast_flex_message(LINE_CHANNEL_ACCESS_TOKEN, carousels)
 
-    # 9) บันทึกลิงก์ที่ส่งไปแล้วลงไฟล์ของวันนี้
+    # 9) บันทึกลิงก์ที่ส่งไปแล้วของวันนี้
     save_sent_links([n.get("link", "") for n in top_news_to_send])
     print("เสร็จสิ้น.")
 
-# ถ้าไฟล์นี้ถูก run ตรง ๆ (ไม่ใช่ถูก import เป็น module) ให้เรียก main()
+# รัน main() เมื่อไฟล์นี้ถูกเรียกโดยตรง
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # ถ้ามี error ที่ไม่ถูกจับด้านบน ให้ print ออกมาที่ console
+        # ถ้าเกิด error ใหญ่ ๆ ที่ไม่ถูกจับข้างบน ให้แสดงใน console
         print("[ERROR]", e)
