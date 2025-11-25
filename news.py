@@ -585,7 +585,9 @@ def is_ptt_related_from_output(impact_companies) -> bool:
     """
     return bool(impact_companies)
 
-
+# ดึงข่าวจาก RSS ทุกแหล่ง ในช่วงเวลา:
+#- 21:00 ของเมื่อวาน
+# ถึง 06:00 ของวันนี้ (เวลาไทย)
 def fetch_news_9pm_to_6am():
     """
     ดึงข่าวจาก RSS ทุกแหล่ง ในช่วงเวลา:
