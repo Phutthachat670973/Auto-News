@@ -99,6 +99,8 @@ SENT_LINKS_DIR = "sent_links"
 os.makedirs(SENT_LINKS_DIR, exist_ok=True)
 
 # ========================= Helpers =========================
+# ฟังก์ชันช่วยทำความสะอาดลิงก์ก่อนนำไปใช้งาน เช่น ตัดช่องว่างหน้า–หลัง
+# ใช้เพื่อให้ระบบตรวจสอบลิงก์ซ้ำได้ถูกต้อง (ป้องกันเคสมี space แล้วตรวจไม่เจอ)
 def _normalize_link(url: str) -> str:
     """
     ฟังก์ชันนี้ทำหน้าที่ “ทำความสะอาด URL” ให้เป็นรูปแบบมาตรฐาน
@@ -134,7 +136,9 @@ def _normalize_link(url: str) -> str:
         # ถ้ามี error ใด ๆ (เช่น url แปลกมาก) → คืน string เดิมแต่ตัดช่องว่างหัวท้าย
         return (url or "").strip()
 
-
+# ฟังก์ชันสร้างที่อยู่ไฟล์ (path) สำหรับเก็บลิงก์ที่ "ส่งแล้ว" ของแต่ละวัน
+# เช่น sent_links/2025-11-22.txt
+# เอาไว้ให้ฟังก์ชันอ่าน/เขียนใช้ต่อ
 def get_sent_links_file(date=None):
     """
     คืนชื่อไฟล์ที่ใช้เก็บ “ลิงก์ข่าวที่ส่งแล้ว” ของวันนั้น ๆ
@@ -147,7 +151,9 @@ def get_sent_links_file(date=None):
         date = datetime.now(bangkok_tz).strftime("%Y-%m-%d")
     return os.path.join(SENT_LINKS_DIR, f"{date}.txt")
 
-
+# โหลดข้อมูลลิงก์ที่ส่งไปแล้วของวันนี้ + เมื่อวาน
+# เพื่อป้องกันการส่งซ้ำ — ระบบจะเช็คว่าลิงก์นี้เคยอยู่ใน sent_links แล้วหรือยัง
+# (หมายเหตุ: ฟังก์ชันนี้เป็นตัวคืนค่าเฉยๆ เหมือน placeholder ไว้กลับค่าตัวแปร sent_links)
 def load_sent_links_today_yesterday():
     """
     โหลดลิงก์ข่าวที่เคยส่งไปแล้วใน:
@@ -176,7 +182,9 @@ def load_sent_links_today_yesterday():
 
     return sent_links
 
-
+# บันทึกลิงก์ใหม่ลงไฟล์ประจำวัน
+# ฟังก์ชันนี้จะถูกเรียกหลังจากส่งข่าวไป LINE สำเร็จ
+# ทำให้เรารู้ว่าลิงก์นี้ส่งไปแล้ว — ป้องกันการส่งซ้ำในอนาคต
 def save_sent_links(new_links, date=None):
     """
     เพิ่มลิงก์ข่าวที่เพิ่งส่งไปแล้ว ลงไฟล์ของวันนั้น
@@ -187,7 +195,8 @@ def save_sent_links(new_links, date=None):
         for url in new_links:
             f.write(_normalize_link(url) + "\n")
 
-
+# ฟังก์ชันทำความสะอาดข้อความสรุปผลกระทบของข่าว
+# ใช้ก่อนส่งเข้า LINE เพื่อให้ข้อความไม่มี space เกินมา และดูเรียบร้อย
 def _polish_impact_text(text: str) -> str:
     """
     ทำความสะอาดข้อความส่วน impact_reason ก่อนนำไปแสดง:
