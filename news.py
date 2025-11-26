@@ -828,7 +828,8 @@ def group_related_news(news_list, min_group_size=3):
 
     return grouped_items
 
-
+# ใช้ Gemini สรุป "ภาพรวม" ของกลุ่มข่าวหลายข่าวที่อยู่ใน topic/region เดียวกัน
+# เช่น มีข่าว supply_disruption ใน Middle East หลายข่าว → ขอให้โมเดลช่วยเขียนสรุปสั้น ๆ รวมทุกข่าว
 def gemini_summarize_group(group):
     """
     ใช้ Gemini สรุปภาพรวมของ "กลุ่มข่าว" หลายข่าวที่อยู่ใน topic/region เดียวกัน
@@ -928,6 +929,12 @@ HUMAN_TOPIC_EXPLANATION = {
     "other": "ข่าวนี้เกี่ยวข้องกับธุรกิจปิโตรเลียมขั้นต้นหรือก๊าซของกลุ่ม ปตท. ในมุมอื่น ๆ ที่ควรติดตาม",
 }
 
+# ฟังก์ชันสร้าง Flex Message สำหรับ LINE:
+#   - รับรายการข่าวที่ผ่านการคัดเลือกแล้ว (ทั้งข่าวเดี่ยว/กลุ่มข่าว)
+#   - สร้าง bubble สำหรับแต่ละข่าว พร้อมสรุป, ประเภทข่าว, ผลกระทบ, และรูปภาพ
+#   - ถ้าเป็นกลุ่มข่าว จะเพิ่มรายการหัวข้อข่าวย่อยใน bubble ด้วย
+#   - รวม bubble หลายอันเป็น carousel (สูงสุด ~10 bubble ต่อชุด)
+#   - คืนค่าเป็น list ของ carousel พร้อมส่งไปยัง LINE Broadcast API
 
 def create_flex_message(news_items):
     """
@@ -1184,6 +1191,12 @@ def create_flex_message(news_items):
     return carousels
 
 
+# ฟังก์ชันส่ง Flex Message ออก LINE Broadcast:
+#   - รับ access_token ของ LINE และรายการ carousel (flex_carousels) ที่สร้างไว้แล้ว
+#   - ถ้าเปิดโหมด DRY_RUN → แค่พิมพ์ payload ตัวอย่าง ไม่ยิงจริง
+#   - ถ้าไม่ใช่ DRY_RUN → ยิง API ไปที่ LINE เพื่อ broadcast แต่ละ carousel ทีละชุด
+#   - หากการส่งชุดใดล้มเหลว (status >= 300) → หยุดการส่งทันที (break)
+#   - ใช้สำหรับเผยแพร่ข่าวที่ผ่านการวิเคราะห์ไปให้ผู้ติดตามใน LINE
 def broadcast_flex_message(access_token, flex_carousels):
     """
     ส่ง Flex Message ออก LINE Broadcast:
