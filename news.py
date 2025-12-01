@@ -48,6 +48,9 @@ TIMEOUT = 15
 SENT_LINKS_DIR = "sent_links"
 os.makedirs(SENT_LINKS_DIR, exist_ok=True)
 
+# รูป default สำหรับ hero ถ้าไม่มีรูปข่าวจริง ๆ
+DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
+
 
 # ============================================================================================================
 # HELPERS
@@ -96,17 +99,39 @@ def save_sent_links(links):
 
 
 def _impact_to_bullets(text: str):
+    """
+    แปลงข้อความ impact_reason เป็น list bullet สะอาด ๆ:
+      - ใช้การขึ้นบรรทัดใหม่เป็นตัวแบ่งหลัก
+      - ลบสัญลักษณ์นำหน้า เช่น • * - · และเลขลำดับ 1. 2) ออก
+      - ไม่ให้มีดอกจันหลงเหลือ
+    """
     if not text:
         return ["ไม่ระบุผลกระทบ"]
-    raw = text.strip()
-    parts = []
-    for line in raw.splitlines():
-        if line.strip():
-            parts.append(line.strip("•- —\t "))
-    if len(parts) <= 1:
-        tmp = re.split(r"[。．\.]\s*", raw)
-        parts = [t.strip("•- ") for t in tmp if t.strip()]
-    return parts or ["ไม่ระบุผลกระทบ"]
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if not lines:
+        lines = [text.strip()]
+
+    bullets = []
+    for line in lines:
+        s = line.strip()
+
+        # ลบ bullet symbols และช่องว่างด้านหน้า: • * - · ฯลฯ
+        s = re.sub(r"^[\u2022\*\-\u00b7·•\s]+", "", s)
+
+        # ลบเลขลำดับ เช่น "1." "2)" "3 ." ออก
+        s = re.sub(r"^\d+[\.\)]\s*", "", s)
+
+        # ลบดอกจันที่อาจหลงเหลือกลางประโยคแบบ ".* "
+        if s.startswith(".*"):
+            s = s[2:].lstrip()
+        if s.startswith("*"):
+            s = s[1:].lstrip()
+
+        if s:
+            bullets.append(s)
+
+    return bullets or ["ไม่ระบุผลกระทบ"]
 
 
 # ============================================================================================================
@@ -360,7 +385,7 @@ def gemini_group_summary(group):
 
 
 # ============================================================================================================
-# FLEX MESSAGE
+# FLEX MESSAGE (มี hero และ bullet สะอาด ๆ)
 # ============================================================================================================
 def create_flex(news_items):
     now_txt = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
@@ -373,6 +398,9 @@ def create_flex(news_items):
         link = n.get("link") or ""
         if not (isinstance(link, str) and link.startswith(("http://", "https://"))):
             link = "https://www.google.com/search?q=energy+gas+news"
+
+        # เลือกรูป hero (ตอนนี้ใช้ default ไปก่อน)
+        img = DEFAULT_ICON_URL
 
         impact_box = {
             "type": "box",
@@ -402,6 +430,14 @@ def create_flex(news_items):
 
         bubble = {
             "type": "bubble",
+            "size": "mega",
+            "hero": {
+                "type": "image",
+                "url": img,
+                "size": "full",
+                "aspectRatio": "16:9",
+                "aspectMode": "cover"
+            },
             "body": {
                 "type": "box",
                 "layout": "vertical",
@@ -449,7 +485,7 @@ def create_flex(news_items):
 
 
 # ============================================================================================================
-# BROADCAST LINE (เพิ่ม debug payload + response body)
+# BROADCAST LINE
 # ============================================================================================================
 def send_to_line(messages):
     url = "https://api.line.me/v2/bot/message/broadcast"
@@ -461,7 +497,6 @@ def send_to_line(messages):
     for i, msg in enumerate(messages, 1):
         payload = {"messages": [msg]}
 
-        # DEBUG: แสดง payload ที่จะส่งให้ LINE
         print("=== LINE PAYLOAD ===")
         print(json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -512,22 +547,4 @@ def main():
             meta = gemini_group_summary(g)
             g['impact_reason'] = meta['impact_reason']
 
-    selected = grouped[:10]
-
-    sent = load_sent_links()
-    final = [n for n in selected if _normalize_link(n['link']) not in sent]
-
-    if not final:
-        print("ไม่มีข่าวใหม่")
-        return
-
-    msgs = create_flex(final)
-    send_to_line(msgs)
-    save_sent_links([n['link'] for n in final])
-
-    print("เสร็จสิ้น")
-
-
-# ============================================================================================================
-if __name__ == "__main__":
-    main()
+    selected =
