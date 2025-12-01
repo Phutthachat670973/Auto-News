@@ -57,9 +57,12 @@ def _normalize_link(url: str) -> str:
         p = urlparse(url)
         netloc = p.netloc.lower()
         scheme = (p.scheme or "https").lower()
-        drop = {"fbclid","gclid","ref","mc_cid","mc_eid"}
-        new_q = [(k,v) for k,v in parse_qsl(p.query, keep_blank_values=True)
-                 if not (k.startswith("utm_") or k in drop)]
+        drop = {"fbclid", "gclid", "ref", "mc_cid", "mc_eid"}
+        new_q = [
+            (k, v)
+            for k, v in parse_qsl(p.query, keep_blank_values=True)
+            if not (k.startswith("utm_") or k in drop)
+        ]
         return urlunparse(p._replace(scheme=scheme, netloc=netloc, query=urlencode(new_q)))
     except Exception:
         return (url or "").strip()
@@ -107,7 +110,7 @@ def _impact_to_bullets(text: str):
 
 
 # ============================================================================================================
-# CONTEXT (ใหม่ตามที่ร้องขอ)
+# CONTEXT
 # ============================================================================================================
 PTT_CONTEXT = """
 โฟกัสเฉพาะ “กลุ่มธุรกิจปิโตรเลียมขั้นต้นและก๊าซธรรมชาติของ ปตท.” เท่านั้น
@@ -141,15 +144,15 @@ def call_gemini(prompt):
         raise RuntimeError("เกินโควต้า Gemini ประจำวัน")
 
     last_error = None
-    for i in range(1, MAX_RETRIES+1):
+    for i in range(1, MAX_RETRIES + 1):
         try:
             r = model.generate_content(prompt)
             GEMINI_CALLS += 1
             return r
         except Exception as e:
             last_error = e
-            if any(x in str(e) for x in ["429","unavailable","deadline","503","500"]) and i < MAX_RETRIES:
-                time.sleep(5*i)
+            if any(x in str(e) for x in ["429", "unavailable", "deadline", "503", "500"]) and i < MAX_RETRIES:
+                time.sleep(5 * i)
                 continue
             raise e
     raise last_error
@@ -176,9 +179,9 @@ def llm_filter(news):
 """
     try:
         r = call_gemini(prompt)
-        ans = (r.text or "").strip().replace("\n","")
+        ans = (r.text or "").strip().replace("\n", "")
         return ans.startswith("ใช่")
-    except:
+    except Exception:
         return False
 
 
@@ -193,17 +196,17 @@ def gemini_tag(news):
             "topic_type": {
                 "type": "string",
                 "enum": [
-                    "supply_disruption","price_move","policy",
-                    "investment","geopolitics","other"
+                    "supply_disruption", "price_move", "policy",
+                    "investment", "geopolitics", "other"
                 ]
             },
             "region": {
                 "type": "string",
-                "enum": ["global","asia","europe","middle_east","us","other"]
+                "enum": ["global", "asia", "europe", "middle_east", "us", "other"]
             },
             "impact_reason": {"type": "string"}
         },
-        "required": ["summary","topic_type","region","impact_reason"]
+        "required": ["summary", "topic_type", "region", "impact_reason"]
     }
 
     prompt = f"""
@@ -223,17 +226,17 @@ def gemini_tag(news):
   *เขียนเป็น bullet point หรือหลายบรรทัด*
 
 ตอบเป็น JSON ตาม schema นี้:
-{json.dumps(schema,ensure_ascii=False)}
+{json.dumps(schema, ensure_ascii=False)}
 """
 
     try:
         r = call_gemini(prompt)
         raw = (r.text or "").strip()
         if raw.startswith("```"):
-            raw = re.sub(r"^```(json)?","",raw).strip()
-            raw = re.sub(r"```$","",raw).strip()
+            raw = re.sub(r"^```(json)?", "", raw).strip()
+            raw = re.sub(r"```$","", raw).strip()
         return json.loads(raw)
-    except:
+    except Exception:
         return {
             "summary": news['summary'],
             "topic_type": "other",
@@ -246,24 +249,26 @@ def gemini_tag(news):
 # FETCH NEWS
 # ============================================================================================================
 NEWS_FEEDS = [
-    ("Oilprice","Energy","https://oilprice.com/rss/main"),
-    ("CleanTechnica","Energy","https://cleantechnica.com/feed/"),
-    ("HydrogenFuelNews","Energy","https://www.hydrogenfuelnews.com/feed/"),
-    ("Economist","Economy","https://www.economist.com/latest/rss.xml"),
-    ("YahooFinance","Economy","https://finance.yahoo.com/news/rssindex"),
+    ("Oilprice", "Energy", "https://oilprice.com/rss/main"),
+    ("CleanTechnica", "Energy", "https://cleantechnica.com/feed/"),
+    ("HydrogenFuelNews", "Energy", "https://www.hydrogenfuelnews.com/feed/"),
+    ("Economist", "Economy", "https://www.economist.com/latest/rss.xml"),
+    ("YahooFinance", "Economy", "https://finance.yahoo.com/news/rssindex"),
 ]
 
 def fetch_news_window():
     now_local = datetime.now(bangkok_tz)
-    start = (now_local - timedelta(days=1)).replace(hour=21,minute=0,second=0,microsecond=0)
-    end   = now_local.replace(hour=6,minute=0,second=0,microsecond=0)
+    start = (now_local - timedelta(days=1)).replace(
+        hour=21, minute=0, second=0, microsecond=0
+    )
+    end = now_local.replace(hour=6, minute=0, second=0, microsecond=0)
 
     out = []
-    for site,cat,url in NEWS_FEEDS:
+    for site, cat, url in NEWS_FEEDS:
         try:
             feed = feedparser.parse(url)
             for e in feed.entries:
-                pub = getattr(e,"published",None) or getattr(e,"updated",None)
+                pub = getattr(e, "published", None) or getattr(e, "updated", None)
                 if not pub:
                     continue
                 dt = dateutil_parser.parse(pub)
@@ -275,12 +280,12 @@ def fetch_news_window():
                         "site": site,
                         "category": cat,
                         "title": e.title,
-                        "summary": getattr(e,"summary",""),
+                        "summary": getattr(e, "summary", ""),
                         "link": e.link,
                         "published": dt,
                         "date": dt.strftime("%d/%m/%Y %H:%M")
                     })
-        except:
+        except Exception:
             pass
 
     uniq = []
@@ -303,7 +308,7 @@ def group_news(news_list, min_size=3):
         buckets.setdefault(key, []).append(n)
 
     out = []
-    for (topic,region), items in buckets.items():
+    for (topic, region), items in buckets.items():
         if len(items) >= min_size:
             items_sorted = sorted(items, key=lambda x: x['published'], reverse=True)
             anchor = items_sorted[0]
@@ -345,13 +350,13 @@ def gemini_group_summary(group):
 
     try:
         r = call_gemini(prompt)
-        raw = r.text.strip()
+        raw = (r.text or "").strip()
         if raw.startswith("```"):
-            raw = re.sub(r"^```(json)?","",raw).strip()
-            raw = re.sub(r"```$","",raw).strip()
+            raw = re.sub(r"^```(json)?","", raw).strip()
+            raw = re.sub(r"```$","", raw).strip()
         return json.loads(raw)
-    except:
-        return {"summary":"สรุปไม่ได้","impact_reason":"-"}
+    except Exception:
+        return {"summary": "สรุปไม่ได้", "impact_reason": "-"}
 
 
 # ============================================================================================================
@@ -362,57 +367,71 @@ def create_flex(news_items):
     bubbles = []
 
     for n in news_items:
-        bullets = _impact_to_bullets(n.get("impact_reason","-"))
+        bullets = _impact_to_bullets(n.get("impact_reason", "-"))
+
+        # ตรวจลิงก์ ถ้าไม่ใช่ http(s) ให้ใช้ fallback
+        link = n.get("link") or ""
+        if not (isinstance(link, str) and link.startswith(("http://", "https://"))):
+            link = "https://www.google.com/search?q=energy+gas+news"
 
         impact_box = {
-            "type":"box",
-            "layout":"vertical",
-            "margin":"lg",
-            "contents":[
+            "type": "box",
+            "layout": "vertical",
+            "margin": "lg",
+            "contents": [
                 {
-                    "type":"text",
-                    "text":"ผลกระทบต่อกลุ่ม ปตท.",
-                    "size":"lg",
-                    "weight":"bold",
-                    "color":"#D32F2F"
+                    "type": "text",
+                    "text": "ผลกระทบต่อกลุ่ม ปตท.",
+                    "size": "lg",
+                    "weight": "bold",
+                    "color": "#D32F2F"
                 }
             ] + [
                 {
-                    "type":"text",
-                    "text":f"• {b}",
-                    "wrap":True,
-                    "size":"md",
-                    "color":"#C62828",
-                    "weight":"bold",
-                    "margin":"xs"
+                    "type": "text",
+                    "text": f"• {b}",
+                    "wrap": True,
+                    "size": "md",
+                    "color": "#C62828",
+                    "weight": "bold",
+                    "margin": "xs"
                 }
                 for b in bullets
             ]
         }
 
         bubble = {
-            "type":"bubble",
-            "body":{
-                "type":"box",
-                "layout":"vertical",
-                "contents":[
-                    {"type":"text","text":n['title'],"weight":"bold","size":"lg","wrap":True},
-                    {"type":"text","text":f"🗓 {n['date']}","size":"xs","color":"#888888","margin":"sm"},
-                    {"type":"text","text":f"🌍 {n['site']}","size":"xs","color":"#448AFF","margin":"xs"},
-                    {"type":"text","text":f"ประเภท: {n['topic_type']} | ภูมิภาค: {n['region']}",
-                     "size":"xs","color":"#555","margin":"sm"},
+            "type": "bubble",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": n['title'], "weight": "bold", "size": "lg", "wrap": True},
+                    {"type": "text", "text": f"🗓 {n['date']}", "size": "xs", "color": "#888888", "margin": "sm"},
+                    {"type": "text", "text": f"🌍 {n['site']}", "size": "xs", "color": "#448AFF", "margin": "xs"},
+                    {
+                        "type": "text",
+                        "text": f"ประเภท: {n['topic_type']} | ภูมิภาค: {n['region']}",
+                        "size": "xs",
+                        "color": "#555555",
+                        "margin": "sm"
+                    },
                     impact_box
                 ]
             },
-            "footer":{
-                "type":"box",
-                "layout":"vertical",
-                "contents":[
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
                     {
-                        "type":"button",
-                        "style":"primary",
-                        "color":"#1DB446",
-                        "action":{"type":"uri","label":"อ่านต่อ","uri":n['link']}
+                        "type": "button",
+                        "style": "primary",
+                        "color": "#1DB446",
+                        "action": {
+                            "type": "uri",
+                            "label": "อ่านต่อ",
+                            "uri": link
+                        }
                     }
                 ]
             }
@@ -420,32 +439,40 @@ def create_flex(news_items):
         bubbles.append(bubble)
 
     return [{
-        "type":"flex",
+        "type": "flex",
         "altText": f"ข่าว ปตท. {now_txt}",
-        "contents":{
-            "type":"carousel",
+        "contents": {
+            "type": "carousel",
             "contents": bubbles
         }
     }]
 
 
 # ============================================================================================================
-# BROADCAST LINE
+# BROADCAST LINE (เพิ่ม debug payload + response body)
 # ============================================================================================================
 def send_to_line(messages):
     url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {
-        "Content-Type":"application/json",
-        "Authorization":f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
     }
 
-    for i, msg in enumerate(messages,1):
-        payload = {"messages":[msg]}
+    for i, msg in enumerate(messages, 1):
+        payload = {"messages": [msg]}
+
+        # DEBUG: แสดง payload ที่จะส่งให้ LINE
+        print("=== LINE PAYLOAD ===")
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+
         if DRY_RUN:
-            print("[DRY_RUN]", json.dumps(payload))
+            print("[DRY_RUN] ไม่ส่งจริง เพราะ DRY_RUN = true")
             continue
+
         r = S.post(url, headers=headers, json=payload, timeout=15)
         print(f"Send {i}: {r.status_code}")
+        print("Response body:", r.text)
+
         if r.status_code >= 300:
             break
 
