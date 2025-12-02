@@ -137,6 +137,61 @@ def _impact_to_bullets(text: str):
 
 
 # ============================================================================================================
+# ดึงรูปจากหน้าเว็บข่าว (og:image / twitter:image / <img> แรก)
+# ============================================================================================================
+def fetch_article_image(url: str) -> str:
+    """
+    พยายามดึง URL รูปประกอบข่าวจากหน้าเว็บจริง
+    ลำดับการหา:
+      1) meta property="og:image"
+      2) meta name="twitter:image"
+      3) <img src="..."> ตัวแรก
+    ถ้าหาไม่ได้เลย → คืน "" (ให้ไปใช้ DEFAULT_ICON_URL ทีหลัง)
+    """
+    if not url:
+        return ""
+    try:
+        r = S.get(url, timeout=TIMEOUT)
+        if r.status_code >= 400:
+            return ""
+        html = r.text
+
+        # og:image
+        m = re.search(
+            r'<meta[^>]+property=[\'"]og:image[\'"][^>]+content=[\'"]([^\'"]+)[\'"]',
+            html,
+            re.I,
+        )
+        if m:
+            return m.group(1)
+
+        # twitter:image
+        m = re.search(
+            r'<meta[^>]+name=[\'"]twitter:image[\'"][^>]+content=[\'"]([^\'"]+)[\'"]',
+            html,
+            re.I,
+        )
+        if m:
+            return m.group(1)
+
+        # <img> แรก
+        m = re.search(r'<img[^>]+src=[\'"]([^\'"]+)[\'"]', html, re.I)
+        if m:
+            src = m.group(1)
+            if src.startswith("//"):
+                parsed = urlparse(url)
+                return f"{parsed.scheme}:{src}"
+            if src.startswith("/"):
+                parsed = urlparse(url)
+                return f"{parsed.scheme}://{parsed.netloc}{src}"
+            return src
+
+        return ""
+    except Exception:
+        return ""
+
+
+# ============================================================================================================
 # CONTEXT
 # ============================================================================================================
 PTT_CONTEXT = """
@@ -411,13 +466,14 @@ def create_flex(news_items):
     for n in news_items:
         bullets = _impact_to_bullets(n.get("impact_reason", "-"))
 
-        # ตรวจลิงก์ ถ้าไม่ใช่ http(s) ให้ใช้ fallback
         link = n.get("link") or ""
         if not (isinstance(link, str) and link.startswith(("http://", "https://"))):
             link = "https://www.google.com/search?q=energy+gas+news"
 
-        # hero image (ตอนนี้ใช้ default)
-        img = DEFAULT_ICON_URL
+        # ใช้รูปจาก item["image"] ถ้ามี ไม่งั้น fallback เป็น DEFAULT_ICON_URL
+        img = n.get("image") or DEFAULT_ICON_URL
+        if not (isinstance(img, str) and img.startswith(("http://", "https://"))):
+            img = DEFAULT_ICON_URL
 
         impact_box = {
             "type": "box",
@@ -591,6 +647,15 @@ def main():
     if not final:
         print("ไม่มีข่าวใหม่")
         return
+
+    # ดึงรูปของแต่ละข่าวก่อนส่งไปสร้าง Flex
+    for n in final:
+        img = fetch_article_image(n.get("link", ""))
+        if not (isinstance(img, str) and img.startswith(("http://", "https://"))):
+            img = DEFAULT_ICON_URL
+        n["image"] = img
+        # กันโดน block / ลดโหลดเว็บ
+        time.sleep(0.5)
 
     msgs = create_flex(final)
     send_to_line(msgs)
