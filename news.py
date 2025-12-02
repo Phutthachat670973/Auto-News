@@ -66,7 +66,9 @@ def _normalize_link(url: str) -> str:
             for k, v in parse_qsl(p.query, keep_blank_values=True)
             if not (k.startswith("utm_") or k in drop)
         ]
-        return urlunparse(p._replace(scheme=scheme, netloc=netloc, query=urlencode(new_q)))
+        return urlunparse(
+            p._replace(scheme=scheme, netloc=netloc, query=urlencode(new_q))
+        )
     except Exception:
         return (url or "").strip()
 
@@ -122,7 +124,7 @@ def _impact_to_bullets(text: str):
         # ลบเลขลำดับ เช่น "1." "2)" "3 ." ออก
         s = re.sub(r"^\d+[\.\)]\s*", "", s)
 
-        # ลบดอกจันที่อาจหลงเหลือกลางประโยคแบบ ".* "
+        # ลบดอกจันที่อาจหลงเหลือแบบ ".* ..." หรือ "* ..."
         if s.startswith(".*"):
             s = s[2:].lstrip()
         if s.startswith("*"):
@@ -163,6 +165,7 @@ PTT_CONTEXT = """
 # ============================================================================================================
 GEMINI_CALLS = 0
 
+
 def call_gemini(prompt):
     global GEMINI_CALLS
     if GEMINI_CALLS >= GEMINI_DAILY_BUDGET:
@@ -176,7 +179,10 @@ def call_gemini(prompt):
             return r
         except Exception as e:
             last_error = e
-            if any(x in str(e) for x in ["429", "unavailable", "deadline", "503", "500"]) and i < MAX_RETRIES:
+            if (
+                any(x in str(e) for x in ["429", "unavailable", "deadline", "503", "500"])
+                and i < MAX_RETRIES
+            ):
                 time.sleep(5 * i)
                 continue
             raise e
@@ -221,17 +227,21 @@ def gemini_tag(news):
             "topic_type": {
                 "type": "string",
                 "enum": [
-                    "supply_disruption", "price_move", "policy",
-                    "investment", "geopolitics", "other"
-                ]
+                    "supply_disruption",
+                    "price_move",
+                    "policy",
+                    "investment",
+                    "geopolitics",
+                    "other",
+                ],
             },
             "region": {
                 "type": "string",
-                "enum": ["global", "asia", "europe", "middle_east", "us", "other"]
+                "enum": ["global", "asia", "europe", "middle_east", "us", "other"],
             },
-            "impact_reason": {"type": "string"}
+            "impact_reason": {"type": "string"},
         },
-        "required": ["summary", "topic_type", "region", "impact_reason"]
+        "required": ["summary", "topic_type", "region", "impact_reason"],
     }
 
     prompt = f"""
@@ -259,14 +269,14 @@ def gemini_tag(news):
         raw = (r.text or "").strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```(json)?", "", raw).strip()
-            raw = re.sub(r"```$","", raw).strip()
+            raw = re.sub(r"```$", "", raw).strip()
         return json.loads(raw)
     except Exception:
         return {
-            "summary": news['summary'],
+            "summary": news["summary"],
             "topic_type": "other",
             "region": "other",
-            "impact_reason": "-"
+            "impact_reason": "-",
         }
 
 
@@ -280,6 +290,7 @@ NEWS_FEEDS = [
     ("Economist", "Economy", "https://www.economist.com/latest/rss.xml"),
     ("YahooFinance", "Economy", "https://finance.yahoo.com/news/rssindex"),
 ]
+
 
 def fetch_news_window():
     now_local = datetime.now(bangkok_tz)
@@ -301,22 +312,24 @@ def fetch_news_window():
                     dt = pytz.UTC.localize(dt)
                 dt = dt.astimezone(bangkok_tz)
                 if start <= dt <= end:
-                    out.append({
-                        "site": site,
-                        "category": cat,
-                        "title": e.title,
-                        "summary": getattr(e, "summary", ""),
-                        "link": e.link,
-                        "published": dt,
-                        "date": dt.strftime("%d/%m/%Y %H:%M")
-                    })
+                    out.append(
+                        {
+                            "site": site,
+                            "category": cat,
+                            "title": e.title,
+                            "summary": getattr(e, "summary", ""),
+                            "link": e.link,
+                            "published": dt,
+                            "date": dt.strftime("%d/%m/%Y %H:%M"),
+                        }
+                    )
         except Exception:
             pass
 
     uniq = []
     seen = set()
     for n in out:
-        k = _normalize_link(n['link'])
+        k = _normalize_link(n["link"])
         if k not in seen:
             seen.add(k)
             uniq.append(n)
@@ -335,20 +348,22 @@ def group_news(news_list, min_size=3):
     out = []
     for (topic, region), items in buckets.items():
         if len(items) >= min_size:
-            items_sorted = sorted(items, key=lambda x: x['published'], reverse=True)
+            items_sorted = sorted(items, key=lambda x: x["published"], reverse=True)
             anchor = items_sorted[0]
-            out.append({
-                "is_group": True,
-                "topic_type": topic,
-                "region": region,
-                "news_items": items_sorted,
-                "title": anchor['title'],
-                "site": "หลายแหล่งข่าว",
-                "category": anchor['category'],
-                "date": anchor['date'],
-                "published": anchor['published'],
-                "link": anchor['link']
-            })
+            out.append(
+                {
+                    "is_group": True,
+                    "topic_type": topic,
+                    "region": region,
+                    "news_items": items_sorted,
+                    "title": anchor["title"],
+                    "site": "หลายแหล่งข่าว",
+                    "category": anchor["category"],
+                    "date": anchor["date"],
+                    "published": anchor["published"],
+                    "link": anchor["link"],
+                }
+            )
         else:
             out.extend(items)
     return out
@@ -358,7 +373,9 @@ def group_news(news_list, min_size=3):
 # SUMMARIZE GROUP
 # ============================================================================================================
 def gemini_group_summary(group):
-    block = "\n".join([f"- {n['title']}: {n['summary']}" for n in group['news_items']])
+    block = "\n".join(
+        [f"- {n['title']}: {n['summary']}" for n in group["news_items"]]
+    )
 
     prompt = f"""
 {PTT_CONTEXT}
@@ -377,15 +394,15 @@ def gemini_group_summary(group):
         r = call_gemini(prompt)
         raw = (r.text or "").strip()
         if raw.startswith("```"):
-            raw = re.sub(r"^```(json)?","", raw).strip()
-            raw = re.sub(r"```$","", raw).strip()
+            raw = re.sub(r"^```(json)?", "", raw).strip()
+            raw = re.sub(r"```$", "", raw).strip()
         return json.loads(raw)
     except Exception:
         return {"summary": "สรุปไม่ได้", "impact_reason": "-"}
 
 
 # ============================================================================================================
-# FLEX MESSAGE (มี hero และ bullet สะอาด ๆ)
+# FLEX MESSAGE
 # ============================================================================================================
 def create_flex(news_items):
     now_txt = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
@@ -399,7 +416,7 @@ def create_flex(news_items):
         if not (isinstance(link, str) and link.startswith(("http://", "https://"))):
             link = "https://www.google.com/search?q=energy+gas+news"
 
-        # เลือกรูป hero (ตอนนี้ใช้ default ไปก่อน)
+        # hero image (ตอนนี้ใช้ default)
         img = DEFAULT_ICON_URL
 
         impact_box = {
@@ -412,9 +429,10 @@ def create_flex(news_items):
                     "text": "ผลกระทบต่อกลุ่ม ปตท.",
                     "size": "lg",
                     "weight": "bold",
-                    "color": "#D32F2F"
+                    "color": "#D32F2F",
                 }
-            ] + [
+            ]
+            + [
                 {
                     "type": "text",
                     "text": f"• {b}",
@@ -422,10 +440,10 @@ def create_flex(news_items):
                     "size": "md",
                     "color": "#C62828",
                     "weight": "bold",
-                    "margin": "xs"
+                    "margin": "xs",
                 }
                 for b in bullets
-            ]
+            ],
         }
 
         bubble = {
@@ -436,24 +454,42 @@ def create_flex(news_items):
                 "url": img,
                 "size": "full",
                 "aspectRatio": "16:9",
-                "aspectMode": "cover"
+                "aspectMode": "cover",
             },
             "body": {
                 "type": "box",
                 "layout": "vertical",
                 "contents": [
-                    {"type": "text", "text": n['title'], "weight": "bold", "size": "lg", "wrap": True},
-                    {"type": "text", "text": f"🗓 {n['date']}", "size": "xs", "color": "#888888", "margin": "sm"},
-                    {"type": "text", "text": f"🌍 {n['site']}", "size": "xs", "color": "#448AFF", "margin": "xs"},
+                    {
+                        "type": "text",
+                        "text": n["title"],
+                        "weight": "bold",
+                        "size": "lg",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "text",
+                        "text": f"🗓 {n['date']}",
+                        "size": "xs",
+                        "color": "#888888",
+                        "margin": "sm",
+                    },
+                    {
+                        "type": "text",
+                        "text": f"🌍 {n['site']}",
+                        "size": "xs",
+                        "color": "#448AFF",
+                        "margin": "xs",
+                    },
                     {
                         "type": "text",
                         "text": f"ประเภท: {n['topic_type']} | ภูมิภาค: {n['region']}",
                         "size": "xs",
                         "color": "#555555",
-                        "margin": "sm"
+                        "margin": "sm",
                     },
-                    impact_box
-                ]
+                    impact_box,
+                ],
             },
             "footer": {
                 "type": "box",
@@ -466,22 +502,21 @@ def create_flex(news_items):
                         "action": {
                             "type": "uri",
                             "label": "อ่านต่อ",
-                            "uri": link
-                        }
+                            "uri": link,
+                        },
                     }
-                ]
-            }
+                ],
+            },
         }
         bubbles.append(bubble)
 
-    return [{
-        "type": "flex",
-        "altText": f"ข่าว ปตท. {now_txt}",
-        "contents": {
-            "type": "carousel",
-            "contents": bubbles
+    return [
+        {
+            "type": "flex",
+            "altText": f"ข่าว ปตท. {now_txt}",
+            "contents": {"type": "carousel", "contents": bubbles},
         }
-    }]
+    ]
 
 
 # ============================================================================================================
@@ -491,7 +526,7 @@ def send_to_line(messages):
     url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
     }
 
     for i, msg in enumerate(messages, 1):
@@ -521,7 +556,7 @@ def main():
 
     filtered = []
     for n in all_news:
-        n['detail'] = n['title'] if len(n['summary']) < 50 else ''
+        n["detail"] = n["title"] if len(n["summary"]) < 50 else ""
         if llm_filter(n):
             filtered.append(n)
         time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
@@ -534,9 +569,9 @@ def main():
     tagged = []
     for n in filtered:
         tag = gemini_tag(n)
-        n['topic_type'] = tag['topic_type']
-        n['region'] = tag['region']
-        n['impact_reason'] = tag['impact_reason']
+        n["topic_type"] = tag["topic_type"]
+        n["region"] = tag["region"]
+        n["impact_reason"] = tag["impact_reason"]
         tagged.append(n)
         time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
 
@@ -545,6 +580,25 @@ def main():
     for g in grouped:
         if g.get("is_group"):
             meta = gemini_group_summary(g)
-            g['impact_reason'] = meta['impact_reason']
+            g["impact_reason"] = meta["impact_reason"]
 
-    selected =
+    # เลือกไม่เกิน 10 รายการ
+    selected = grouped[:10]
+
+    sent = load_sent_links()
+    final = [n for n in selected if _normalize_link(n["link"]) not in sent]
+
+    if not final:
+        print("ไม่มีข่าวใหม่")
+        return
+
+    msgs = create_flex(final)
+    send_to_line(msgs)
+    save_sent_links([n["link"] for n in final])
+
+    print("เสร็จสิ้น")
+
+
+# ============================================================================================================
+if __name__ == "__main__":
+    main()
