@@ -35,7 +35,8 @@ model = genai.GenerativeModel(os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
 
 GEMINI_DAILY_BUDGET = int(os.getenv("GEMINI_DAILY_BUDGET", "250"))
 MAX_RETRIES = 6
-SLEEP_BETWEEN_CALLS = (6.0, 7.0)
+# ลดเวลา sleep ให้เร็วขึ้น
+SLEEP_BETWEEN_CALLS = (1.5, 2.5)
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
@@ -139,6 +140,57 @@ def _impact_to_bullets(text: str):
         bullets.append(s)
 
     return bullets or ["ไม่ระบุผลกระทบ"]
+
+
+# fallback impact สำหรับแต่ละ topic_type ถ้า LLM ไม่เขียนผลกระทบมาให้
+DEFAULT_IMPACT_BY_TOPIC = {
+    "price_move": [
+        "การเปลี่ยนแปลงราคาก๊าซหรือน้ำมันอาจส่งผลต่อต้นทุนก๊าซและ LNG ที่ ปตท. ใช้จัดหาพลังงานให้ประเทศ",
+        "จำเป็นต้องติดตามทิศทางราคาเพื่อวางแผนสัญญาจัดหาก๊าซระยะยาวและการนำเข้า LNG",
+    ],
+    "supply_disruption": [
+        "ความเสี่ยงด้านซัพพลายก๊าซ/น้ำมันอาจกระทบต่อปริมาณเชื้อเพลิงที่สามารถจัดสรรเข้าระบบท่อและโรงแยกก๊าซของประเทศ",
+        "อาจทำให้ต้องหาทางเลือกด้านซัพพลายหรือเพิ่มการนำเข้า LNG เพื่อรักษาความมั่นคงพลังงาน",
+    ],
+    "policy": [
+        "นโยบายหรือกฎระเบียบใหม่อาจส่งผลต่อต้นทุนการจัดหาก๊าซและ LNG ของ ปตท.",
+        "จำเป็นต้องประเมินผลต่อโครงสร้างราคาก๊าซในประเทศและภาระต้นทุนของภาคไฟฟ้า/อุตสาหกรรม",
+    ],
+    "investment": [
+        "โครงการลงทุนโครงสร้างพื้นฐานก๊าซหรือ LNG ใหม่อาจเปลี่ยนสมดุลซัพพลายและการแข่งขันในตลาดพลังงาน",
+        "อาจเปิดโอกาสความร่วมมือหรือเพิ่มความยืดหยุ่นในการจัดหาก๊าซของ ปตท. ในระยะยาว",
+    ],
+    "geopolitics": [
+        "ความตึงเครียดทางภูมิรัฐศาสตร์อาจเพิ่มความเสี่ยงด้านซัพพลายก๊าซและ LNG ในภูมิภาคสำคัญ",
+        "จำเป็นต้องติดตามเพื่อประเมินผลต่อเสถียรภาพราคาและความมั่นคงด้านพลังงานของประเทศ",
+    ],
+    "other": [
+        "ข่าวนี้เชื่อมโยงกับห่วงโซ่ก๊าซ/พลังงานโลกซึ่งอาจมีผลต่อสภาพตลาดและต้นทุนเชื้อเพลิงของ ปตท.",
+        "ควรใช้เป็นข้อมูลประกอบการติดตามทิศทางตลาดก๊าซและ LNG ในระยะถัดไป",
+    ],
+}
+
+
+def _apply_impact_fallback(raw_impact: str, topic_type: str) -> str:
+    """
+    ถ้า impact_reason จาก LLM ว่าง/กว้างเกินไป → ใช้ default ที่เราเตรียมไว้แทน
+    """
+    cleaned = (raw_impact or "").strip()
+    bullets = _impact_to_bullets(cleaned)
+
+    generic_bad = {"ไม่ระบุผลกระทบ", "ไม่มีผลกระทบ", "ไม่มีผลกระทบสำคัญ", "-"}
+
+    if len(bullets) == 1 and bullets[0] in generic_bad:
+        tt = topic_type or "other"
+        fallback = DEFAULT_IMPACT_BY_TOPIC.get(tt, DEFAULT_IMPACT_BY_TOPIC["other"])
+        return "\n".join(fallback)
+
+    if bullets == ["ไม่ระบุผลกระทบ"]:
+        tt = topic_type or "other"
+        fallback = DEFAULT_IMPACT_BY_TOPIC.get(tt, DEFAULT_IMPACT_BY_TOPIC["other"])
+        return "\n".join(fallback)
+
+    return cleaned
 
 
 # ============================================================================================================
@@ -354,7 +406,10 @@ def gemini_tag(news):
 
 ข้อกำหนดด้านภาษา:
 - summary: เขียนสรุปข่าวสั้น ๆ เป็นภาษาไทย 2–4 ประโยค
-- impact_reason: เขียนเป็นภาษาไทยในรูปแบบ bullet หรือหลายบรรทัด (แต่ละบรรทัด = 1 ประเด็นผลกระทบ)
+- impact_reason:
+    - เขียนเป็นภาษาไทยในรูปแบบ bullet หรือหลายบรรทัด
+    - อย่างน้อย 2 ประเด็น แต่ละประเด็น 1 บรรทัด ชัดเจนว่ากระทบอะไร อย่างไร
+    - ห้ามตอบว่า "ไม่มีผลกระทบ", "ไม่ระบุ", "-", หรือข้อความกว้าง ๆ ที่ไม่อธิบายผลกระทบจริง
 - สามารถใช้ชื่อประเทศ/บริษัท/แหล่งก๊าซ เป็นภาษาอังกฤษได้เมื่อจำเป็น
 
 ให้ตอบกลับเป็น JSON เท่านั้น ตาม schema นี้:
@@ -365,7 +420,7 @@ def gemini_tag(news):
 - topic_type: เลือกประเภทข่าวที่ใกล้เคียงที่สุด
 - region: เลือกภูมิภาคหลักที่เกี่ยวข้อง
 - impact_reason: อธิบายผลกระทบต่อห่วงโซ่ธุรกิจก๊าซของ ปตท. เช่น ต้นทุนก๊าซ, ความเสี่ยงซัพพลาย,
-                  ความมั่นคงพลังงาน, โอกาสลงทุน ฯลฯ
+                  ความมั่นคงพลังงาน, โอกาสลงทุน ฯลฯ เป็น bullet หลายบรรทัด
 """
 
     try:
@@ -495,8 +550,9 @@ def gemini_group_summary(group):
 
 ข้อกำหนดด้านภาษา:
 - summary: สรุปภาพรวมกลุ่มข่าว 3–5 ประโยค ภาษาไทย
-- impact_reason: สรุปเป็น bullet หรือหลายบรรทัดว่า กลุ่มข่าวนี้กระทบห่วงโซ่ก๊าซของ ปตท. อย่างไร
-  (เช่น ความเสี่ยง supply, โครงสร้างพื้นฐาน LNG/ท่อ/โรงแยก, นโยบายรัฐ, ราคาก๊าซ ฯลฯ)
+- impact_reason:
+    - เขียนเป็น bullet หลายบรรทัด อธิบายช่องทางผลกระทบต่อห่วงโซ่ก๊าซของ ปตท.
+    - ห้ามตอบว่า "ไม่มีผลกระทบ", "ไม่ระบุ" หรือ "-" เฉย ๆ
 
 ให้ตอบเป็น JSON รูปแบบ:
 {{
@@ -545,7 +601,7 @@ def create_flex(news_items):
                     "text": "ผลกระทบต่อกลุ่ม ปตท.",
                     "size": "lg",
                     "weight": "bold",
-                    "color": "#000000",   # เปลี่ยนจากแดงเป็นดำ
+                    "color": "#000000",
                 }
             ]
             + [
@@ -554,7 +610,7 @@ def create_flex(news_items):
                     "text": f"• {b}",
                     "wrap": True,
                     "size": "md",
-                    "color": "#000000",  # bullet เป็นสีดำ
+                    "color": "#000000",
                     "weight": "bold",
                     "margin": "xs",
                 }
@@ -687,7 +743,10 @@ def main():
         tag = gemini_tag(n)
         n["topic_type"] = tag["topic_type"]
         n["region"] = tag["region"]
-        n["impact_reason"] = tag["impact_reason"]
+        # ใช้ fallback ถ้า LLM ไม่เขียนผลกระทบมาให้ดีพอ
+        n["impact_reason"] = _apply_impact_fallback(
+            tag.get("impact_reason", ""), n["topic_type"]
+        )
         tagged.append(n)
         time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
 
@@ -696,7 +755,9 @@ def main():
     for g in grouped:
         if g.get("is_group"):
             meta = gemini_group_summary(g)
-            g["impact_reason"] = meta["impact_reason"]
+            g["impact_reason"] = _apply_impact_fallback(
+                meta.get("impact_reason", ""), g.get("topic_type", "other")
+            )
 
     # เลือกไม่เกิน 10 รายการ
     selected = grouped[:10]
