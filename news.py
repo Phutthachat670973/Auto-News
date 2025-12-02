@@ -105,7 +105,7 @@ def _impact_to_bullets(text: str):
     แปลงข้อความ impact_reason เป็น list bullet สะอาด ๆ:
       - ใช้การขึ้นบรรทัดใหม่เป็นตัวแบ่งหลัก
       - ลบสัญลักษณ์นำหน้า เช่น • * - · และเลขลำดับ 1. 2) ออก
-      - ไม่ให้มีดอกจันหลงเหลือ
+      - ตัดบรรทัดที่เป็นแค่จุด/ดอกจัน/หัวข้อเปล่าออก
     """
     if not text:
         return ["ไม่ระบุผลกระทบ"]
@@ -130,8 +130,13 @@ def _impact_to_bullets(text: str):
         if s.startswith("*"):
             s = s[1:].lstrip()
 
-        if s:
-            bullets.append(s)
+        # ถ้าเหลือแต่สัญลักษณ์สั้น ๆ เช่น ".", "..", "•" ให้ตัดทิ้ง
+        if not s:
+            continue
+        if re.fullmatch(r"[\.\-\*•·\u2022\s]{1,3}", s):
+            continue
+
+        bullets.append(s)
 
     return bullets or ["ไม่ระบุผลกระทบ"]
 
@@ -540,7 +545,7 @@ def create_flex(news_items):
                     "text": "ผลกระทบต่อกลุ่ม ปตท.",
                     "size": "lg",
                     "weight": "bold",
-                    "color": "#D32F2F",
+                    "color": "#000000",   # เปลี่ยนจากแดงเป็นดำ
                 }
             ]
             + [
@@ -549,7 +554,7 @@ def create_flex(news_items):
                     "text": f"• {b}",
                     "wrap": True,
                     "size": "md",
-                    "color": "#C62828",
+                    "color": "#000000",  # bullet เป็นสีดำ
                     "weight": "bold",
                     "margin": "xs",
                 }
