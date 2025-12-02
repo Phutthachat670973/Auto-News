@@ -540,7 +540,7 @@ def create_flex(news_items):
                     "text": "ผลกระทบต่อกลุ่ม ปตท.",
                     "size": "lg",
                     "weight": "bold",
-                    "color": "#D32F2F",
+                    "color": "#000000",  # เปลี่ยนเป็นสีดำ
                 }
             ]
             + [
@@ -549,7 +549,7 @@ def create_flex(news_items):
                     "text": f"• {b}",
                     "wrap": True,
                     "size": "md",
-                    "color": "#C62828",
+                    "color": "#000000",  # เปลี่ยนเป็นสีดำ
                     "weight": "bold",
                     "margin": "xs",
                 }
