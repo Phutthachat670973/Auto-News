@@ -441,7 +441,7 @@ def gemini_tag(news):
 
 
 # ============================================================================================================
-# FETCH NEWS
+# FETCH NEWS (ย้อนหลัง 24 ชั่วโมง)
 # ============================================================================================================
 NEWS_FEEDS = [
     ("Oilprice", "Energy", "https://oilprice.com/rss/main"),
@@ -453,11 +453,12 @@ NEWS_FEEDS = [
 
 
 def fetch_news_window():
+    """
+    ดึงข่าวย้อนหลังทั้งวัน (24 ชั่วโมงล่าสุด นับจากตอนรันสคริปต์)
+    """
     now_local = datetime.now(bangkok_tz)
-    start = (now_local - timedelta(days=1)).replace(
-        hour=21, minute=0, second=0, microsecond=0
-    )
-    end = now_local.replace(hour=6, minute=0, second=0, microsecond=0)
+    start = now_local - timedelta(days=1)  # ย้อนหลัง 24 ชั่วโมง
+    end = now_local
 
     out = []
     for site, cat, url in NEWS_FEEDS:
@@ -471,6 +472,7 @@ def fetch_news_window():
                 if dt.tzinfo is None:
                     dt = pytz.UTC.localize(dt)
                 dt = dt.astimezone(bangkok_tz)
+
                 if start <= dt <= end:
                     out.append(
                         {
@@ -486,6 +488,7 @@ def fetch_news_window():
         except Exception:
             pass
 
+    # เอา duplicate link ออก
     uniq = []
     seen = set()
     for n in out:
@@ -772,7 +775,7 @@ def main():
         if g.get("is_group"):
             meta = gemini_group_summary(g)
             g["impact_reason"] = meta["impact_reason"]
-            # group-level related_projects (union ลูก ๆ) – option เสริม
+            # group-level related_projects (union ลูก ๆ)
             proj_set = []
             for item in g.get("news_items", []):
                 for p in item.get("related_projects", []):
