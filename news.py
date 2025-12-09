@@ -500,32 +500,14 @@ def gemini_tag(news):
 
 
 # ============================================================================================================
-# FETCH NEWS (ช่วง 21:00 – 06:00)
+# FETCH NEWS (ช่วง 21:00 – 06:00) – ใช้เฉพาะ 5 RSS เดิม
 # ============================================================================================================
 NEWS_FEEDS = [
-    # เดิม
     ("Oilprice", "Energy", "https://oilprice.com/rss/main"),
     ("CleanTechnica", "Energy", "https://cleantechnica.com/feed/"),
     ("HydrogenFuelNews", "Energy", "https://www.hydrogenfuelnews.com/feed/"),
     ("Economist", "Economy", "https://www.economist.com/latest/rss.xml"),
     ("YahooFinance", "Economy", "https://finance.yahoo.com/news/rssindex"),
-
-    # แหล่งข่าวใหม่
-    ("UpstreamOnline", "Company", "https://www.upstreamonline.com/rss_companynews"),
-    (
-        "GoogleNews_PTTEP",
-        "Company",
-        "https://news.google.com/rss/search?q=PTTEP&hl=en-US&gl=US&ceid=US:en",
-    ),
-    (
-        "GoogleNews_PTTEP_Projects",
-        "Projects",
-        "https://news.google.com/rss/search?q="
-        "%22G1/61%22+OR+%22G2/61%22+OR+Arthit+%22gas+field%22+OR+"
-        "%22Hassi+Bir+Rekaiz%22+OR+%22Mozambique+Area+1%22+OR+"
-        "%22Ghasha+concession%22+OR+%22Block+61%22+%22Oman%22+OR+"
-        "%22SK410B%22+PTTEP&hl=en-US&gl=US&ceid=US:en",
-    ),
 ]
 
 
