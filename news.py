@@ -441,24 +441,49 @@ def gemini_tag(news):
 
 
 # ============================================================================================================
-# FETCH NEWS (ย้อนหลัง 24 ชั่วโมง)
+# FETCH NEWS (ช่วง 21:00 – 06:00)
 # ============================================================================================================
 NEWS_FEEDS = [
+    # เดิม
     ("Oilprice", "Energy", "https://oilprice.com/rss/main"),
     ("CleanTechnica", "Energy", "https://cleantechnica.com/feed/"),
     ("HydrogenFuelNews", "Energy", "https://www.hydrogenfuelnews.com/feed/"),
     ("Economist", "Economy", "https://www.economist.com/latest/rss.xml"),
     ("YahooFinance", "Economy", "https://finance.yahoo.com/news/rssindex"),
+
+    # แหล่งข่าวใหม่
+    ("UpstreamOnline", "Company", "https://www.upstreamonline.com/rss_companynews"),
+    (
+        "GoogleNews_PTTEP",
+        "Company",
+        "https://news.google.com/rss/search?q=PTTEP&hl=en-US&gl=US&ceid=US:en",
+    ),
+    (
+        "GoogleNews_PTTEP_Projects",
+        "Projects",
+        "https://news.google.com/rss/search?q="
+        "%22G1/61%22+OR+%22G2/61%22+OR+Arthit+%22gas+field%22+OR+"
+        "%22Hassi+Bir+Rekaiz%22+OR+%22Mozambique+Area+1%22+OR+"
+        "%22Ghasha+concession%22+OR+%22Block+61%22+%22Oman%22+OR+"
+        "%22SK410B%22+PTTEP&hl=en-US&gl=US&ceid=US:en",
+    ),
 ]
 
 
 def fetch_news_window():
     """
-    ดึงข่าวย้อนหลังทั้งวัน (24 ชั่วโมงล่าสุด นับจากตอนรันสคริปต์)
+    ดึงข่าวเฉพาะช่วงเวลา 21:00 ของเมื่อวาน ถึง 06:00 ของวันนี้ (ตามเวลา กรุงเทพฯ)
+
+    ถ้า run หลัง 06:00 -> จะถือว่าดู "เมื่อคืน 3 ทุ่ม ถึงเช้าวันนี้ 6 โมง" เสมอ
     """
     now_local = datetime.now(bangkok_tz)
-    start = now_local - timedelta(days=1)  # ย้อนหลัง 24 ชั่วโมง
-    end = now_local
+
+    # start = 21:00 ของเมื่อวาน
+    start = (now_local - timedelta(days=1)).replace(
+        hour=21, minute=0, second=0, microsecond=0
+    )
+    # end = 06:00 ของวันนี้
+    end = now_local.replace(hour=6, minute=0, second=0, microsecond=0)
 
     out = []
     for site, cat, url in NEWS_FEEDS:
