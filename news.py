@@ -109,16 +109,21 @@ def get_sent_links_file(date=None):
 
 
 def load_sent_links():
+    """
+    โหลดลิงก์ข่าวที่เคยส่ง 'ในวันนี้' เพื่อกันส่งซ้ำในวันเดียวกันเท่านั้น
+    (ไม่ย้อนกลับไปดูเมื่อวานแล้ว)
+    """
     sent = set()
-    for i in range(2):
-        d = (now - timedelta(days=i)).strftime("%Y-%m-%d")
-        p = get_sent_links_file(d)
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                for line in f:
-                    u = _normalize_link(line.strip())
-                    if u:
-                        sent.add(u)
+    today_str = datetime.now(bangkok_tz).strftime("%Y-%m-%d")
+    p = get_sent_links_file(today_str)
+
+    if os.path.exists(p):
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                u = _normalize_link(line.strip())
+                if u:
+                    sent.add(u)
+
     return sent
 
 
