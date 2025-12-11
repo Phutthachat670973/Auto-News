@@ -35,8 +35,14 @@ model = genai.GenerativeModel(os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
 
 GEMINI_DAILY_BUDGET = int(os.getenv("GEMINI_DAILY_BUDGET", "250"))
 MAX_RETRIES = 6
-SLEEP_BETWEEN_CALLS = (6.0, 7.0)
+
+# ลดเวลา sleep ลงให้เร็วขึ้น
+SLEEP_BETWEEN_CALLS = (2.0, 3.0)
+
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
+
+# จำกัดจำนวนข่าวต่อรัน (กัน LLM ใช้เวลานาน)
+MAX_NEWS_PER_RUN = int(os.getenv("MAX_NEWS_PER_RUN", "80"))
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 now = datetime.now(bangkok_tz)
@@ -50,6 +56,23 @@ os.makedirs(SENT_LINKS_DIR, exist_ok=True)
 
 # รูป default สำหรับ hero ถ้าไม่มีรูปข่าวจริง ๆ
 DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
+
+# คีย์เวิร์ดไว้กรองข่าวรอบแรกก่อนเรียก LLM (ช่วยลดเวลามาก)
+KEYWORD_SUBSTRINGS = [
+    "gas",
+    "natural gas",
+    "lng",
+    "liquefied natural gas",
+    "pipeline",
+    "lpg",
+    "ngv",
+    "fsru",
+    "regasification",
+    "gas field",
+    "gas supply",
+    "gas export",
+    "gas import",
+]
 
 
 # ============================================================================================================
@@ -138,19 +161,20 @@ def _impact_to_bullets(text: str):
     return bullets or ["ไม่ระบุผลกระทบ"]
 
 
+def keyword_pre_filter(news):
+    """
+    กรองข่าวรอบแรกด้วย keyword ง่าย ๆ เพื่อลดจำนวนที่ต้องส่งเข้า LLM
+    """
+    text = (news.get("title", "") + " " + news.get("summary", "")).lower()
+    return any(k in text for k in KEYWORD_SUBSTRINGS)
+
+
 # ============================================================================================================
 # ดึงรูปจากหน้าเว็บข่าว (og:image / twitter:image / <img> แรก)
 # ============================================================================================================
 def fetch_article_image(url: str) -> str:
     """
     พยายามดึง URL รูปประกอบข่าวจากหน้าเว็บจริง
-
-    ลำดับการหา:
-      1) meta property="og:image"
-      2) meta name="twitter:image"
-      3) <img src="..."> ตัวแรก
-
-    ถ้าหาไม่ได้เลย → คืน "" (ให้ไปใช้ DEFAULT_ICON_URL ทีหลัง)
     """
     if not url:
         return ""
@@ -315,7 +339,7 @@ def llm_filter(news):
 
 
 # ============================================================================================================
-# TAG ข่าว (ไม่มีบริษัทลูก)
+# TAG ข่าว
 # ============================================================================================================
 def gemini_tag(news):
     """
@@ -363,12 +387,6 @@ def gemini_tag(news):
 
 ให้ตอบกลับเป็น JSON เท่านั้น ตาม schema นี้:
 {json.dumps(schema, ensure_ascii=False)}
-
-คำอธิบาย field:
-- summary: สรุปว่าเกิดอะไร ที่ไหน เกี่ยวกับก๊าซ / LNG / น้ำมัน / โครงสร้างพื้นฐาน หรือการกำกับดูแลอย่างไร
-- topic_type: เลือกประเภทข่าวที่ใกล้เคียงที่สุด
-- region: เลือกภูมิภาคหลักที่เกี่ยวข้อง
-- impact_reason: อธิบายผลกระทบต่อห่วงโซ่ธุรกิจก๊าซของ ปตท. เช่น ต้นทุนก๊าซ, ความเสี่ยงซัพพลาย, ความมั่นคงพลังงาน, โอกาสลงทุน ฯลฯ
 """
 
     try:
@@ -491,9 +509,6 @@ def group_news(news_list, min_size=3):
 # SUMMARIZE GROUP
 # ============================================================================================================
 def gemini_group_summary(group):
-    """
-    สรุปภาพรวมของกลุ่มข่าวที่อยู่ใน topic_type + region เดียวกัน
-    """
     block = "\n".join(
         [f"- {n['title']}: {n['summary']}" for n in group["news_items"]]
     )
@@ -502,7 +517,6 @@ def gemini_group_summary(group):
 {PTT_CONTEXT}
 
 บทบาทของคุณ: Analyst ที่ต้องสรุป "ภาพรวมของกลุ่มข่าว" ให้ผู้บริหารด้านก๊าซของ ปตท.
-เป้าหมาย: อ่านบับเบิลนี้แล้วเข้าใจว่าในประเด็นนี้ (topic + region) มีอะไรเกิดขึ้นกับห่วงโซ่ก๊าซบ้าง
 
 กลุ่มข่าว (หัวข้อ + สรุปย่อย):
 {block}
@@ -510,7 +524,6 @@ def gemini_group_summary(group):
 ข้อกำหนดด้านภาษา:
 - summary: สรุปภาพรวมกลุ่มข่าว 3–5 ประโยค ภาษาไทย
 - impact_reason: สรุปเป็น bullet หรือหลายบรรทัดว่า กลุ่มข่าวนี้กระทบห่วงโซ่ก๊าซของ ปตท. อย่างไร
-  (เช่น ความเสี่ยง supply, โครงสร้างพื้นฐาน LNG/ท่อ/โรงแยก, นโยบายรัฐ, ราคาก๊าซ ฯลฯ)
 
 ให้ตอบเป็น JSON รูปแบบ:
 {{
@@ -523,7 +536,6 @@ def gemini_group_summary(group):
         r = call_gemini(prompt)
         raw = (r.text or "").strip()
 
-        # ตัด ``` หรือ ```json ออกถ้ามี
         if raw.startswith("```"):
             raw = re.sub(r"^```(json)?", "", raw).strip()
             raw = re.sub(r"```$", "", raw).strip()
@@ -547,12 +559,10 @@ def create_flex(news_items):
         if not (isinstance(link, str) and link.startswith(("http://", "https://"))):
             link = "https://www.google.com/search?q=energy+gas+news"
 
-        # ใช้รูปจาก item["image"] ถ้ามี ไม่งั้น fallback เป็น DEFAULT_ICON_URL
         img = n.get("image") or DEFAULT_ICON_URL
         if not (isinstance(img, str) and img.startswith(("http://", "https://"))):
             img = DEFAULT_ICON_URL
 
-        # --------- สร้าง body contents หลัก ----------
         body_contents = [
             {
                 "type": "text",
@@ -584,7 +594,7 @@ def create_flex(news_items):
             },
         ]
 
-        # ⭐ สรุปข่าว – ใช้ summary_llm ก่อน ถ้าไม่มีค่อยใช้ summary จาก RSS
+        # สรุปข่าวจาก LLM (หรือ summary เดิม)
         summary_txt = (
             n.get("summary_llm")
             or n.get("summary")
@@ -592,7 +602,6 @@ def create_flex(news_items):
         ).strip()
 
         if summary_txt:
-            # กันไม่ให้ยาวเกินจน Flex error
             if len(summary_txt) > 260:
                 summary_txt = summary_txt[:257] + "..."
 
@@ -606,7 +615,6 @@ def create_flex(news_items):
                 }
             )
 
-        # --------- กล่องผลกระทบ ----------
         impact_box = {
             "type": "box",
             "layout": "vertical",
@@ -617,7 +625,7 @@ def create_flex(news_items):
                     "text": "ผลกระทบต่อกลุ่ม ปตท.",
                     "size": "lg",
                     "weight": "bold",
-                    "color": "#000000",  # สีดำ
+                    "color": "#000000",
                 }
             ]
             + [
@@ -626,7 +634,7 @@ def create_flex(news_items):
                     "text": f"• {b}",
                     "wrap": True,
                     "size": "md",
-                    "color": "#000000",  # สีดำ
+                    "color": "#000000",
                     "weight": "bold",
                     "margin": "xs",
                 }
@@ -693,7 +701,6 @@ def send_to_line(messages):
     for i, msg in enumerate(messages, 1):
         payload = {"messages": [msg]}
 
-        # debug
         print("=== LINE PAYLOAD ===")
         print(json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -714,12 +721,22 @@ def send_to_line(messages):
 # ============================================================================================================
 def main():
     print("ดึงข่าว...")
-    all_news = fetch_news_window()
-    print("จำนวนข่าวดิบทั้งหมด:", len(all_news))
+    all_news_raw = fetch_news_window()
+    print("จำนวนข่าวดิบทั้งหมด:", len(all_news_raw))
+
+    # keyword pre-filter
+    candidates = [n for n in all_news_raw if keyword_pre_filter(n)]
+    print("หลัง keyword pre-filter:", len(candidates))
+
+    # จำกัดไม่เกิน MAX_NEWS_PER_RUN
+    if len(candidates) > MAX_NEWS_PER_RUN:
+        candidates = candidates[:MAX_NEWS_PER_RUN]
+        print(f"ตัดให้เหลือ {len(candidates)} ข่าวแรกสำหรับ LLM (MAX_NEWS_PER_RUN)")
+
+    all_news = candidates
 
     filtered = []
     for n in all_news:
-        # ถ้า summary สั้นมาก ให้โยน title ไปใน detail เพื่อช่วย LLM
         n["detail"] = n["title"] if len(n["summary"]) < 50 else ""
         if llm_filter(n):
             filtered.append(n)
@@ -736,11 +753,9 @@ def main():
     for n in filtered:
         tag = gemini_tag(n)
 
-        # เก็บข้อมูลจาก LLM
         n["topic_type"] = tag.get("topic_type", "other")
         n["region"] = tag.get("region", "other")
         n["impact_reason"] = tag.get("impact_reason", "-")
-        # สรุปข่าวจาก LLM (fallback เป็น summary เดิมหรือหัวข้อ)
         n["summary_llm"] = (
             tag.get("summary")
             or n.get("summary")
@@ -753,14 +768,12 @@ def main():
     grouped = group_news(tagged)
     print("หลัง group:", len(grouped))
 
-    # เติม summary & impact_reason ให้กลุ่มข่าว
     for g in grouped:
         if g.get("is_group"):
             meta = gemini_group_summary(g)
             g["summary_llm"] = meta.get("summary", "")
             g["impact_reason"] = meta.get("impact_reason", "-")
 
-    # เลือกไม่เกิน 10 รายการ
     selected = grouped[:10]
 
     sent = load_sent_links()
@@ -771,13 +784,11 @@ def main():
         print("ไม่มีข่าวใหม่")
         return
 
-    # ดึงรูปของแต่ละข่าวก่อนส่งไปสร้าง Flex
     for n in final:
         img = fetch_article_image(n.get("link", ""))
         if not (isinstance(img, str) and img.startswith(("http://", "https://"))):
             img = DEFAULT_ICON_URL
         n["image"] = img
-        # กันโดน block / ลดโหลดเว็บ
         time.sleep(0.5)
 
     msgs = create_flex(final)
