@@ -552,6 +552,61 @@ def create_flex(news_items):
         if not (isinstance(img, str) and img.startswith(("http://", "https://"))):
             img = DEFAULT_ICON_URL
 
+        # --------- สร้าง body contents หลัก ----------
+        body_contents = [
+            {
+                "type": "text",
+                "text": n["title"],
+                "weight": "bold",
+                "size": "lg",
+                "wrap": True,
+            },
+            {
+                "type": "text",
+                "text": f"🗓 {n['date']}",
+                "size": "xs",
+                "color": "#888888",
+                "margin": "sm",
+            },
+            {
+                "type": "text",
+                "text": f"🌍 {n['site']}",
+                "size": "xs",
+                "color": "#448AFF",
+                "margin": "xs",
+            },
+            {
+                "type": "text",
+                "text": f"ประเภท: {n['topic_type']} | ภูมิภาค: {n['region']}",
+                "size": "xs",
+                "color": "#555555",
+                "margin": "sm",
+            },
+        ]
+
+        # ⭐ สรุปข่าว – ใช้ summary_llm ก่อน ถ้าไม่มีค่อยใช้ summary จาก RSS
+        summary_txt = (
+            n.get("summary_llm")
+            or n.get("summary")
+            or ""
+        ).strip()
+
+        if summary_txt:
+            # กันไม่ให้ยาวเกินจน Flex error
+            if len(summary_txt) > 260:
+                summary_txt = summary_txt[:257] + "..."
+
+            body_contents.append(
+                {
+                    "type": "text",
+                    "text": summary_txt,
+                    "wrap": True,
+                    "size": "sm",
+                    "margin": "md",
+                }
+            )
+
+        # --------- กล่องผลกระทบ ----------
         impact_box = {
             "type": "box",
             "layout": "vertical",
@@ -579,6 +634,8 @@ def create_flex(news_items):
             ],
         }
 
+        body_contents.append(impact_box)
+
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -592,37 +649,7 @@ def create_flex(news_items):
             "body": {
                 "type": "box",
                 "layout": "vertical",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": n["title"],
-                        "weight": "bold",
-                        "size": "lg",
-                        "wrap": True,
-                    },
-                    {
-                        "type": "text",
-                        "text": f"🗓 {n['date']}",
-                        "size": "xs",
-                        "color": "#888888",
-                        "margin": "sm",
-                    },
-                    {
-                        "type": "text",
-                        "text": f"🌍 {n['site']}",
-                        "size": "xs",
-                        "color": "#448AFF",
-                        "margin": "xs",
-                    },
-                    {
-                        "type": "text",
-                        "text": f"ประเภท: {n['topic_type']} | ภูมิภาค: {n['region']}",
-                        "size": "xs",
-                        "color": "#555555",
-                        "margin": "sm",
-                    },
-                    impact_box,
-                ],
+                "contents": body_contents,
             },
             "footer": {
                 "type": "box",
@@ -688,41 +715,57 @@ def send_to_line(messages):
 def main():
     print("ดึงข่าว...")
     all_news = fetch_news_window()
+    print("จำนวนข่าวดิบทั้งหมด:", len(all_news))
 
     filtered = []
     for n in all_news:
+        # ถ้า summary สั้นมาก ให้โยน title ไปใน detail เพื่อช่วย LLM
         n["detail"] = n["title"] if len(n["summary"]) < 50 else ""
         if llm_filter(n):
             filtered.append(n)
         time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
 
+    print("ผ่าน llm_filter:", len(filtered))
+
     if not filtered:
         print("ไม่มีข่าวเกี่ยวข้อง")
         return
 
-    print("วิเคราะห์ข่าวด้วย LLM...")
+    print("วิเคราะห์ข่าวด้วย LLM (tag + summary)...")
     tagged = []
     for n in filtered:
         tag = gemini_tag(n)
-        n["topic_type"] = tag["topic_type"]
-        n["region"] = tag["region"]
-        n["impact_reason"] = tag["impact_reason"]
+
+        # เก็บข้อมูลจาก LLM
+        n["topic_type"] = tag.get("topic_type", "other")
+        n["region"] = tag.get("region", "other")
+        n["impact_reason"] = tag.get("impact_reason", "-")
+        # สรุปข่าวจาก LLM (fallback เป็น summary เดิมหรือหัวข้อ)
+        n["summary_llm"] = (
+            tag.get("summary")
+            or n.get("summary")
+            or n["title"]
+        )
+
         tagged.append(n)
         time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
 
     grouped = group_news(tagged)
+    print("หลัง group:", len(grouped))
 
-    # เติม impact_reason ให้กลุ่มข่าว
+    # เติม summary & impact_reason ให้กลุ่มข่าว
     for g in grouped:
         if g.get("is_group"):
             meta = gemini_group_summary(g)
-            g["impact_reason"] = meta["impact_reason"]
+            g["summary_llm"] = meta.get("summary", "")
+            g["impact_reason"] = meta.get("impact_reason", "-")
 
     # เลือกไม่เกิน 10 รายการ
     selected = grouped[:10]
 
     sent = load_sent_links()
     final = [n for n in selected if _normalize_link(n["link"]) not in sent]
+    print("หลังตัดของเก่า:", len(final))
 
     if not final:
         print("ไม่มีข่าวใหม่")
