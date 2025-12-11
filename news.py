@@ -164,6 +164,28 @@ def _impact_to_bullets(text: str):
     return bullets or ["ไม่ระบุผลกระทบต่อโครงการของ PTTEP"]
 
 
+def has_meaningful_impact(impact_text: str) -> bool:
+    """
+    คืนค่า False ถ้า impact_text เป็นเพียงข้อความแบบ
+    'ยังไม่พบผลกระทบโดยตรงต่อโครงการของ PTTEP' (หรือใกล้เคียง)
+    เพื่อกันไม่ให้สร้างการ์ดข่าวที่ไม่มี insight จริง
+    """
+    if not impact_text:
+        return False
+
+    t = impact_text.lower().replace(" ", "")
+    patterns = [
+        "ยังไม่พบผลกระทบโดยตรงต่อโครงการของpttep",
+        "ไม่พบผลกระทบโดยตรงต่อโครงการของpttep",
+        "ยังไม่พบผลกระทบต่อโครงการของpttep",
+    ]
+    for p in patterns:
+        if p in t:
+            return False
+
+    return True
+
+
 def keyword_pre_filter(news):
     """
     กรองข่าวรอบแรกด้วย keyword ง่าย ๆ เพื่อลดจำนวนที่ต้องส่งเข้า LLM
@@ -388,7 +410,7 @@ def llm_filter(news):
 
 
 # ============================================================================================================
-# TAG ข่าว (สรุป + ประเภท + ภูมิภาค + ผลกระทบต่อโครงการเท่านั้น)
+# TAG ข่าว (ระบุประเทศ / โครงการ + ผลกระทบต่อโครงการเท่านั้น)
 # ============================================================================================================
 def gemini_tag(news):
     """
@@ -445,7 +467,6 @@ def gemini_tag(news):
   - เขียนเป็นภาษาไทยในรูปแบบ bullet หรือหลายบรรทัด
     *แต่ละบรรทัด = 1 ประเด็น* เฉพาะ "ผลกระทบต่อโครงการของ PTTEP"
   - ให้พยายามอ้างอิงชื่อประเทศ / บล็อก / โครงการจาก [PTTEP_PROJECTS_CONTEXT]
-    เช่น G1/61, G2/61, Zawtika, Mozambique Area 1, Ghasha ฯลฯ
   - ถ้ายัง "ไม่พบผลกระทบโดยตรง" ให้เขียนชัดเจน เช่น
     • ขณะนี้ยังไม่พบผลกระทบโดยตรงต่อโครงการของ PTTEP แต่ควรติดตามสถานการณ์อย่างใกล้ชิด
 
@@ -686,7 +707,7 @@ def create_flex(news_items):
             },
         ]
 
-        # ไม่แสดง summary แล้ว (เอาออกตามที่ขอ)
+        # ไม่แสดง summary_llm แล้ว
 
         impact_box = {
             "type": "box",
@@ -833,8 +854,17 @@ def main():
         n["country"] = tag.get("country", "")
         n["projects"] = tag.get("projects", [])
 
+        # ถ้า impact ไม่มีสาระ (แค่บอกว่า "ยังไม่พบผลกระทบ...") → ข้ามข่าวนี้ไปเลย
+        if not has_meaningful_impact(n["impact_reason"]):
+            continue
+
         tagged.append(n)
         time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
+
+    print("จำนวนข่าวที่มีผลกระทบต่อโครงการจริง ๆ:", len(tagged))
+    if not tagged:
+        print("ไม่มีข่าวที่มีผลกระทบต่อโครงการของ PTTEP อย่างชัดเจน")
+        return
 
     grouped = group_news(tagged)
     print("หลัง group:", len(grouped))
@@ -846,7 +876,7 @@ def main():
             g["impact_reason"] = meta.get(
                 "impact_reason", "ยังไม่พบผลกระทบโดยตรงต่อโครงการของ PTTEP"
             )
-            # group card: country / project จะใช้คำว่า หลายประเทศ / หลายโครงการ ใน create_flex
+            # group card: country / project จะใช้ข้อความ "หลายประเทศ / หลายโครงการ" ใน create_flex
 
     selected = grouped[:10]
 
