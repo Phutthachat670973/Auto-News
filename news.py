@@ -36,10 +36,13 @@ model = genai.GenerativeModel(os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
 GEMINI_DAILY_BUDGET = int(os.getenv("GEMINI_DAILY_BUDGET", "250"))
 MAX_RETRIES = 6
 
-# ลดเวลา sleep ลงให้เร็วขึ้น
-SLEEP_BETWEEN_CALLS = (2.0, 3.0)
+# ให้เรียก LLM เร็วขึ้นหน่อย
+SLEEP_BETWEEN_CALLS = (1.0, 2.0)
 
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
+
+# จำกัดจำนวนข่าวต่อรัน (เน้นข่าวล่าสุด)
+MAX_NEWS_PER_RUN = int(os.getenv("MAX_NEWS_PER_RUN", "40"))
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 now = datetime.now(bangkok_tz)
@@ -236,56 +239,52 @@ PTTEP_PROJECTS_CONTEXT = r"""
 [PTTEP_PROJECTS_CONTEXT]
 
 ประเทศไทย (Thailand)
-- โครงการ G1/61 (Erawan, Platong, Satun, Funan) – แหล่งก๊าซธรรมชาติหลักในอ่าวไทย
-- โครงการ G2/61 (Bongkot และแหล่งใกล้เคียง) – แหล่งก๊าซธรรมชาติในอ่าวไทย
-- โครงการ Arthit – แหล่งก๊าซธรรมชาติในอ่าวไทย (มีการผลักดันโครงการ CCS ที่นี่)
-- โครงการ S1 – แหล่งปิโตรเลียมบนบกขนาดใหญ่ในไทย
-- โครงการ Contract 4 – แหล่งก๊าซในอ่าวไทยที่ PTTEP ร่วมลงทุน
-- โครงการ B8/32 และ 9A – แหล่งก๊าซ/น้ำมันในอ่าวไทยที่ PTTEP ร่วมลงทุน
-- โครงการ Sinphuhorm – แหล่งก๊าซธรรมชาติในภาคตะวันออกเฉียงเหนือของไทย
-- โครงการ MTJDA Block A-18 – แหล่งก๊าซในเขตพัฒนาร่วมไทย–มาเลเซีย
+- โครงการ G1/61 (Erawan, Platong, Satun, Funan)
+- โครงการ G2/61 (Bongkot และแหล่งใกล้เคียง)
+- โครงการ Arthit
+- โครงการ S1
+- โครงการ Contract 4
+- โครงการ B8/32 และ 9A
+- โครงการ Sinphuhorm
+- โครงการ MTJDA Block A-18
 
 เมียนมา (Myanmar)
-- โครงการ Zawtika – แหล่งก๊าซในอ่าวมอดตะมะ ส่งก๊าซเข้าไทยผ่านท่อส่ง
-- โครงการ Yadana – แหล่งก๊าซในทะเลอันดามันที่ PTTEP เป็นผู้ดำเนินการ
-- โครงการ Yetagun – แหล่งก๊าซในทะเลอันดามันที่ PTTEP เป็นผู้ร่วมทุน
+- โครงการ Zawtika
+- โครงการ Yadana
+- โครงการ Yetagun
 
 เวียดนาม (Vietnam)
-- Block B & 48/95 และ Block 52/97 – โครงการก๊าซนอกชายฝั่งภาคใต้เวียดนาม
-- โครงการ 16-1 (Te Giac Trang) – แหล่งน้ำมัน/ก๊าซในทะเลเวียดนามตอนใต้ที่ PTTEP ร่วมลงทุน
+- Block B & 48/95, Block 52/97
+- โครงการ 16-1 (Te Giac Trang)
 
 มาเลเซีย (Malaysia)
-- MTJDA Block A-18 – พื้นที่พัฒนาร่วมไทย–มาเลเซีย
-- โครงการในมาเลเซียอื่น ๆ เช่น SK309, SK311, SK410B ฯลฯ – แหล่งก๊าซนอกชายฝั่งที่ PTTEP เป็นผู้ร่วมทุนหรือผู้ดำเนินการ
+- MTJDA Block A-18
+- บล็อกอื่น ๆ เช่น SK309, SK311, SK410B
 
 อินโดนีเซีย (Indonesia)
-- โครงการ South Sageri, South Mandar, Malunda และบล็อกอื่น ๆ – โครงการสำรวจ/พัฒนาแหล่งก๊าซนอกชายฝั่ง
+- South Sageri, South Mandar, Malunda ฯลฯ
 
-สหรัฐอาหรับเอมิเรตส์ (United Arab Emirates – UAE)
-- โครงการ Ghasha Concession – โครงการ sour gas ขนาดใหญ่ของ UAE ที่ PTTEP ร่วมลงทุน
-- โครงการ Abu Dhabi Offshore – โครงการสำรวจและผลิตก๊าซ/น้ำมันนอกชายฝั่งในอาบูดาบี
+สหรัฐอาหรับเอมิเรตส์ (UAE)
+- Ghasha Concession
+- Abu Dhabi Offshore
 
 โอมาน (Oman)
-- โครงการ Oman Block 12 – โครงการสำรวจและผลิตปิโตรเลียมบนบกในโอมาน
+- Oman Block 12
 
 แอลจีเรีย (Algeria)
-- โครงการ Bir Seba, Hirad, Touat ฯลฯ – โครงการน้ำมัน/ก๊าซบนบกร่วมกับ SONATRACH และพันธมิตร
+- Bir Seba, Hirad, Touat ฯลฯ
 
 โมซัมบิก (Mozambique)
-- โครงการ Mozambique Area 1 (Rovuma LNG) – โครงการก๊าซและ LNG ขนาดใหญ่ในแอฟริกาตะวันออกที่ PTTEP ร่วมลงทุน
+- Mozambique Area 1 (Rovuma LNG)
 
 ออสเตรเลีย (Australia)
-- โครงการ Montara – แหล่งน้ำมันนอกชายฝั่งทางเหนือของออสเตรเลีย
-- โครงการอื่น ๆ ใน Timor Sea / Browse Basin ผ่าน PTTEP Australasia
+- Montara และโครงการอื่นใน Timor Sea / Browse Basin
 
 บราซิล (Brazil)
-- โครงการ BM-ES-23, BM-ES-24 และบล็อกอื่น ๆ – โครงการสำรวจและผลิตน้ำมันนอกชายฝั่งที่ PTTEP ร่วมลงทุน
+- BM-ES-23, BM-ES-24 ฯลฯ
 
 เม็กซิโก (Mexico)
-- โครงการ Mexico Block 12 (2.4) และบล็อกอื่น ๆ – โครงการสำรวจบ่อทะเลลึกในอ่าวเม็กซิโก
-
-ประเทศอื่น ๆ
-- PTTEP ยังมีการสำรวจ/ลงทุนในประเทศอื่น เช่น คาซัคสถาน แองโกลา แคนาดา ฯลฯ ผ่านบริษัทย่อย
+- Mexico Block 12 (2.4) และบล็อกอื่น ๆ
 """
 
 
@@ -321,77 +320,18 @@ def call_gemini(prompt):
 
 
 # ============================================================================================================
-# FILTER → ข่าวมีผลต่อ "โครงการ PTTEP / โครงการร่วมทุน" หรือไม่
+# GEMINI TAG + FILTER (รวมสองอย่างในทีเดียว)
 # ============================================================================================================
-def llm_filter(news):
+def gemini_tag_and_filter(news):
     """
-    ใช้ LLM ช่วยตอบว่า
-    ข่าวนี้มีผลกระทบเชิงสาระสำคัญต่อ "โครงการสำรวจและผลิต/ก๊าซ" ของ PTTEP
-    และ/หรือโครงการร่วมทุนกับพันธมิตร (ผู้ร่วมทุน) ในประเทศต่าง ๆ หรือไม่
-    """
-    prompt = f"""
-{PTT_CONTEXT}
-{PTTEP_PROJECTS_CONTEXT}
-
-[พันธมิตร / ผู้ร่วมทุนที่พบบ่อย]
-- บริษัทน้ำมันและก๊าซข้ามชาติ เช่น Chevron, ExxonMobil, TotalEnergies, Shell, BP, ENI,
-  Sonatrach, Petrobras, ADNOC, Petronas ฯลฯ
-- รัฐวิสาหกิจหรือบริษัทพลังงานแห่งชาติในประเทศต่าง ๆ ที่เป็นคู่สัญญาร่วมกับ PTTEP
-
-บทบาทของคุณ: News Screener ของ PTTEP
-หน้าที่: ตัดสินว่า
-“ข่าวนี้มีผลกระทบเชิงสาระสำคัญ หรือมีความเป็นไปได้อย่างมีนัยสำคัญ
-ที่จะกระทบ **โครงการของ PTTEP หรือโครงการร่วมทุนกับผู้ร่วมทุน** ใน **ทุกประเทศ** หรือไม่”
-
-ให้ถือว่า “มีโอกาสเกี่ยวข้อง (ตอบว่า ใช่)” ถ้าอย่างน้อยหนึ่งข้อ:
-1) ข่าวด้าน **พลังงาน** (น้ำมัน, ก๊าซ, LNG, ท่อส่ง, LNG terminal, FSRU, แท่นผลิต, upstream, midstream)
-   ที่เกิดขึ้นในประเทศใด ๆ ที่มีโครงการของ PTTEP ตาม [PTTEP_PROJECTS_CONTEXT]
-   หรือเกิดกับบริษัท/ผู้ร่วมทุนที่ระบุเป็นพันธมิตรของ PTTEP
-2) ข่าวด้าน **การเมือง / นโยบาย / กฎหมาย / ภาษี / สัมปทาน / PSC / ค่าภาคหลวง / มาตรการคว่ำบาตร /
-   การปฏิวัติ, สงคราม, ความขัดแย้ง, การเปลี่ยนรัฐบาล** ในประเทศที่มีโครงการของ PTTEP
-   หรือประเทศที่เป็นฐานของผู้ร่วมทุนหลัก ซึ่งอาจกระทบโครงการโดยอ้อม
-3) ข่าวด้าน **ความมั่นคง, ความเสี่ยงภูมิรัฐศาสตร์, เหตุการณ์ภัยพิบัติ, ปัญหาแรงงานในอุตสาหกรรมพลังงาน**
-   ที่มีผลต่อ supply / การดำเนินการโครงการในประเทศเดียวกับที่ PTTEP หรือพันธมิตรมีโครงการอยู่
-4) ข่าวระดับภูมิภาค/โลกที่เนื้อหาเน้นผลต่อ **ตลาดพลังงาน ก๊าซ LNG หรือโครงสร้างพื้นฐานของประเทศ
-   ที่ PTTEP มีโครงการ** อย่างชัดเจน
-
-ให้ตอบว่า “ไม่ใช่” เมื่อ:
-- ข่าวเป็นเรื่อง downstream, การตลาด, retail, EV, ปิโตรเคมีปลายน้ำ, lifestyle, PR/CSR
-  ที่ดูไม่เกี่ยวกับ upstream หรือโครงสร้างพื้นฐาน/นโยบายด้านพลังงานเลย
-- หรือเป็นข่าวเศรษฐกิจทั่วไปที่ไม่ระบุพลังงาน/การเมือง/ความมั่นคง และไม่โยงประเทศหรือบริษัทใน context
-
-ถ้าคุณ “ไม่แน่ใจ” แต่เห็นว่ามีโอกาสพอสมควรที่ข่าวนี้จะเกี่ยวข้องกับโครงการของ PTTEP
-หรือผู้ร่วมทุน ให้ **ตัดสินไปทาง “ใช่”** (เพื่อให้ข่าวนั้นผ่านเข้าขั้นตอนสรุปก่อน)
-
-ข่าว:
-หัวข้อ: {news['title']}
-สรุป: {news['summary']}
-เพิ่มเติม: {news.get('detail','')}
-
-ตอบเพียงคำเดียว (ไม่ต้องมีคำอธิบายเพิ่ม):
-- ใช่
-- ไม่ใช่
-"""
-
-    try:
-        r = call_gemini(prompt)
-        ans = (r.text or "").strip().replace("\n", "")
-        return ans.startswith("ใช่")
-    except Exception:
-        return False
-
-
-# ============================================================================================================
-# TAG ข่าว (ประเทศ / โครงการ + ผลกระทบต่อโครงการ)
-# ============================================================================================================
-def gemini_tag(news):
-    """
-    ให้ LLM สรุปข่าว + ติดประเภทข่าว + ภูมิภาค + ประเทศ + รายชื่อโครงการ
-    และเขียน 'ผลกระทบต่อโครงการของ PTTEP' เท่านั้น
+    ให้ LLM ตัดสินในทีเดียวว่า:
+      - is_relevant: ข่าวนี้เกี่ยวกับโครงการ/ประเทศของ PTTEP หรือผู้ร่วมทุนหรือไม่
+      - และถ้าใช่ ให้สรุป + ใส่ country / projects / impact
     """
     schema = {
         "type": "object",
         "properties": {
+            "is_relevant": {"type": "boolean"},
             "summary": {"type": "string"},
             "topic_type": {
                 "type": "string",
@@ -415,39 +355,48 @@ def gemini_tag(news):
                 "items": {"type": "string"},
             },
         },
-        "required": ["summary", "topic_type", "region", "impact_reason"],
+        "required": ["is_relevant"],
     }
 
     prompt = f"""
 {PTT_CONTEXT}
 {PTTEP_PROJECTS_CONTEXT}
 
-บทบาทของคุณ: Analyst ของ PTTEP
-หน้าที่: สรุปข่าว และอธิบาย "เฉพาะผลกระทบต่อโครงการของ PTTEP" เท่านั้น
-ไม่ต้องสรุปผลกระทบเชิงกว้างต่ออุตสาหกรรมโลกหรือกลุ่ม ปตท. โดยรวม
+[พันธมิตร / ผู้ร่วมทุนที่พบบ่อย]
+- Chevron, ExxonMobil, TotalEnergies, Shell, BP, ENI, Sonatrach, Petrobras,
+  ADNOC, Petronas และบริษัทพลังงานแห่งชาติอื่น ๆ
+
+บทบาทของคุณ: Analyst + News Screener ของ PTTEP
+
+ขั้นตอนที่ 1: ตัดสินว่า "ข่าวนี้เกี่ยวข้องอย่างมีนัยสำคัญ หรือมีความเป็นไปได้สูง"
+ที่จะกระทบ **โครงการของ PTTEP หรือโครงการร่วมทุนกับผู้ร่วมทุน** ในประเทศต่าง ๆ หรือไม่
+
+ถ้าเข้าอย่างน้อยหนึ่งข้อ:
+- ข่าวพลังงาน (น้ำมัน/ก๊าซ/LNG/ท่อส่ง/แท่นผลิต ฯลฯ) ในประเทศที่มีโครงการของ PTTEP
+- ข่าวการเมือง นโยบาย ภาษี สัมปทาน มาตรการคว่ำบาตร ความมั่นคง สงคราม ประท้วงแรงงาน
+  ในประเทศที่มีโครงการของ PTTEP หรือประเทศของผู้ร่วมทุนหลัก
+- ข่าวที่กระทบ supply / cost / schedule ของโครงการในประเทศเหล่านั้น
+ให้ถือว่า **is_relevant = true**
+
+ถ้าเป็นข่าว downstream, EV, lifestyle, PR ฯลฯ ที่ไม่โยงกับ upstream/โครงสร้างพื้นฐาน/นโยบายเลย
+ให้ **is_relevant = false**
+
+ขั้นตอนที่ 2: ถ้า is_relevant = true ให้เติมข้อมูลต่อไปนี้
+- summary: สรุปข่าวสั้น ๆ ภาษาไทย 2–4 ประโยค (ใช้ภายใน)
+- topic_type, region: แท็กประเภทข่าว/ภูมิภาค
+- impact_reason:
+  * เขียนเฉพาะ "ผลกระทบต่อโครงการของ PTTEP" เป็น bullet หรือหลายบรรทัด
+  * พยายามอ้างอิงชื่อประเทศ/บล็อก/โครงการใน context
+  * ถ้า "ยังไม่พบผลกระทบโดยตรง" ให้เขียนแบบนั้นได้ แต่ต้องชัดเจน
+- country: ประเทศหลักที่เกี่ยวข้อง (เช่น Thailand, Myanmar, US, Mozambique, UAE ฯลฯ)
+- projects: รายชื่อโครงการของ PTTEP ที่เกี่ยวข้อง (เช่น ["G1/61", "Mozambique Area 1"])
+
+ถ้า is_relevant = false ให้เว้น field อื่น ๆ ว่างได้
 
 อินพุตข่าว:
 หัวข้อ: {news['title']}
 สรุปจาก RSS: {news['summary']}
 ข้อมูลเพิ่มเติม: {news.get('detail','')}
-
-ข้อกำหนดด้านภาษา:
-- summary:
-  - เขียนสรุปข่าวสั้น ๆ เป็นภาษาไทย 2–4 ประโยค
-  - (ใช้สำหรับอ้างอิงภายใน ไม่ต้องแสดงใน LINE)
-- impact_reason:
-  - เขียนเป็นภาษาไทยในรูปแบบ bullet หรือหลายบรรทัด
-    *แต่ละบรรทัด = 1 ประเด็น* เฉพาะ "ผลกระทบต่อโครงการของ PTTEP"
-  - ให้พยายามอ้างอิงชื่อประเทศ / บล็อก / โครงการจาก [PTTEP_PROJECTS_CONTEXT]
-  - ถ้ายัง "ไม่พบผลกระทบโดยตรง" ให้เขียนชัดเจน เช่น
-    • ขณะนี้ยังไม่พบผลกระทบโดยตรงต่อโครงการของ PTTEP แต่ควรติดตามสถานการณ์อย่างใกล้ชิด
-
-- country:
-  - ระบุประเทศหลักที่เกี่ยวข้อง เช่น Thailand, Myanmar, Vietnam, Mozambique, UAE เป็นต้น
-- projects:
-  - ใส่ชื่อโครงการของ PTTEP ที่เกี่ยวข้องเป็น list
-    เช่น ["G1/61", "Arthit"], ["Zawtika"], ["Mozambique Area 1"], ["Ghasha"]
-  - ถ้าไม่แน่ใจ หรือไม่มีโครงการที่ชัดเจน ให้ใช้ [] (array ว่าง)
 
 ให้ตอบกลับเป็น JSON เท่านั้น ตาม schema นี้:
 {json.dumps(schema, ensure_ascii=False)}
@@ -464,12 +413,8 @@ def gemini_tag(news):
 
         return json.loads(raw)
     except Exception:
-        return {
-            "summary": news["summary"],
-            "topic_type": "other",
-            "region": "other",
-            "impact_reason": "ยังไม่พบผลกระทบโดยตรงต่อโครงการของ PTTEP",
-        }
+        # ถ้า error ให้ถือว่าไม่เกี่ยวข้อง จะได้ไม่ค้าง
+        return {"is_relevant": False}
 
 
 # ============================================================================================================
@@ -531,6 +476,11 @@ def fetch_news_window():
         if k not in seen:
             seen.add(k)
             uniq.append(n)
+
+    # เรียงจากข่าวใหม่ไปเก่า แล้วตัดไม่เกิน MAX_NEWS_PER_RUN
+    uniq.sort(key=lambda x: x["published"], reverse=True)
+    if len(uniq) > MAX_NEWS_PER_RUN:
+        uniq = uniq[:MAX_NEWS_PER_RUN]
 
     return uniq
 
@@ -698,29 +648,20 @@ def send_to_line(messages):
 # ============================================================================================================
 def main():
     print("ดึงข่าว...")
-    all_news_raw = fetch_news_window()
-    print("จำนวนข่าวดิบทั้งหมด:", len(all_news_raw))
+    all_news = fetch_news_window()
+    print("จำนวนข่าวที่จะประมวลผล (หลังตัดซ้ำ + จำกัด MAX_NEWS_PER_RUN):", len(all_news))
 
-    # ไม่ใช้ keyword filter แล้ว → ส่งทั้งหมดเข้า llm_filter
-    all_news = all_news_raw
-
-    filtered = []
-    for n in all_news:
-        n["detail"] = n["title"] if len(n["summary"]) < 50 else ""
-        if llm_filter(n):
-            filtered.append(n)
-        time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
-
-    print("ผ่าน llm_filter:", len(filtered))
-
-    if not filtered:
-        print("ไม่มีข่าวเกี่ยวข้อง (ตาม llm_filter)")
-        return
-
-    print("วิเคราะห์ข่าวด้วย LLM (tag + impact)...")
     tagged = []
-    for n in filtered:
-        tag = gemini_tag(n)
+    for idx, n in enumerate(all_news, 1):
+        print(f"[{idx}/{len(all_news)}] LLM tag+filter: {n['title'][:80]}...")
+        n["detail"] = n["title"] if len(n["summary"]) < 50 else ""
+
+        tag = gemini_tag_and_filter(n)
+
+        if not tag.get("is_relevant"):
+            # ข่าวไม่เกี่ยวข้อง ข้าม
+            time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
+            continue
 
         n["topic_type"] = tag.get("topic_type", "other")
         n["region"] = tag.get("region", "other")
@@ -737,6 +678,7 @@ def main():
 
         # ถ้า impact ไม่มีสาระ (แค่บอกว่า "ยังไม่พบผลกระทบ...") → ข้ามข่าวนี้ไปเลย
         if not has_meaningful_impact(n["impact_reason"]):
+            time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
             continue
 
         tagged.append(n)
