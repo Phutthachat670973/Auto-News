@@ -37,12 +37,12 @@ GEMINI_DAILY_BUDGET = int(os.getenv("GEMINI_DAILY_BUDGET", "250"))
 MAX_RETRIES = 6
 
 # ให้เรียก LLM เร็วขึ้นหน่อย
-SLEEP_BETWEEN_CALLS = (1.0, 2.0)
+SLEEP_BETWEEN_CALLS = (0.5, 1.0)
 
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
-# จำกัดจำนวนข่าวต่อรัน (เน้นข่าวล่าสุด)
-MAX_NEWS_PER_RUN = int(os.getenv("MAX_NEWS_PER_RUN", "40"))
+# จำกัดจำนวน "ข่าวที่ส่งเข้า LLM" ต่อรัน
+MAX_LLM_ITEMS = int(os.getenv("MAX_LLM_ITEMS", "15"))
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 now = datetime.now(bangkok_tz)
@@ -56,6 +56,98 @@ os.makedirs(SENT_LINKS_DIR, exist_ok=True)
 
 # รูป default สำหรับ hero ถ้าไม่มีรูปข่าวจริง ๆ
 DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
+
+
+# ============================================================================================================
+# PREFILTER KEYWORDS (ไม่ใช้ LLM)
+# ============================================================================================================
+ENERGY_KEYWORDS = [
+    "gas",
+    "natural gas",
+    "lng",
+    "lpg",
+    "pipeline",
+    "gas field",
+    "gasfield",
+    "oil",
+    "crude",
+    "upstream",
+    "offshore",
+    "onshore",
+    "drilling",
+    "rig",
+    "exploration",
+    "production",
+    "fsru",
+    "regasification",
+    "lnt terminal",
+    "gas supply",
+    "gas export",
+    "gas import",
+    "strike",
+    "walkout",
+    "sanction",
+    "embargo",
+    "energy policy",
+    "energy minister",
+    "electricity price",
+]
+
+COUNTRY_PARTNER_KEYWORDS = [
+    # ประเทศที่มีโครงการ PTTEP
+    "thailand",
+    "thai",
+    "myanmar",
+    "burma",
+    "vietnam",
+    "malaysia",
+    "indonesia",
+    "uae",
+    "united arab emirates",
+    "abu dhabi",
+    "oman",
+    "algeria",
+    "mozambique",
+    "australia",
+    "brazil",
+    "mexico",
+    # ชื่อแหล่ง / โครงการสำคัญ
+    "erawan",
+    "bongkot",
+    "arthit",
+    "zawtika",
+    "yadana",
+    "yetagun",
+    "rovuma",
+    "ghasha",
+    "montara",
+    # ผู้ร่วมทุนหลัก
+    "chevron",
+    "exxon",
+    "exxonmobil",
+    "totalenergies",
+    "shell",
+    "bp",
+    "eni",
+    "sonatrach",
+    "petrobras",
+    "adnoc",
+    "petronas",
+]
+
+def keyword_prefilter(news) -> bool:
+    """
+    กรองข่าวรอบแรกแบบไม่ใช้ LLM
+    ถ้ามีคำพลังงาน หรือชื่อประเทศ/ผู้ร่วมทุนใน title+summary → ให้ผ่าน
+    """
+    text = (news.get("title", "") + " " + news.get("summary", "")).lower()
+
+    if any(k in text for k in ENERGY_KEYWORDS):
+        return True
+    if any(k in text for k in COUNTRY_PARTNER_KEYWORDS):
+        return True
+
+    return False
 
 
 # ============================================================================================================
@@ -118,10 +210,7 @@ def save_sent_links(links):
 
 def _impact_to_bullets(text: str):
     """
-    แปลงข้อความ impact_reason เป็น list bullet สะอาด ๆ:
-    - ใช้การขึ้นบรรทัดใหม่เป็นตัวแบ่งหลัก
-    - ลบสัญลักษณ์นำหน้า เช่น • * - · และเลขลำดับ 1. 2) ออก
-    - ไม่ให้มีดอกจันหลงเหลือ
+    แปลงข้อความ impact_reason เป็น list bullet สะอาด ๆ
     """
     if not text:
         return ["ไม่ระบุผลกระทบต่อโครงการ"]
@@ -133,11 +222,8 @@ def _impact_to_bullets(text: str):
     bullets = []
     for line in lines:
         s = line.strip()
-        # ลบ bullet symbols และช่องว่างด้านหน้า: • * - · ฯลฯ
         s = re.sub(r"^[\u2022\*\-\u00b7·•\s]+", "", s)
-        # ลบเลขลำดับ เช่น "1." "2)" "3 ." ออก
         s = re.sub(r"^\d+[\.\)]\s*", "", s)
-        # ลบดอกจันที่อาจหลงเหลือแบบ ".* ..." หรือ "* ..."
         if s.startswith(".*"):
             s = s[2:].lstrip()
         if s.startswith("*"):
@@ -151,8 +237,7 @@ def _impact_to_bullets(text: str):
 def has_meaningful_impact(impact_text: str) -> bool:
     """
     คืนค่า False ถ้า impact_text เป็นเพียงข้อความแนว
-    'ยังไม่พบผลกระทบโดยตรงต่อโครงการของ PTTEP' (หรือใกล้เคียง)
-    เพื่อกันไม่ให้สร้างการ์ดข่าวที่ไม่มี insight จริง
+    'ยังไม่พบผลกระทบโดยตรงต่อโครงการของ PTTEP'
     """
     if not impact_text:
         return False
@@ -174,9 +259,6 @@ def has_meaningful_impact(impact_text: str) -> bool:
 # ดึงรูปจากหน้าเว็บข่าว (og:image / twitter:image / <img> แรก)
 # ============================================================================================================
 def fetch_article_image(url: str) -> str:
-    """
-    พยายามดึง URL รูปประกอบข่าวจากหน้าเว็บจริง
-    """
     if not url:
         return ""
 
@@ -187,7 +269,6 @@ def fetch_article_image(url: str) -> str:
 
         html = r.text
 
-        # og:image
         m = re.search(
             r'<meta[^>]+property=[\'"]og:image[\'"][^>]+content=[\'"]([^\'"]+)[\'"]',
             html,
@@ -196,7 +277,6 @@ def fetch_article_image(url: str) -> str:
         if m:
             return m.group(1)
 
-        # twitter:image
         m = re.search(
             r'<meta[^>]+name=[\'"]twitter:image[\'"][^>]+content=[\'"]([^\'"]+)[\'"]',
             html,
@@ -205,7 +285,6 @@ def fetch_article_image(url: str) -> str:
         if m:
             return m.group(1)
 
-        # <img> แรก
         m = re.search(r'<img[^>]+src=[\'"]([^\'"]+)[\'"]', html, re.I)
         if m:
             src = m.group(1)
@@ -239,52 +318,21 @@ PTTEP_PROJECTS_CONTEXT = r"""
 [PTTEP_PROJECTS_CONTEXT]
 
 ประเทศไทย (Thailand)
-- โครงการ G1/61 (Erawan, Platong, Satun, Funan)
-- โครงการ G2/61 (Bongkot และแหล่งใกล้เคียง)
-- โครงการ Arthit
-- โครงการ S1
-- โครงการ Contract 4
-- โครงการ B8/32 และ 9A
-- โครงการ Sinphuhorm
-- โครงการ MTJDA Block A-18
+- G1/61 (Erawan, Platong, Satun, Funan)
+- G2/61 (Bongkot และแหล่งใกล้เคียง)
+- Arthit, S1, Contract 4, B8/32, 9A, Sinphuhorm, MTJDA Block A-18
 
-เมียนมา (Myanmar)
-- โครงการ Zawtika
-- โครงการ Yadana
-- โครงการ Yetagun
-
-เวียดนาม (Vietnam)
-- Block B & 48/95, Block 52/97
-- โครงการ 16-1 (Te Giac Trang)
-
-มาเลเซีย (Malaysia)
-- MTJDA Block A-18
-- บล็อกอื่น ๆ เช่น SK309, SK311, SK410B
-
-อินโดนีเซีย (Indonesia)
-- South Sageri, South Mandar, Malunda ฯลฯ
-
-สหรัฐอาหรับเอมิเรตส์ (UAE)
-- Ghasha Concession
-- Abu Dhabi Offshore
-
-โอมาน (Oman)
-- Oman Block 12
-
-แอลจีเรีย (Algeria)
-- Bir Seba, Hirad, Touat ฯลฯ
-
-โมซัมบิก (Mozambique)
-- Mozambique Area 1 (Rovuma LNG)
-
-ออสเตรเลีย (Australia)
-- Montara และโครงการอื่นใน Timor Sea / Browse Basin
-
-บราซิล (Brazil)
-- BM-ES-23, BM-ES-24 ฯลฯ
-
-เม็กซิโก (Mexico)
-- Mexico Block 12 (2.4) และบล็อกอื่น ๆ
+เมียนมา (Myanmar) – Zawtika, Yadana, Yetagun
+เวียดนาม (Vietnam) – Block B & 48/95, Block 52/97, 16-1 (Te Giac Trang)
+มาเลเซีย (Malaysia) – MTJDA Block A-18, SK309, SK311, SK410B ฯลฯ
+อินโดนีเซีย (Indonesia) – South Sageri, South Mandar, Malunda ฯลฯ
+UAE – Ghasha Concession, Abu Dhabi Offshore
+Oman – Oman Block 12
+Algeria – Bir Seba, Hirad, Touat ฯลฯ
+Mozambique – Mozambique Area 1 (Rovuma LNG)
+Australia – Montara และโครงการอื่น ๆ ใน Timor Sea / Browse Basin
+Brazil – BM-ES-23, BM-ES-24 ฯลฯ
+Mexico – Mexico Block 12 (2.4) และบล็อกอื่น ๆ
 """
 
 
@@ -323,11 +371,6 @@ def call_gemini(prompt):
 # GEMINI TAG + FILTER (รวมสองอย่างในทีเดียว)
 # ============================================================================================================
 def gemini_tag_and_filter(news):
-    """
-    ให้ LLM ตัดสินในทีเดียวว่า:
-      - is_relevant: ข่าวนี้เกี่ยวกับโครงการ/ประเทศของ PTTEP หรือผู้ร่วมทุนหรือไม่
-      - และถ้าใช่ ให้สรุป + ใส่ country / projects / impact
-    """
     schema = {
         "type": "object",
         "properties": {
@@ -368,30 +411,29 @@ def gemini_tag_and_filter(news):
 
 บทบาทของคุณ: Analyst + News Screener ของ PTTEP
 
-ขั้นตอนที่ 1: ตัดสินว่า "ข่าวนี้เกี่ยวข้องอย่างมีนัยสำคัญ หรือมีความเป็นไปได้สูง"
-ที่จะกระทบ **โครงการของ PTTEP หรือโครงการร่วมทุนกับผู้ร่วมทุน** ในประเทศต่าง ๆ หรือไม่
-
-ถ้าเข้าอย่างน้อยหนึ่งข้อ:
-- ข่าวพลังงาน (น้ำมัน/ก๊าซ/LNG/ท่อส่ง/แท่นผลิต ฯลฯ) ในประเทศที่มีโครงการของ PTTEP
+ขั้นตอนที่ 1: ตัดสิน is_relevant
+ให้ is_relevant = true ถ้าข่าวนี้มีความเป็นไปได้อย่างมีนัยสำคัญ
+ที่จะกระทบ "โครงการสำรวจและผลิต/ก๊าซ" ของ PTTEP หรือโครงการร่วมทุน
+ผ่านช่องทางต่อไปนี้ เช่น:
+- ข่าวพลังงาน (oil/gas/LNG/pipeline/upstream) ในประเทศที่มีโครงการของ PTTEP
 - ข่าวการเมือง นโยบาย ภาษี สัมปทาน มาตรการคว่ำบาตร ความมั่นคง สงคราม ประท้วงแรงงาน
   ในประเทศที่มีโครงการของ PTTEP หรือประเทศของผู้ร่วมทุนหลัก
-- ข่าวที่กระทบ supply / cost / schedule ของโครงการในประเทศเหล่านั้น
-ให้ถือว่า **is_relevant = true**
+- ข่าวที่กระทบ supply / cost / schedule ของโครงการเหล่านี้
 
-ถ้าเป็นข่าว downstream, EV, lifestyle, PR ฯลฯ ที่ไม่โยงกับ upstream/โครงสร้างพื้นฐาน/นโยบายเลย
-ให้ **is_relevant = false**
+ถ้าเป็น downstream, EV, lifestyle, PR ฯลฯ ที่ไม่โยงกับ upstream/นโยบายพลังงานเลย → is_relevant = false
+
+ถ้าไม่แน่ใจ ให้เอนเอียงไปทาง is_relevant = true
+(ดีกว่าคัดทิ้งข่าวสำคัญ)
 
 ขั้นตอนที่ 2: ถ้า is_relevant = true ให้เติมข้อมูลต่อไปนี้
-- summary: สรุปข่าวสั้น ๆ ภาษาไทย 2–4 ประโยค (ใช้ภายใน)
+- summary: สรุปข่าวสั้น ๆ ภาษาไทย 2–4 ประโยค
 - topic_type, region: แท็กประเภทข่าว/ภูมิภาค
 - impact_reason:
   * เขียนเฉพาะ "ผลกระทบต่อโครงการของ PTTEP" เป็น bullet หรือหลายบรรทัด
   * พยายามอ้างอิงชื่อประเทศ/บล็อก/โครงการใน context
-  * ถ้า "ยังไม่พบผลกระทบโดยตรง" ให้เขียนแบบนั้นได้ แต่ต้องชัดเจน
+  * ถ้า "ยังไม่พบผลกระทบโดยตรง" ให้เขียนแบบนั้นได้
 - country: ประเทศหลักที่เกี่ยวข้อง (เช่น Thailand, Myanmar, US, Mozambique, UAE ฯลฯ)
 - projects: รายชื่อโครงการของ PTTEP ที่เกี่ยวข้อง (เช่น ["G1/61", "Mozambique Area 1"])
-
-ถ้า is_relevant = false ให้เว้น field อื่น ๆ ว่างได้
 
 อินพุตข่าว:
 หัวข้อ: {news['title']}
@@ -406,14 +448,12 @@ def gemini_tag_and_filter(news):
         r = call_gemini(prompt)
         raw = (r.text or "").strip()
 
-        # ตัด ``` หรือ ```json ออกถ้ามี
         if raw.startswith("```"):
             raw = re.sub(r"^```(json)?", "", raw).strip()
             raw = re.sub(r"```$", "", raw).strip()
 
         return json.loads(raw)
     except Exception:
-        # ถ้า error ให้ถือว่าไม่เกี่ยวข้อง จะได้ไม่ค้าง
         return {"is_relevant": False}
 
 
@@ -477,11 +517,8 @@ def fetch_news_window():
             seen.add(k)
             uniq.append(n)
 
-    # เรียงจากข่าวใหม่ไปเก่า แล้วตัดไม่เกิน MAX_NEWS_PER_RUN
+    # เรียงจากข่าวใหม่ไปเก่า
     uniq.sort(key=lambda x: x["published"], reverse=True)
-    if len(uniq) > MAX_NEWS_PER_RUN:
-        uniq = uniq[:MAX_NEWS_PER_RUN]
-
     return uniq
 
 
@@ -649,17 +686,25 @@ def send_to_line(messages):
 def main():
     print("ดึงข่าว...")
     all_news = fetch_news_window()
-    print("จำนวนข่าวที่จะประมวลผล (หลังตัดซ้ำ + จำกัด MAX_NEWS_PER_RUN):", len(all_news))
+    print("จำนวนข่าวดิบทั้งหมด:", len(all_news))
+
+    # pre-filter แบบไม่ใช้ LLM
+    candidates = [n for n in all_news if keyword_prefilter(n)]
+    print("หลัง keyword pre-filter:", len(candidates))
+
+    # จำกัดจำนวนที่ส่งเข้า LLM
+    if len(candidates) > MAX_LLM_ITEMS:
+        candidates = candidates[:MAX_LLM_ITEMS]
+        print(f"จำกัดข่าวที่ส่งเข้า LLM เหลือ: {len(candidates)} (MAX_LLM_ITEMS)")
 
     tagged = []
-    for idx, n in enumerate(all_news, 1):
-        print(f"[{idx}/{len(all_news)}] LLM tag+filter: {n['title'][:80]}...")
+    for idx, n in enumerate(candidates, 1):
+        print(f"[{idx}/{len(candidates)}] LLM tag+filter: {n['title'][:80]}...")
         n["detail"] = n["title"] if len(n["summary"]) < 50 else ""
 
         tag = gemini_tag_and_filter(n)
 
         if not tag.get("is_relevant"):
-            # ข่าวไม่เกี่ยวข้อง ข้าม
             time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
             continue
 
@@ -676,7 +721,6 @@ def main():
         n["country"] = tag.get("country", "")
         n["projects"] = tag.get("projects", [])
 
-        # ถ้า impact ไม่มีสาระ (แค่บอกว่า "ยังไม่พบผลกระทบ...") → ข้ามข่าวนี้ไปเลย
         if not has_meaningful_impact(n["impact_reason"]):
             time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
             continue
@@ -704,7 +748,7 @@ def main():
         if not (isinstance(img, str) and img.startswith(("http://", "https://"))):
             img = DEFAULT_ICON_URL
         n["image"] = img
-        time.sleep(0.5)
+        time.sleep(0.3)
 
     msgs = create_flex(final)
     send_to_line(msgs)
