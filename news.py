@@ -54,25 +54,6 @@ os.makedirs(SENT_LINKS_DIR, exist_ok=True)
 # รูป default สำหรับ hero ถ้าไม่มีรูปข่าวจริง ๆ
 DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
-# คีย์เวิร์ดไว้กรองข่าวรอบแรกก่อนเรียก LLM (ช่วยลดเวลามาก)
-KEYWORD_SUBSTRINGS = [
-    "gas",
-    "natural gas",
-    "lng",
-    "liquefied natural gas",
-    "pipeline",
-    "lpg",
-    "ngv",
-    "fsru",
-    "regasification",
-    "gas field",
-    "gas supply",
-    "gas export",
-    "gas import",
-    "upstream",
-    "exploration",
-]
-
 
 # ============================================================================================================
 # HELPERS
@@ -184,14 +165,6 @@ def has_meaningful_impact(impact_text: str) -> bool:
             return False
 
     return True
-
-
-def keyword_pre_filter(news):
-    """
-    กรองข่าวรอบแรกด้วย keyword ง่าย ๆ เพื่อลดจำนวนที่ต้องส่งเข้า LLM
-    """
-    text = (news.get("title", "") + " " + news.get("summary", "")).lower()
-    return any(k in text for k in KEYWORD_SUBSTRINGS)
 
 
 # ============================================================================================================
@@ -728,10 +701,8 @@ def main():
     all_news_raw = fetch_news_window()
     print("จำนวนข่าวดิบทั้งหมด:", len(all_news_raw))
 
-    candidates = [n for n in all_news_raw if keyword_pre_filter(n)]
-    print("หลัง keyword pre-filter:", len(candidates))
-
-    all_news = candidates
+    # ไม่ใช้ keyword filter แล้ว → ส่งทั้งหมดเข้า llm_filter
+    all_news = all_news_raw
 
     filtered = []
     for n in all_news:
@@ -743,7 +714,7 @@ def main():
     print("ผ่าน llm_filter:", len(filtered))
 
     if not filtered:
-        print("ไม่มีข่าวเกี่ยวข้อง")
+        print("ไม่มีข่าวเกี่ยวข้อง (ตาม llm_filter)")
         return
 
     print("วิเคราะห์ข่าวด้วย LLM (tag + impact)...")
@@ -776,7 +747,6 @@ def main():
         print("ไม่มีข่าวที่มีผลกระทบต่อโครงการอย่างชัดเจน")
         return
 
-    # ไม่ group แล้ว ใช้ข่าวเดี่ยวตรง ๆ
     selected = tagged[:10]
 
     sent = load_sent_links()
