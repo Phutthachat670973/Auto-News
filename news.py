@@ -140,7 +140,7 @@ def _impact_to_bullets(text: str):
     - ไม่ให้มีดอกจันหลงเหลือ
     """
     if not text:
-        return ["ไม่ระบุผลกระทบต่อโครงการของ PTTEP"]
+        return ["ไม่ระบุผลกระทบต่อโครงการ"]
 
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not lines:
@@ -161,12 +161,12 @@ def _impact_to_bullets(text: str):
         if s:
             bullets.append(s)
 
-    return bullets or ["ไม่ระบุผลกระทบต่อโครงการของ PTTEP"]
+    return bullets or ["ไม่ระบุผลกระทบต่อโครงการ"]
 
 
 def has_meaningful_impact(impact_text: str) -> bool:
     """
-    คืนค่า False ถ้า impact_text เป็นเพียงข้อความแบบ
+    คืนค่า False ถ้า impact_text เป็นเพียงข้อความแนว
     'ยังไม่พบผลกระทบโดยตรงต่อโครงการของ PTTEP' (หรือใกล้เคียง)
     เพื่อกันไม่ให้สร้างการ์ดข่าวที่ไม่มี insight จริง
     """
@@ -348,14 +348,13 @@ def call_gemini(prompt):
 
 
 # ============================================================================================================
-# FILTER → ข่าวมีผลต่อ "โครงการ PTTEP / โครงการร่วมทุน ในทุกประเทศ" หรือไม่
+# FILTER → ข่าวมีผลต่อ "โครงการ PTTEP / โครงการร่วมทุน" หรือไม่
 # ============================================================================================================
 def llm_filter(news):
     """
     ใช้ LLM ช่วยตอบว่า
     ข่าวนี้มีผลกระทบเชิงสาระสำคัญต่อ "โครงการสำรวจและผลิต/ก๊าซ" ของ PTTEP
     และ/หรือโครงการร่วมทุนกับพันธมิตร (ผู้ร่วมทุน) ในประเทศต่าง ๆ หรือไม่
-    เน้นข่าวด้านพลังงาน การเมือง นโยบายรัฐ ความมั่นคง หรือข่าวอื่น ๆ ที่อาจเกี่ยวข้อง
     """
     prompt = f"""
 {PTT_CONTEXT}
@@ -410,11 +409,11 @@ def llm_filter(news):
 
 
 # ============================================================================================================
-# TAG ข่าว (ระบุประเทศ / โครงการ + ผลกระทบต่อโครงการเท่านั้น)
+# TAG ข่าว (ประเทศ / โครงการ + ผลกระทบต่อโครงการ)
 # ============================================================================================================
 def gemini_tag(news):
     """
-    ให้ LLM สรุปข่าว + ติดประเภทข่าว + ภูมิภาค
+    ให้ LLM สรุปข่าว + ติดประเภทข่าว + ภูมิภาค + ประเทศ + รายชื่อโครงการ
     และเขียน 'ผลกระทบต่อโครงการของ PTTEP' เท่านั้น
     """
     schema = {
@@ -564,88 +563,6 @@ def fetch_news_window():
 
 
 # ============================================================================================================
-# GROUP NEWS
-# ============================================================================================================
-def group_news(news_list, min_size=3):
-    buckets = {}
-    for n in news_list:
-        key = (n.get("topic_type"), n.get("region"))
-        buckets.setdefault(key, []).append(n)
-
-    out = []
-    for (topic, region), items in buckets.items():
-        if len(items) >= min_size:
-            items_sorted = sorted(items, key=lambda x: x["published"], reverse=True)
-            anchor = items_sorted[0]
-            out.append(
-                {
-                    "is_group": True,
-                    "topic_type": topic,
-                    "region": region,
-                    "news_items": items_sorted,
-                    "title": anchor["title"],
-                    "site": "หลายแหล่งข่าว",
-                    "category": anchor["category"],
-                    "date": anchor["date"],
-                    "published": anchor["published"],
-                    "link": anchor["link"],
-                }
-            )
-        else:
-            out.extend(items)
-
-    return out
-
-
-# ============================================================================================================
-# SUMMARIZE GROUP (ผลกระทบต่อโครงการเท่านั้น)
-# ============================================================================================================
-def gemini_group_summary(group):
-    block = "\n".join(
-        [f"- {n['title']}: {n['summary']}" for n in group["news_items"]]
-    )
-
-    prompt = f"""
-{PTT_CONTEXT}
-{PTTEP_PROJECTS_CONTEXT}
-
-บทบาทของคุณ: Analyst ที่ต้องสรุป "ภาพรวมของกลุ่มข่าว" ให้ผู้บริหาร PTTEP
-เป้าหมาย: เน้นเฉพาะผลกระทบต่อ "โครงการของ PTTEP ตามประเทศ/บล็อก"
-
-กลุ่มข่าว (หัวข้อ + สรุปย่อย):
-{block}
-
-ข้อกำหนดด้านภาษา:
-- summary: สรุปภาพรวมกลุ่มข่าว 3–5 ประโยค ภาษาไทย
-- impact_reason:
-  - สรุปเป็น bullet หรือหลายบรรทัด
-  - แต่ละบรรทัดพูดเฉพาะ "ผลกระทบต่อโครงการของ PTTEP" เท่านั้น
-  - ให้พยายามอ้างอิงชื่อประเทศ/โครงการจาก [PTTEP_PROJECTS_CONTEXT]
-
-ให้ตอบเป็น JSON รูปแบบ:
-{{
-  "summary": "<สรุปภาพรวมกลุ่มข่าวเป็นภาษาไทย>",
-  "impact_reason": "<ผลกระทบต่อโครงการของ PTTEP เป็น bullet/หลายบรรทัด>"
-}}
-"""
-
-    try:
-        r = call_gemini(prompt)
-        raw = (r.text or "").strip()
-
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(json)?", "", raw).strip()
-            raw = re.sub(r"```$", "", raw).strip()
-
-        return json.loads(raw)
-    except Exception:
-        return {
-            "summary": "สรุปไม่ได้",
-            "impact_reason": "ยังไม่พบผลกระทบโดยตรงต่อโครงการของ PTTEP",
-        }
-
-
-# ============================================================================================================
 # FLEX MESSAGE
 # ============================================================================================================
 def create_flex(news_items):
@@ -663,17 +580,12 @@ def create_flex(news_items):
         if not (isinstance(img, str) and img.startswith(("http://", "https://"))):
             img = DEFAULT_ICON_URL
 
-        # country / projects
-        if n.get("is_group"):
-            country_txt = "หลายประเทศ"
-            proj_txt = "หลายโครงการ"
+        country_txt = (n.get("country") or "ไม่ระบุ").strip()
+        projects = n.get("projects") or []
+        if isinstance(projects, list):
+            proj_txt = ", ".join(projects[:3]) if projects else "ไม่ระบุ"
         else:
-            country_txt = (n.get("country") or "ไม่ระบุ").strip()
-            projects = n.get("projects") or []
-            if isinstance(projects, list):
-                proj_txt = ", ".join(projects[:3]) if projects else "ไม่ระบุ"
-            else:
-                proj_txt = str(projects)
+            proj_txt = str(projects)
 
         body_contents = [
             {
@@ -707,8 +619,6 @@ def create_flex(news_items):
             },
         ]
 
-        # ไม่แสดง summary_llm แล้ว
-
         impact_box = {
             "type": "box",
             "layout": "vertical",
@@ -716,7 +626,7 @@ def create_flex(news_items):
             "contents": [
                 {
                     "type": "text",
-                    "text": "ผลกระทบต่อโครงการ PTTEP",
+                    "text": "ผลกระทบต่อโครงการ",
                     "size": "lg",
                     "weight": "bold",
                     "color": "#000000",
@@ -863,22 +773,11 @@ def main():
 
     print("จำนวนข่าวที่มีผลกระทบต่อโครงการจริง ๆ:", len(tagged))
     if not tagged:
-        print("ไม่มีข่าวที่มีผลกระทบต่อโครงการของ PTTEP อย่างชัดเจน")
+        print("ไม่มีข่าวที่มีผลกระทบต่อโครงการอย่างชัดเจน")
         return
 
-    grouped = group_news(tagged)
-    print("หลัง group:", len(grouped))
-
-    for g in grouped:
-        if g.get("is_group"):
-            meta = gemini_group_summary(g)
-            g["summary_llm"] = meta.get("summary", "")
-            g["impact_reason"] = meta.get(
-                "impact_reason", "ยังไม่พบผลกระทบโดยตรงต่อโครงการของ PTTEP"
-            )
-            # group card: country / project จะใช้ข้อความ "หลายประเทศ / หลายโครงการ" ใน create_flex
-
-    selected = grouped[:10]
+    # ไม่ group แล้ว ใช้ข่าวเดี่ยวตรง ๆ
+    selected = tagged[:10]
 
     sent = load_sent_links()
     final = [n for n in selected if _normalize_link(n["link"]) not in sent]
