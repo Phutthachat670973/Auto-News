@@ -1,9 +1,12 @@
 # ============================================================================================================
-# PTTEP Domestic News Bot (Keep "domestic + strict country" behavior, but fix:
-# 1) too many raw news -> cap per feed / per country / total raw
-# 2) cover image -> resolve Google News link to publisher + fetch og:image
-# 3) projects != ALL -> enforce country->projects list + fallback
-# 4) add short summary in Flex
+# PTTEP Domestic News Bot (Google News SEARCH RSS - old style)
+# Requirement:
+# - Fetch domestic news for each PTTEP project country
+# - Send exactly as many items as "sent to LLM" (no post-filter drop)
+# - Reduce raw volume
+# - Real cover image (resolve Google News -> publisher -> og:image)
+# - Projects must be real (no ALL)
+# - Flex: split into chunks of 10 bubbles (LINE carousel limit)
 # ============================================================================================================
 
 import os
@@ -12,7 +15,10 @@ import json
 import time
 import random
 from datetime import datetime, timedelta
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, quote_plus, unquote
+from urllib.parse import (
+    urlparse, urlunparse, parse_qsl, urlencode,
+    quote_plus, unquote
+)
 
 import feedparser
 from dateutil import parser as dateutil_parser
@@ -43,27 +49,18 @@ model = genai.GenerativeModel(os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
 GEMINI_DAILY_BUDGET = int(os.getenv("GEMINI_DAILY_BUDGET", "250"))
 MAX_RETRIES = 6
 SLEEP_BETWEEN_CALLS = (0.5, 1.0)
-
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
-# -------------------------
-# ลดข่าวดิบตั้งแต่ต้น
-# -------------------------
-# จำกัดจำนวน entry ที่อ่านจาก RSS ต่อประเทศ (กัน 200+)
-MAX_ITEMS_PER_FEED = int(os.getenv("MAX_ITEMS_PER_FEED", "12"))     # แนะนำ 10-15
-# จำกัดจำนวนข่าวที่จะส่งเข้า LLM ต่อประเทศ
-MAX_PER_COUNTRY = int(os.getenv("MAX_PER_COUNTRY", "3"))           # แนะนำ 2-3
-# จำกัดจำนวนรวมที่จะส่งเข้า LLM
-MAX_LLM_ITEMS = int(os.getenv("MAX_LLM_ITEMS", "24"))              # แนะนำ 18-24
-# จำกัดข่าวจาก legacy/global feeds (ถ้าเปิด)
-MAX_GLOBAL_ITEMS = int(os.getenv("MAX_GLOBAL_ITEMS", "4"))         # แนะนำ 0-6
-# จำกัดจำนวนข่าวที่ส่ง LINE
-MAX_SEND = int(os.getenv("MAX_SEND", "10"))
+# ลดปริมาณข่าว
+MAX_ITEMS_PER_FEED = int(os.getenv("MAX_ITEMS_PER_FEED", "12"))  # cap ต่อประเทศ ตอนอ่าน RSS
+MAX_PER_COUNTRY = int(os.getenv("MAX_PER_COUNTRY", "2"))         # cap ต่อประเทศ ตอนส่งเข้า LLM
+MAX_LLM_ITEMS = int(os.getenv("MAX_LLM_ITEMS", "24"))            # cap รวม ตอนส่งเข้า LLM
 
-# window แบบ rolling กัน “เจอ 0” เวลา GH Actions รันไม่ตรงช่วงดึก
+# Rolling window กัน 0
 HOURS_BACK = int(os.getenv("HOURS_BACK", "12"))
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
+
 S = requests.Session()
 S.headers.update({"User-Agent": "Mozilla/5.0"})
 TIMEOUT = 15
@@ -74,27 +71,12 @@ os.makedirs(SENT_LINKS_DIR, exist_ok=True)
 DEFAULT_ICON_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png"
 
 # ============================================================================================================
-# COUNTRIES + PROJECTS
+# CONTEXT: Countries & Projects
 # ============================================================================================================
 PROJECT_COUNTRIES = [
     "Thailand", "Myanmar", "Vietnam", "Malaysia", "Indonesia",
     "UAE", "Oman", "Algeria", "Mozambique", "Australia", "Brazil", "Mexico"
 ]
-
-PROJECT_COUNTRY_SYNONYMS = {
-    "Thailand": ["thailand", "thai", "bangkok", "ประเทศไทย", "ไทย"],
-    "Myanmar": ["myanmar", "burma", "เมียนมา", "พม่า"],
-    "Vietnam": ["vietnam", "viet nam", "เวียดนาม"],
-    "Malaysia": ["malaysia", "malaysian", "มาเลเซีย"],
-    "Indonesia": ["indonesia", "indonesian", "อินโดนีเซีย"],
-    "UAE": ["uae", "united arab emirates", "abu dhabi", "dubai", "สหรัฐอาหรับเอมิเรตส์"],
-    "Oman": ["oman", "โอมาน"],
-    "Algeria": ["algeria", "algerian", "แอลจีเรีย"],
-    "Mozambique": ["mozambique", "rovuma", "โมซัมบิก"],
-    "Australia": ["australia", "australian", "ออสเตรเลีย"],
-    "Brazil": ["brazil", "brazilian", "บราซิล"],
-    "Mexico": ["mexico", "mexican", "เม็กซิโก"],
-}
 
 PROJECTS_BY_COUNTRY = {
     "Thailand": ["G1/61", "G2/61", "Arthit", "Sinphuhorm", "MTJDA Block A-18"],
@@ -127,16 +109,8 @@ Brazil – BM-ES-23, BM-ES-24
 Mexico – Mexico Block 12 (2.4)
 """
 
-def detect_project_countries(text: str):
-    t = (text or "").lower()
-    hits = []
-    for c, keys in PROJECT_COUNTRY_SYNONYMS.items():
-        if any(k in t for k in keys):
-            hits.append(c)
-    return sorted(set(hits))
-
 # ============================================================================================================
-# GOOGLE NEWS (แบบเดิม: search RSS) + TOPIC GUARDRAIL แบบกว้าง (ช่วยลดข่าวกีฬา/ดารา)
+# Google News SEARCH RSS (old style) + broad topic guardrail (reduce sports/celebrity noise)
 # ============================================================================================================
 COUNTRY_QUERY = {
     "Thailand": "Thailand OR ไทย OR ประเทศไทย OR Bangkok",
@@ -153,7 +127,6 @@ COUNTRY_QUERY = {
     "Mexico": "Mexico OR เม็กซิโก",
 }
 
-# กว้างพอสำหรับ econ/politics/energy + security แต่ลดกีฬา/ไลฟ์สไตล์ได้เยอะ
 TOPIC_GUARDRAIL = (
     "(economy OR economic OR inflation OR gdp OR currency OR rate OR bond OR trade OR tariff OR "
     "politics OR election OR government OR policy OR tax OR regulation OR ministry OR "
@@ -162,31 +135,13 @@ TOPIC_GUARDRAIL = (
 )
 
 def google_news_search_rss(q: str, hl="en", gl="US", ceid="US:en"):
-    # when:1d ลดข่าวเก่า / ช่วยคุมจำนวน
     q2 = f"({q}) {TOPIC_GUARDRAIL} when:1d"
     return f"https://news.google.com/rss/search?q={quote_plus(q2)}&hl={hl}&gl={gl}&ceid={ceid}"
 
-# ============================================================================================================
-# (Optional) legacy/global feeds (ปิด by default เพื่อลดข่าวดิบ)
-# เปิดได้ด้วย ENABLE_LEGACY_FEEDS=true
-# ============================================================================================================
-ENABLE_LEGACY_FEEDS = os.getenv("ENABLE_LEGACY_FEEDS", "false").lower() == "true"
-
-LEGACY_FEEDS = [
-    ("Oilprice", "GLOBAL", "https://oilprice.com/rss/main"),
-    ("Economist", "GLOBAL", "https://www.economist.com/latest/rss.xml"),
-    ("YahooFinance", "GLOBAL", "https://finance.yahoo.com/news/rssindex"),
-]
-
-NEWS_FEEDS = []
-for c in PROJECT_COUNTRIES:
-    NEWS_FEEDS.append(("GoogleNews", c, google_news_search_rss(COUNTRY_QUERY[c])))
-
-if ENABLE_LEGACY_FEEDS:
-    NEWS_FEEDS.extend(LEGACY_FEEDS)
+NEWS_FEEDS = [("GoogleNews", c, google_news_search_rss(COUNTRY_QUERY[c])) for c in PROJECT_COUNTRIES]
 
 # ============================================================================================================
-# HELPERS
+# Helpers
 # ============================================================================================================
 def _normalize_link(url: str) -> str:
     try:
@@ -210,7 +165,8 @@ def get_sent_links_file(date=None):
 
 def load_sent_links():
     sent = set()
-    p = get_sent_links_file(datetime.now(bangkok_tz).strftime("%Y-%m-%d"))
+    today_str = datetime.now(bangkok_tz).strftime("%Y-%m-%d")
+    p = get_sent_links_file(today_str)
     if os.path.exists(p):
         with open(p, "r", encoding="utf-8") as f:
             for line in f:
@@ -227,24 +183,21 @@ def save_sent_links(links):
 
 def _impact_to_bullets(text: str):
     if not text:
-        return ["ไม่ระบุผลกระทบต่อโครงการ"]
+        return ["ยังไม่พบผลกระทบที่ชัดเจน (ส่งเพื่อให้ติดตามต่อ)"]
+
     lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if not lines:
+        lines = [text.strip()]
+
     bullets = []
     for line in lines:
-        s = re.sub(r"^[\u2022\*\-\u00b7·•\s]+", "", line.strip())
+        s = line.strip()
+        s = re.sub(r"^[\u2022\*\-\u00b7·•\s]+", "", s)
         s = re.sub(r"^\d+[\.\)]\s*", "", s)
         if s:
             bullets.append(s)
-    return bullets or ["ไม่ระบุผลกระทบต่อโครงการ"]
 
-def has_meaningful_impact(impact_text: str) -> bool:
-    if not impact_text:
-        return False
-    t = impact_text.lower().replace(" ", "")
-    bad = ["ยังไม่พบผลกระทบ", "ไม่พบผลกระทบ", "ไม่ระบุผลกระทบ", "ไม่เกี่ยวข้อง", "ข้อมูลไม่เพียงพอ"]
-    if any(x.replace(" ", "") in t for x in bad):
-        return False
-    return len(impact_text.strip()) >= 20
+    return bullets or ["ยังไม่พบผลกระทบที่ชัดเจน (ส่งเพื่อให้ติดตามต่อ)"]
 
 def _extract_json_object(raw: str):
     if not raw:
@@ -253,12 +206,13 @@ def _extract_json_object(raw: str):
     if s.startswith("```"):
         s = re.sub(r"^```(json)?", "", s, flags=re.I).strip()
         s = re.sub(r"```$", "", s).strip()
+
     try:
         return json.loads(s)
     except Exception:
         pass
-    first = s.find("{")
-    last = s.rfind("}")
+
+    first, last = s.find("{"), s.rfind("}")
     if first != -1 and last != -1 and last > first:
         try:
             return json.loads(s[first:last + 1])
@@ -267,7 +221,7 @@ def _extract_json_object(raw: str):
     return None
 
 # ============================================================================================================
-# Resolve Google News link -> Publisher link (ทำให้รูปปกไม่เป็น Google)
+# Resolve Google News -> publisher link & og:image
 # ============================================================================================================
 def resolve_google_news_url(url: str) -> str:
     if not url:
@@ -279,17 +233,16 @@ def resolve_google_news_url(url: str) -> str:
         r = S.get(url, timeout=TIMEOUT, allow_redirects=True)
         html = r.text or ""
 
-        # pattern 1: google redirect url=...
+        # google redirect
         m = re.search(r'https?://www\.google\.[^/]+/url\?[^"\']*url=([^&"\']+)', html)
         if m:
             return unquote(m.group(1))
 
-        # pattern 2: sometimes publisher appears in "href" full url
+        # sometimes publisher link exists in href
         m = re.search(r'href="(https?://[^"]+)"', html, flags=re.I)
         if m and "news.google.com" not in m.group(1):
             return m.group(1)
 
-        # fallback: if requests ended on publisher domain already
         if r.url and "news.google.com" not in r.url:
             return r.url
     except Exception:
@@ -304,7 +257,6 @@ def fetch_article_image(url: str) -> str:
         r = S.get(url, timeout=TIMEOUT, allow_redirects=True)
         if r.status_code >= 400:
             return ""
-
         html = r.text or ""
 
         m = re.search(r'<meta[^>]+property=[\'"]og:image[\'"][^>]+content=[\'"]([^\'"]+)[\'"]', html, re.I)
@@ -315,12 +267,24 @@ def fetch_article_image(url: str) -> str:
         if m:
             return m.group(1)
 
+        # fallback: first <img>
+        m = re.search(r'<img[^>]+src=[\'"]([^\'"]+)[\'"]', html, re.I)
+        if m:
+            src = m.group(1)
+            if src.startswith("//"):
+                parsed = urlparse(url)
+                return f"{parsed.scheme}:{src}"
+            if src.startswith("/"):
+                parsed = urlparse(url)
+                return f"{parsed.scheme}://{parsed.netloc}{src}"
+            return src
+
         return ""
     except Exception:
         return ""
 
 # ============================================================================================================
-# GEMINI WRAPPER
+# Gemini wrapper
 # ============================================================================================================
 GEMINI_CALLS = 0
 
@@ -353,7 +317,7 @@ def call_gemini(prompt: str, want_json: bool = False):
     raise last_error
 
 # ============================================================================================================
-# GEMINI TAG+FILTER (keep strict country behavior + projects must be real names)
+# Gemini tag+filter (STRICT by feed country) but we will NOT DROP items after LLM
 # ============================================================================================================
 def gemini_tag_and_filter(news):
     feed_country = (news.get("feed_country") or "").strip()
@@ -380,11 +344,12 @@ def gemini_tag_and_filter(news):
 - ข่าวนี้ต้องเกี่ยวกับ "เหตุการณ์ในประเทศ {feed_country}" หรือกระทบประเทศนี้โดยตรงเท่านั้น
 - ถ้าไม่ใช่ประเทศนี้ → is_relevant=false
 - ไม่จำกัดหมวด: เศรษฐกิจ/การเมือง/พลังงาน/กฎหมาย/ความมั่นคง/แรงงาน ฯลฯ (ได้หมด)
+- ถ้าเป็น soft news (กีฬา/ดารา/ไวรัล) ที่ไม่โยงผลกระทบเชิงนโยบาย/เศรษฐกิจ/พลังงาน/ความมั่นคง → is_relevant=false
 
 ถ้า is_relevant=true:
 - country ต้องเป็น "{feed_country}" เท่านั้น
-- projects ห้ามใช้ ["ALL"] ห้ามใช้คำว่า "ALL"
-  ต้องเลือกจากรายการโครงการประเทศนี้เท่านั้น: {allowed_projects}
+- projects ห้ามใช้ ALL / ห้ามใช้ ["ALL"]
+  ต้องเลือกจากรายการนี้เท่านั้น: {allowed_projects}
   ถ้าไม่แน่ใจ ให้เลือก 1-2 โครงการที่ใกล้เคียง/เกี่ยวข้องที่สุดในประเทศนี้
 - summary: สรุปข่าวภาษาไทย 2–3 ประโยคว่าข่าวเกี่ยวกับอะไร
 - impact_reason: bullet หลายบรรทัด เฉพาะผลกระทบต่อโครงการ (ต้นทุน/กฎระเบียบ/ตารางงาน/ความเสี่ยง/ความต่อเนื่อง)
@@ -404,32 +369,28 @@ def gemini_tag_and_filter(news):
         if not isinstance(data, dict):
             return {"is_relevant": False}
 
-        if not data.get("is_relevant"):
-            return {"is_relevant": False}
-
-        if (data.get("country") or "").strip() != feed_country:
-            return {"is_relevant": False}
-
+        # normalize outputs
+        country = (data.get("country") or "").strip()
         projs = data.get("projects") or []
         if not isinstance(projs, list):
             projs = [str(projs)]
 
-        # กัน ALL
+        # remove ALL
         projs = [p for p in projs if isinstance(p, str) and p.strip().lower() != "all"]
 
-        # enforce allowed list
+        # enforce allowed list when possible
         projs = [p for p in projs if p in allowed_projects]
-
         if not projs:
             projs = allowed_projects[:2] if allowed_projects else []
 
+        data["country"] = country
         data["projects"] = projs
         return data
     except Exception:
         return {"is_relevant": False}
 
 # ============================================================================================================
-# FETCH NEWS (rolling window) + CAP per feed + resolve publisher link
+# Fetch news window (rolling) + cap per feed + resolve publisher links
 # ============================================================================================================
 def fetch_news_window():
     now_local = datetime.now(bangkok_tz)
@@ -456,19 +417,17 @@ def fetch_news_window():
                     title = getattr(e, "title", "") or ""
                     summary = getattr(e, "summary", "") or ""
                     link_google = getattr(e, "link", "") or ""
-
                     link_real = resolve_google_news_url(link_google)
 
                     out.append({
                         "site": site,
-                        "feed_country": feed_country,     # ประเทศของฟีด หรือ GLOBAL
+                        "feed_country": feed_country,
                         "title": title,
                         "summary": summary,
                         "link_google": link_google,
                         "link": link_real,
                         "published": dt,
                         "date": dt.strftime("%d/%m/%Y %H:%M"),
-                        "countries_hint": detect_project_countries(f"{title} {summary}"),
                     })
 
                     added += 1
@@ -477,7 +436,7 @@ def fetch_news_window():
         except Exception:
             pass
 
-    # dedupe ตาม link จริง
+    # dedupe by real link
     uniq, seen = [], set()
     for n in out:
         k = _normalize_link(n.get("link", ""))
@@ -489,7 +448,7 @@ def fetch_news_window():
     return uniq
 
 # ============================================================================================================
-# FLEX MESSAGE (เพิ่มสรุปข่าว)
+# Flex: split bubbles into messages of max 10 bubbles each
 # ============================================================================================================
 def create_flex(news_items):
     now_txt = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
@@ -504,6 +463,7 @@ def create_flex(news_items):
             img = DEFAULT_ICON_URL
 
         country_txt = (n.get("country") or n.get("feed_country") or "ไม่ระบุ").strip()
+
         projects = n.get("projects") or []
         proj_txt = ", ".join(projects[:3]) if isinstance(projects, list) and projects else "ไม่ระบุ"
 
@@ -515,7 +475,7 @@ def create_flex(news_items):
             {"type": "text", "text": n["title"], "weight": "bold", "size": "lg", "wrap": True},
             {"type": "text", "text": f"🗓 {n['date']}", "size": "xs", "color": "#888888", "margin": "sm"},
             {"type": "text", "text": f"🌍 {country_txt} | {n['site']}", "size": "xs", "color": "#448AFF", "margin": "xs"},
-            {"type": "text", "text": f"โครงการ: {proj_txt} | ประเทศ: {country_txt}", "size": "xs", "color": "#555555", "margin": "sm", "wrap": True},
+            {"type": "text", "text": f"โครงการ: {proj_txt}", "size": "xs", "color": "#555555", "margin": "sm", "wrap": True},
         ]
 
         if summary_txt:
@@ -532,8 +492,8 @@ def create_flex(news_items):
             "type": "box",
             "layout": "vertical",
             "margin": "lg",
-            "contents": [{"type": "text", "text": "ผลกระทบต่อโครงการ", "size": "lg", "weight": "bold", "color": "#000000"}]
-            + [{"type": "text", "text": f"• {b}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"} for b in bullets],
+            "contents": [{"type": "text", "text": "ผลกระทบต่อโครงการ", "size": "lg", "weight": "bold"}]
+            + [{"type": "text", "text": f"• {b}", "wrap": True, "size": "md", "weight": "bold", "margin": "xs"} for b in bullets],
         }
         body_contents.append(impact_box)
 
@@ -548,18 +508,28 @@ def create_flex(news_items):
             ]},
         })
 
-    return [{
-        "type": "flex",
-        "altText": f"ข่าว PTTEP (Domestic) {now_txt}",
-        "contents": {"type": "carousel", "contents": bubbles},
-    }]
+    # Split into chunks of 10 bubbles
+    messages = []
+    for i in range(0, len(bubbles), 10):
+        chunk = bubbles[i:i + 10]
+        part = (i // 10) + 1
+        messages.append({
+            "type": "flex",
+            "altText": f"ข่าว PTTEP (Domestic) {now_txt} [{part}]",
+            "contents": {"type": "carousel", "contents": chunk},
+        })
+
+    return messages
 
 # ============================================================================================================
-# LINE
+# LINE broadcast
 # ============================================================================================================
 def send_to_line(messages):
     url = "https://api.line.me/v2/bot/message/broadcast"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+    }
 
     for i, msg in enumerate(messages, 1):
         payload = {"messages": [msg]}
@@ -573,6 +543,7 @@ def send_to_line(messages):
         r = S.post(url, headers=headers, json=payload, timeout=15)
         print(f"Send {i}: {r.status_code}")
         print("Response body:", r.text)
+
         if r.status_code >= 300:
             break
 
@@ -590,67 +561,68 @@ def main():
 
     sent = load_sent_links()
 
-    # แยก per-country และ global (ถ้ามี)
+    # pick candidates per-country, skip already sent today
     per_country_count = {c: 0 for c in PROJECT_COUNTRIES}
     candidates = []
-    global_candidates = []
 
     for n in all_news:
         link_norm = _normalize_link(n.get("link", ""))
         if link_norm and link_norm in sent:
             continue
 
-        feed_country = (n.get("feed_country") or "").strip()
+        c = (n.get("feed_country") or "").strip()
+        if c not in PROJECT_COUNTRIES:
+            continue
 
-        if feed_country in PROJECT_COUNTRIES:
-            if per_country_count[feed_country] >= MAX_PER_COUNTRY:
-                continue
-            candidates.append(n)
-            per_country_count[feed_country] += 1
-        else:
-            global_candidates.append(n)
+        if per_country_count[c] >= MAX_PER_COUNTRY:
+            continue
 
-    # จำกัด global feeds
-    if ENABLE_LEGACY_FEEDS and global_candidates:
-        # เอาเฉพาะที่ hint ประเทศชัด (ลดเดา)
-        global_candidates = [g for g in global_candidates if len(g.get("countries_hint") or []) == 1]
-        global_candidates = global_candidates[:MAX_GLOBAL_ITEMS]
-    else:
-        global_candidates = []
+        candidates.append(n)
+        per_country_count[c] += 1
 
-    combined = (candidates + global_candidates)[:MAX_LLM_ITEMS]
-    print("จำนวนข่าวที่ส่งเข้า LLM:", len(combined),
-          f"(per-country={len(candidates)}, global={len(global_candidates)})")
+        if len(candidates) >= MAX_LLM_ITEMS:
+            break
+
+    print("จำนวนข่าวที่ส่งเข้า LLM:", len(candidates))
+
+    if not candidates:
+        print("ไม่มีข่าวใหม่หลังตัดซ้ำ")
+        return
 
     tagged = []
-    for idx, n in enumerate(combined, 1):
-        print(f"[{idx}/{len(combined)}] LLM tag+filter: ({n.get('feed_country')}) {n['title'][:80]}...")
+    for idx, n in enumerate(candidates, 1):
+        print(f"[{idx}/{len(candidates)}] LLM tag+filter: ({n.get('feed_country')}) {n['title'][:80]}...")
 
         tag = gemini_tag_and_filter(n)
-        if not tag.get("is_relevant"):
-            time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
-            continue
 
-        n["country"] = tag.get("country", n.get("feed_country"))
-        n["projects"] = tag.get("projects", []) or PROJECTS_BY_COUNTRY.get(n["country"], [])[:2]
-        n["impact_reason"] = tag.get("impact_reason", "")
-        n["summary_llm"] = tag.get("summary", "")
+        feed_country = (n.get("feed_country") or "").strip()
+        allowed_projects = PROJECTS_BY_COUNTRY.get(feed_country, [])[:2]
 
-        if not has_meaningful_impact(n["impact_reason"]):
-            time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
-            continue
+        # IMPORTANT: do NOT DROP after LLM
+        n["country"] = (tag.get("country") or feed_country or "ไม่ระบุ").strip()
+
+        # projects: enforce no ALL and fallback
+        projs = tag.get("projects") or []
+        if not isinstance(projs, list):
+            projs = [str(projs)]
+        projs = [p for p in projs if isinstance(p, str) and p.strip().lower() != "all"]
+        if not projs:
+            projs = allowed_projects
+        n["projects"] = projs
+
+        # always summary
+        n["summary_llm"] = (tag.get("summary") or n.get("summary") or n["title"]).strip()
+
+        # always impact
+        n["impact_reason"] = (tag.get("impact_reason") or "ยังไม่พบผลกระทบที่ชัดเจน (ส่งเพื่อให้ติดตามต่อ)").strip()
 
         tagged.append(n)
         time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
 
-    print("จำนวนข่าวที่ผ่าน (domestic + strict country):", len(tagged))
-    if not tagged:
-        print("ไม่มีข่าวที่มีผลกระทบชัดเจน")
-        return
+    # Send exactly as many as sent-to-LLM
+    final = tagged
 
-    final = tagged[:MAX_SEND]
-
-    # รูปปก: ดึงจาก publisher link (ไม่ใช่ Google)
+    # cover images from publisher link
     for n in final:
         img = fetch_article_image(n.get("link", ""))
         if not (isinstance(img, str) and img.startswith(("http://", "https://"))):
