@@ -1,12 +1,10 @@
 # ============================================================================================================
 # PTTEP Domestic News Bot (Google News SEARCH RSS - old style)
-# Requirement:
-# - Fetch domestic news for each PTTEP project country
 # - Send exactly as many items as "sent to LLM" (no post-filter drop)
-# - Reduce raw volume
-# - Real cover image (resolve Google News -> publisher -> og:image)
+# - Fix HTML summary from Google News (<a href=...>) by cleaning HTML
+# - Resolve Google News -> publisher link for real og:image
 # - Projects must be real (no ALL)
-# - Flex: split into chunks of 10 bubbles (LINE carousel limit)
+# - Flex: split into chunks of 10 bubbles each
 # ============================================================================================================
 
 import os
@@ -14,6 +12,7 @@ import re
 import json
 import time
 import random
+import html as _html
 from datetime import datetime, timedelta
 from urllib.parse import (
     urlparse, urlunparse, parse_qsl, urlencode,
@@ -127,6 +126,7 @@ COUNTRY_QUERY = {
     "Mexico": "Mexico OR เม็กซิโก",
 }
 
+# กว้างพอสำหรับ econ/politics/energy + security แต่ช่วยลดกีฬา/ไลฟ์สไตล์ได้เยอะ
 TOPIC_GUARDRAIL = (
     "(economy OR economic OR inflation OR gdp OR currency OR rate OR bond OR trade OR tariff OR "
     "politics OR election OR government OR policy OR tax OR regulation OR ministry OR "
@@ -141,8 +141,18 @@ def google_news_search_rss(q: str, hl="en", gl="US", ceid="US:en"):
 NEWS_FEEDS = [("GoogleNews", c, google_news_search_rss(COUNTRY_QUERY[c])) for c in PROJECT_COUNTRIES]
 
 # ============================================================================================================
-# Helpers
+# HELPERS
 # ============================================================================================================
+def clean_text(s: str) -> str:
+    """Remove HTML tags (& decode HTML entities) from RSS fields / model outputs."""
+    if not s:
+        return ""
+    s = str(s)
+    s = re.sub(r"<[^>]+>", " ", s)         # remove tags
+    s = _html.unescape(s)                  # decode &amp; etc.
+    s = re.sub(r"\s+", " ", s).strip()     # normalize whitespace
+    return s
+
 def _normalize_link(url: str) -> str:
     try:
         p = urlparse(url)
@@ -184,6 +194,8 @@ def save_sent_links(links):
 def _impact_to_bullets(text: str):
     if not text:
         return ["ยังไม่พบผลกระทบที่ชัดเจน (ส่งเพื่อให้ติดตามต่อ)"]
+
+    text = clean_text(text)
 
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not lines:
@@ -233,16 +245,17 @@ def resolve_google_news_url(url: str) -> str:
         r = S.get(url, timeout=TIMEOUT, allow_redirects=True)
         html = r.text or ""
 
-        # google redirect
+        # google redirect pattern
         m = re.search(r'https?://www\.google\.[^/]+/url\?[^"\']*url=([^&"\']+)', html)
         if m:
             return unquote(m.group(1))
 
-        # sometimes publisher link exists in href
+        # publisher link in href
         m = re.search(r'href="(https?://[^"]+)"', html, flags=re.I)
         if m and "news.google.com" not in m.group(1):
             return m.group(1)
 
+        # final redirected url might already be publisher
         if r.url and "news.google.com" not in r.url:
             return r.url
     except Exception:
@@ -369,6 +382,12 @@ def gemini_tag_and_filter(news):
         if not isinstance(data, dict):
             return {"is_relevant": False}
 
+        # clean model text fields
+        if isinstance(data.get("summary"), str):
+            data["summary"] = clean_text(data["summary"])
+        if isinstance(data.get("impact_reason"), str):
+            data["impact_reason"] = clean_text(data["impact_reason"])
+
         # normalize outputs
         country = (data.get("country") or "").strip()
         projs = data.get("projects") or []
@@ -414,8 +433,9 @@ def fetch_news_window():
                 dt = dt.astimezone(bangkok_tz)
 
                 if start <= dt <= end:
-                    title = getattr(e, "title", "") or ""
-                    summary = getattr(e, "summary", "") or ""
+                    title = clean_text(getattr(e, "title", "") or "")
+                    summary = clean_text(getattr(e, "summary", "") or "")
+
                     link_google = getattr(e, "link", "") or ""
                     link_real = resolve_google_news_url(link_google)
 
@@ -467,7 +487,7 @@ def create_flex(news_items):
         projects = n.get("projects") or []
         proj_txt = ", ".join(projects[:3]) if isinstance(projects, list) and projects else "ไม่ระบุ"
 
-        summary_txt = (n.get("summary_llm") or "").strip()
+        summary_txt = clean_text(n.get("summary_llm") or "")
         if len(summary_txt) > 260:
             summary_txt = summary_txt[:260].rstrip() + "…"
 
@@ -610,11 +630,11 @@ def main():
             projs = allowed_projects
         n["projects"] = projs
 
-        # always summary
-        n["summary_llm"] = (tag.get("summary") or n.get("summary") or n["title"]).strip()
+        # always summary (clean)
+        n["summary_llm"] = clean_text(tag.get("summary") or n.get("summary") or n["title"])
 
-        # always impact
-        n["impact_reason"] = (tag.get("impact_reason") or "ยังไม่พบผลกระทบที่ชัดเจน (ส่งเพื่อให้ติดตามต่อ)").strip()
+        # always impact (clean)
+        n["impact_reason"] = clean_text(tag.get("impact_reason") or "ยังไม่พบผลกระทบที่ชัดเจน (ส่งเพื่อให้ติดตามต่อ)")
 
         tagged.append(n)
         time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
