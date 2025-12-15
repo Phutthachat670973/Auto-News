@@ -1,13 +1,10 @@
 # ============================================================================================================
-# PTTEP Domestic News Bot (Google News SEARCH RSS - 2-pass scoring + source-based impact)
-# - Pull Google News RSS per PTTEP project country
-# - Resolve Google News link -> publisher, fetch source context (og:description/meta/first paragraphs)
-# - Gemini outputs: relevance_score (0-100) + impact_strength (high/medium/low) + impact_reason (from source)
-# - Selection:
-#     * If any impact_strength != low => send those
-#     * Else send top 1-3 by relevance_score (label "ต้องติดตามต่อ")
-# - Fix HTML summary (<a href=...>)
-# - Flex: split into chunks of 10 bubbles each
+# PTTEP Domestic News Bot (Google News SEARCH RSS - NO MAX LIMITS)
+# - Pull ALL news (no MAX_ITEMS_PER_FEED / MAX_PER_COUNTRY / MAX_LLM_ITEMS / SEND_MAX)
+# - Resolve Google News link -> publisher
+# - Fetch source context (og:description/meta/lead paragraphs)
+# - Gemini summarizes impact based on source context (no hallucination)
+# - Send ALL items to LINE (split 10 bubbles per flex carousel automatically)
 # ============================================================================================================
 
 import os
@@ -53,18 +50,14 @@ MAX_RETRIES = 6
 SLEEP_BETWEEN_CALLS = (0.6, 1.2)
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
-# ปริมาณข่าว
-MAX_ITEMS_PER_FEED = int(os.getenv("MAX_ITEMS_PER_FEED", "12"))  # cap ตอนอ่าน RSS ต่อประเทศ
-MAX_PER_COUNTRY = int(os.getenv("MAX_PER_COUNTRY", "2"))         # cap ส่งเข้า LLM ต่อประเทศ
-MAX_LLM_ITEMS = int(os.getenv("MAX_LLM_ITEMS", "24"))            # cap รวมส่งเข้า LLM
+# Rolling window (ยังคงไว้เพื่อไม่ให้ RSS เก่ามากเกิน)
 HOURS_BACK = int(os.getenv("HOURS_BACK", "12"))
 
-# คัดส่งแบบ 2-pass
-FALLBACK_TOPK = int(os.getenv("FALLBACK_TOPK", "3"))             # ถ้าไม่มี impact ชัดเจน ส่ง top-k
-SEND_MAX = int(os.getenv("SEND_MAX", "20"))                      # กันส่งเยอะเกิน (ยังแบ่ง 10/batch ได้)
-
-# บริบทจากแหล่งข่าว
+# บริบทจากแหล่งข่าว (ตัดความยาวเพื่อกัน token)
 SOURCE_CONTEXT_MAX_CHARS = int(os.getenv("SOURCE_CONTEXT_MAX_CHARS", "1400"))
+
+# หน่วงตอนยิง LINE กันถี่เกิน
+SLEEP_BETWEEN_LINE_SEND = float(os.getenv("SLEEP_BETWEEN_LINE_SEND", "0.25"))
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 
@@ -199,7 +192,7 @@ def save_sent_links(links):
 
 def _impact_to_bullets(text: str):
     if not text:
-        return ["ยังไม่พบผลกระทบที่ชัดเจน (ส่งเพื่อให้ติดตามต่อ)"]
+        return ["ยังไม่พบผลกระทบที่ชัดเจนจากแหล่งข่าว (ส่งเพื่อให้ติดตามต่อ)"]
     text = clean_text(text)
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not lines:
@@ -211,7 +204,7 @@ def _impact_to_bullets(text: str):
         s = re.sub(r"^\d+[\.\)]\s*", "", s)
         if s:
             bullets.append(s)
-    return bullets or ["ยังไม่พบผลกระทบที่ชัดเจน (ส่งเพื่อให้ติดตามต่อ)"]
+    return bullets or ["ยังไม่พบผลกระทบที่ชัดเจนจากแหล่งข่าว (ส่งเพื่อให้ติดตามต่อ)"]
 
 def _extract_json_object(raw: str):
     if not raw:
@@ -278,10 +271,9 @@ def fetch_source_context(url: str) -> str:
         og_desc  = _meta([r'<meta[^>]+property=[\'"]og:description[\'"][^>]+content=[\'"]([^\'"]+)[\'"]'])
         meta_desc = _meta([r'<meta[^>]+name=[\'"]description[\'"][^>]+content=[\'"]([^\'"]+)[\'"]'])
 
-        # naive paragraph extraction
         paras = re.findall(r"<p[^>]*>(.*?)</p>", html, flags=re.I | re.S)
         para_texts = []
-        for p in paras[:8]:
+        for p in paras[:10]:
             t = clean_text(p)
             if len(t) >= 40:
                 para_texts.append(t)
@@ -362,9 +354,6 @@ def call_gemini(prompt: str, want_json: bool = False):
             raise e
     raise last_error
 
-# ============================================================================================================
-# Gemini 2-pass schema: score + strength + source-based impact
-# ============================================================================================================
 def gemini_score_and_impact(news):
     feed_country = (news.get("feed_country") or "").strip()
     allowed_projects = PROJECTS_BY_COUNTRY.get(feed_country, [])
@@ -398,66 +387,62 @@ def gemini_score_and_impact(news):
   - low: ข่าวทั่วไป/soft news หรือเชื่อมโยงยาก
 
 สำคัญ: impact_reason ต้อง “อิงจากข้อมูลในแหล่งข่าว” ที่ให้ด้านล่าง
-- ห้ามตอบลอย ๆ ว่า "อาจมีผล" โดยไม่โยงเหตุผลจาก source_context
+- ห้ามตอบลอย ๆ โดยไม่โยงเหตุผลจาก source_context
 - เขียนเป็น bullet 1–3 บรรทัด อธิบายว่า "กระทบโครงการในประเทศนี้ยังไง" (ต้นทุน/กฎระเบียบ/ความเสี่ยง/การดำเนินงาน)
-- ถ้าในแหล่งข่าวไม่ได้ระบุผลกระทบโดยตรง ให้เขียนว่า "ยังไม่พบผลกระทบโดยตรง" แต่ต้องอธิบายเหตุผลจากเนื้อข่าวว่าทำไมถึงยังสรุปไม่ได้
+- ถ้าแหล่งข่าวไม่ระบุผลกระทบโดยตรง ให้เขียนว่า "ยังไม่พบผลกระทบโดยตรงจากแหล่งข่าว" + อธิบายว่าข้อมูลในข่าวพูดถึงอะไร
 
 projects:
 - ห้ามใช้ ALL
 - เลือกจากรายการนี้เท่านั้น: {allowed_projects}
-- ถ้าไม่แน่ใจ ให้เลือก 1–2 โครงการที่เป็นตัวแทนประเทศนี้ (เช่นโครงการหลัก)
+- ถ้าไม่แน่ใจ ให้เลือก 1–2 โครงการที่เป็นตัวแทนประเทศนี้
 
 อินพุตข่าว:
 หัวข้อ: {news['title']}
-สรุปจาก RSS (clean): {news['summary']}
-source_context (จากหน้าแหล่งข่าว): {news.get('source_context','')}
+สรุปจาก RSS: {news['summary']}
+source_context: {news.get('source_context','')}
 
 ตอบเป็น JSON ตาม schema เท่านั้น:
 {json.dumps(schema, ensure_ascii=False)}
 """
 
-    try:
-        r = call_gemini(prompt, want_json=True)
-        raw = (getattr(r, "text", "") or "").strip()
-        data = _extract_json_object(raw)
-        if not isinstance(data, dict):
-            return {"is_relevant": False, "relevance_score": 0, "impact_strength": "low"}
-
-        # clean text fields
-        if isinstance(data.get("summary"), str):
-            data["summary"] = clean_text(data["summary"])
-        if isinstance(data.get("impact_reason"), str):
-            data["impact_reason"] = clean_text(data["impact_reason"])
-
-        # normalize projects
-        projs = data.get("projects") or []
-        if not isinstance(projs, list):
-            projs = [str(projs)]
-        projs = [p for p in projs if isinstance(p, str) and p.strip().lower() != "all"]
-        projs = [p for p in projs if p in allowed_projects]
-        if not projs:
-            projs = allowed_projects[:2] if allowed_projects else []
-        data["projects"] = projs
-
-        # enforce country label
-        data["country"] = feed_country
-
-        # clamp score
-        try:
-            sc = int(data.get("relevance_score", 0))
-        except Exception:
-            sc = 0
-        data["relevance_score"] = max(0, min(100, sc))
-
-        if data.get("impact_strength") not in ("high", "medium", "low"):
-            data["impact_strength"] = "low"
-
-        return data
-    except Exception:
+    r = call_gemini(prompt, want_json=True)
+    raw = (getattr(r, "text", "") or "").strip()
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict):
         return {"is_relevant": False, "relevance_score": 0, "impact_strength": "low"}
 
+    if isinstance(data.get("summary"), str):
+        data["summary"] = clean_text(data["summary"])
+    if isinstance(data.get("impact_reason"), str):
+        data["impact_reason"] = clean_text(data["impact_reason"])
+
+    # normalize projects
+    projs = data.get("projects") or []
+    if not isinstance(projs, list):
+        projs = [str(projs)]
+    projs = [p for p in projs if isinstance(p, str) and p.strip().lower() != "all"]
+    projs = [p for p in projs if p in allowed_projects]
+    if not projs:
+        projs = allowed_projects[:2] if allowed_projects else []
+    data["projects"] = projs
+
+    # enforce country
+    data["country"] = feed_country
+
+    # clamp score
+    try:
+        sc = int(data.get("relevance_score", 0))
+    except Exception:
+        sc = 0
+    data["relevance_score"] = max(0, min(100, sc))
+
+    if data.get("impact_strength") not in ("high", "medium", "low"):
+        data["impact_strength"] = "low"
+
+    return data
+
 # ============================================================================================================
-# Fetch news window (rolling) + cap per feed
+# Fetch ALL news in window (no per-feed max)
 # ============================================================================================================
 def fetch_news_window():
     now_local = datetime.now(bangkok_tz)
@@ -468,8 +453,6 @@ def fetch_news_window():
     for site, feed_country, url in NEWS_FEEDS:
         try:
             feed = feedparser.parse(url)
-            added = 0
-
             for e in feed.entries:
                 pub = getattr(e, "published", None) or getattr(e, "updated", None)
                 if not pub:
@@ -483,7 +466,6 @@ def fetch_news_window():
                 if start <= dt <= end:
                     title = clean_text(getattr(e, "title", "") or "")
                     summary = clean_text(getattr(e, "summary", "") or "")
-
                     link_google = getattr(e, "link", "") or ""
                     link_real = resolve_google_news_url(link_google)
 
@@ -497,10 +479,6 @@ def fetch_news_window():
                         "published": dt,
                         "date": dt.strftime("%d/%m/%Y %H:%M"),
                     })
-
-                    added += 1
-                    if added >= MAX_ITEMS_PER_FEED:
-                        break
         except Exception:
             pass
 
@@ -516,7 +494,7 @@ def fetch_news_window():
     return uniq
 
 # ============================================================================================================
-# FLEX MESSAGE (split 10/batch)
+# FLEX (split 10/batch)
 # ============================================================================================================
 def create_flex(news_items):
     now_txt = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
@@ -534,21 +512,24 @@ def create_flex(news_items):
         projects = n.get("projects") or []
         proj_txt = ", ".join(projects[:3]) if isinstance(projects, list) and projects else "ไม่ระบุ"
 
-        summary_txt = clean_text(n.get("summary_llm") or "")
+        summary_txt = clean_text(n.get("summary_llm") or n.get("summary") or "")
         if len(summary_txt) > 260:
             summary_txt = summary_txt[:260].rstrip() + "…"
 
         score = n.get("relevance_score", 0)
         strength = n.get("impact_strength", "low")
-        follow = " | ต้องติดตามต่อ" if n.get("follow_up") else ""
+        note = n.get("note", "")
 
         body_contents = [
             {"type": "text", "text": n["title"], "weight": "bold", "size": "lg", "wrap": True},
             {"type": "text", "text": f"🗓 {n['date']}", "size": "xs", "color": "#888888", "margin": "sm"},
             {"type": "text", "text": f"🌍 {country_txt} | {n['site']}", "size": "xs", "color": "#448AFF", "margin": "xs"},
             {"type": "text", "text": f"โครงการ: {proj_txt}", "size": "xs", "color": "#555555", "margin": "sm", "wrap": True},
-            {"type": "text", "text": f"คะแนน: {score}/100 | ระดับ: {strength}{follow}", "size": "xs", "color": "#555555", "margin": "sm", "wrap": True},
+            {"type": "text", "text": f"คะแนน: {score}/100 | ระดับ: {strength}", "size": "xs", "color": "#555555", "margin": "sm", "wrap": True},
         ]
+
+        if note:
+            body_contents.append({"type": "text", "text": note, "size": "xs", "color": "#999999", "margin": "xs", "wrap": True})
 
         if summary_txt:
             body_contents.append({
@@ -564,7 +545,7 @@ def create_flex(news_items):
             "type": "box",
             "layout": "vertical",
             "margin": "lg",
-            "contents": [{"type": "text", "text": "ผลกระทบต่อโครงการ", "size": "lg", "weight": "bold"}]
+            "contents": [{"type": "text", "text": "ผลกระทบต่อโครงการ (อิงจากแหล่งข่าว)", "size": "lg", "weight": "bold"}]
             + [{"type": "text", "text": f"• {b}", "wrap": True, "size": "md", "weight": "bold", "margin": "xs"} for b in bullets],
         }
         body_contents.append(impact_box)
@@ -580,7 +561,6 @@ def create_flex(news_items):
             ]},
         })
 
-    # split 10/batch
     messages = []
     for i in range(0, len(bubbles), 10):
         chunk = bubbles[i:i + 10]
@@ -590,7 +570,6 @@ def create_flex(news_items):
             "altText": f"ข่าว PTTEP (Domestic) {now_txt} [{part}]",
             "contents": {"type": "carousel", "contents": chunk},
         })
-
     return messages
 
 # ============================================================================================================
@@ -613,11 +592,14 @@ def send_to_line(messages):
             continue
 
         r = S.post(url, headers=headers, json=payload, timeout=15)
-        print(f"Send {i}: {r.status_code}")
+        print(f"Send {i}/{len(messages)}: {r.status_code}")
         print("Response body:", r.text)
 
         if r.status_code >= 300:
+            print("หยุดส่งเพราะ LINE ตอบ error")
             break
+
+        time.sleep(SLEEP_BETWEEN_LINE_SEND)
 
 # ============================================================================================================
 # MAIN
@@ -633,86 +615,94 @@ def main():
 
     sent = load_sent_links()
 
-    # เลือก candidates: ต่อประเทศ + ไม่ซ้ำวันนี้
-    per_country_count = {c: 0 for c in PROJECT_COUNTRIES}
+    # เอาข่าวทั้งหมด (ไม่ใส่ Max) แต่ยังตัดซ้ำในวันเดียวกัน
     candidates = []
-
     for n in all_news:
         link_norm = _normalize_link(n.get("link", ""))
         if link_norm and link_norm in sent:
             continue
-
-        c = (n.get("feed_country") or "").strip()
-        if c not in PROJECT_COUNTRIES:
-            continue
-
-        if per_country_count[c] >= MAX_PER_COUNTRY:
-            continue
-
-        # เติม source_context จากแหล่งข่าวจริง
-        n["source_context"] = fetch_source_context(n.get("link", ""))
         candidates.append(n)
-        per_country_count[c] += 1
 
-        if len(candidates) >= MAX_LLM_ITEMS:
-            break
-
-    print("จำนวนข่าวที่ส่งเข้า LLM:", len(candidates))
+    print("จำนวนข่าวใหม่ (หลังตัดซ้ำวันนี้):", len(candidates))
     if not candidates:
-        print("ไม่มีข่าวใหม่หลังตัดซ้ำ")
+        print("ไม่มีข่าวใหม่")
         return
 
     tagged = []
-    for idx, n in enumerate(candidates, 1):
-        print(f"[{idx}/{len(candidates)}] LLM score+impact: ({n.get('feed_country')}) {n['title'][:80]}...")
-        tag = gemini_score_and_impact(n)
+    quota_exhausted = False
 
-        n["country"] = (tag.get("country") or n.get("feed_country") or "ไม่ระบุ").strip()
-        n["projects"] = tag.get("projects") or PROJECTS_BY_COUNTRY.get(n["country"], [])[:2]
-        n["summary_llm"] = clean_text(tag.get("summary") or n.get("summary") or n["title"])
-        n["impact_reason"] = clean_text(tag.get("impact_reason") or "ยังไม่พบผลกระทบที่ชัดเจน (ส่งเพื่อให้ติดตามต่อ)")
-        n["relevance_score"] = int(tag.get("relevance_score", 0) or 0)
-        n["impact_strength"] = tag.get("impact_strength", "low")
-        n["is_relevant"] = bool(tag.get("is_relevant", False))
+    for idx, n in enumerate(candidates, 1):
+        print(f"[{idx}/{len(candidates)}] เตรียม source_context: ({n.get('feed_country')}) {n['title'][:80]}...")
+
+        # ดึง context จากแหล่งข่าวจริง (ช่วยให้สรุปผลกระทบ “อิงแหล่งข่าว”)
+        n["source_context"] = fetch_source_context(n.get("link", ""))
+
+        if not quota_exhausted:
+            try:
+                print(f"    -> Gemini score+impact (calls={GEMINI_CALLS}/{GEMINI_DAILY_BUDGET})")
+                tag = gemini_score_and_impact(n)
+
+                n["country"] = (tag.get("country") or n.get("feed_country") or "ไม่ระบุ").strip()
+                n["projects"] = tag.get("projects") or PROJECTS_BY_COUNTRY.get(n["country"], [])[:2]
+                n["summary_llm"] = clean_text(tag.get("summary") or n.get("summary") or n["title"])
+                n["impact_reason"] = clean_text(tag.get("impact_reason") or "ยังไม่พบผลกระทบโดยตรงจากแหล่งข่าว (ส่งเพื่อให้ติดตามต่อ)")
+                n["relevance_score"] = int(tag.get("relevance_score", 0) or 0)
+                n["impact_strength"] = tag.get("impact_strength", "low")
+                n["is_relevant"] = bool(tag.get("is_relevant", False))
+            except RuntimeError as e:
+                # โควต้าเต็ม -> ไม่มั่วผลกระทบต่อจากนี้
+                if "โควต้า" in str(e) or "quota" in str(e).lower():
+                    quota_exhausted = True
+                    n["note"] = "หมายเหตุ: โควต้า Gemini เต็มแล้ว ข่าวถัดไปจะไม่ประเมินด้วย LLM"
+                else:
+                    n["note"] = f"หมายเหตุ: LLM error ({str(e)[:120]})"
+                # fallback แบบไม่มั่ว
+                n["country"] = (n.get("feed_country") or "ไม่ระบุ").strip()
+                n["projects"] = PROJECTS_BY_COUNTRY.get(n["country"], [])[:2]
+                n["summary_llm"] = clean_text(n.get("summary") or n["title"])
+                n["impact_reason"] = "ยังไม่ได้ประเมินผลกระทบด้วย LLM (โควต้า/ข้อผิดพลาด) — โปรดอ่านแหล่งข่าว"
+                n["relevance_score"] = 0
+                n["impact_strength"] = "low"
+                n["is_relevant"] = False
+            except Exception as e:
+                n["note"] = f"หมายเหตุ: LLM error ({str(e)[:120]})"
+                n["country"] = (n.get("feed_country") or "ไม่ระบุ").strip()
+                n["projects"] = PROJECTS_BY_COUNTRY.get(n["country"], [])[:2]
+                n["summary_llm"] = clean_text(n.get("summary") or n["title"])
+                n["impact_reason"] = "ยังไม่ได้ประเมินผลกระทบด้วย LLM (ข้อผิดพลาด) — โปรดอ่านแหล่งข่าว"
+                n["relevance_score"] = 0
+                n["impact_strength"] = "low"
+                n["is_relevant"] = False
+        else:
+            # โควต้าเต็มแล้ว -> ส่งข่าวต่อ แต่ไม่แต่งผลกระทบ
+            n["note"] = "ไม่ได้ประเมินด้วย LLM (โควต้าเต็ม) — โปรดอ่านแหล่งข่าว"
+            n["country"] = (n.get("feed_country") or "ไม่ระบุ").strip()
+            n["projects"] = PROJECTS_BY_COUNTRY.get(n["country"], [])[:2]
+            n["summary_llm"] = clean_text(n.get("summary") or n["title"])
+            n["impact_reason"] = "ยังไม่ได้ประเมินผลกระทบด้วย LLM (โควต้าเต็ม) — โปรดอ่านแหล่งข่าว"
+            n["relevance_score"] = 0
+            n["impact_strength"] = "low"
+            n["is_relevant"] = False
 
         tagged.append(n)
         time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
 
-    # ===== 2-pass selection =====
-    relevant = [x for x in tagged if x.get("is_relevant")]
-    strong = [x for x in relevant if x.get("impact_strength") in ("high", "medium")]
+    print("จำนวนข่าวทั้งหมดที่จะส่ง:", len(tagged))
 
-    if strong:
-        final = strong
-        for x in final:
-            x["follow_up"] = False
-        print("มีข่าว impact ชัดเจน:", len(final))
-    else:
-        # fallback: top-k by relevance_score (ส่งเพื่อให้ติดตามต่อ)
-        pool = relevant if relevant else tagged
-        pool.sort(key=lambda x: int(x.get("relevance_score", 0) or 0), reverse=True)
-        final = pool[:max(1, FALLBACK_TOPK)]
-        for x in final:
-            x["follow_up"] = True
-            # ถ้า impact_reason ว่าง/กลางมาก ให้บังคับให้มีประโยคหนึ่งเสมอ
-            if not x.get("impact_reason"):
-                x["impact_reason"] = "ยังไม่พบผลกระทบโดยตรงจากแหล่งข่าว (ส่งเพื่อให้ติดตามต่อ)"
-        print("ไม่มีข่าว impact ชัดเจน → ส่ง fallback top:", len(final))
-
-    # กันส่งมากเกิน
-    final = final[:SEND_MAX]
-
-    # ภาพปกจาก publisher
-    for n in final:
+    # รูปปก: พยายามดึงจาก publisher ถ้าไม่ได้ใช้ default
+    for i, n in enumerate(tagged, 1):
+        print(f"[img {i}/{len(tagged)}] ดึงรูป: {n.get('title','')[:60]}...")
         img = fetch_article_image(n.get("link", ""))
         if not (isinstance(img, str) and img.startswith(("http://", "https://"))):
             img = DEFAULT_ICON_URL
         n["image"] = img
-        time.sleep(0.2)
+        time.sleep(0.15)
 
-    msgs = create_flex(final)
+    msgs = create_flex(tagged)
+    print("จำนวน flex messages ที่จะส่ง (10 ข่าว/ข้อความ):", len(msgs))
+
     send_to_line(msgs)
-    save_sent_links([n["link"] for n in final])
+    save_sent_links([n["link"] for n in tagged])
 
     print("เสร็จสิ้น")
 
