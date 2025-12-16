@@ -2,7 +2,7 @@ name: Daily News Bot
 
 on:
   schedule:
-    - cron: "0 23 * * *"  # 06:00 AM (ไทย) = 23:00 UTC
+    - cron: "0 23 * * *"  # 06:00 AM ไทย = 23:00 UTC
   workflow_dispatch:
 
 permissions:
@@ -27,21 +27,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirement.txt
 
-      # ---------- รันโค้ดหลัก ----------
+      - name: Syntax check
+        run: python -m py_compile news.py
+
       - name: Run news.py
         env:
           DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
-          # ===== กันรันนาน / คุมจำนวนข่าว =====
-          MAX_LLM_ITEMS: "80"
-          MAX_PER_COUNTRY: "8"
+          # ===== กันรันนาน/คุมจำนวนข่าว =====
+          MAX_LLM_ITEMS: "90"
+          MAX_PER_COUNTRY: "10"
           MAX_GLOBAL_ITEMS: "20"
-          ENABLE_IMPACT_REWRITE: "false"
           MAX_RETRIES: "3"
+          ENABLE_IMPACT_REWRITE: "true"
 
-          # ===== เร่งให้จบเร็วบน GitHub Actions =====
+          # ===== เร่งให้จบเร็วบน Actions =====
           SLEEP_MIN: "0.2"
           SLEEP_MAX: "0.6"
           RUN_DEADLINE_MIN: "20"
@@ -52,7 +54,6 @@ jobs:
         run: |
           python -u news.py
 
-      # ---------- commit sent_links ----------
       - name: Commit and push sent_links
         if: always()
         run: |
