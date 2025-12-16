@@ -2,42 +2,62 @@ name: Daily News Bot
 
 on:
   schedule:
-    - cron: '0 23 * * *'  # 06:00 AM (ไทย)
+    - cron: "0 23 * * *"  # 06:00 AM (ไทย) = 23:00 UTC
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.11
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirement.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirement.txt
 
-    # ---------- รันโค้ดหลัก ----------
-    - name: Run news.py
-      env:
-        DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
-        LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}        # <-- เพิ่มบรรทัดนี้!
-      run: |
-        python news.py
+      # ---------- รันโค้ดหลัก ----------
+      - name: Run news.py
+        env:
+          DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
-    # ---------- commit sent_links ----------
-    - name: Commit and push sent_links
-      run: |
-        git config --global user.name 'github-actions'
-        git config --global user.email 'actions@github.com'
-        git pull
-        git add sent_links/
-        git commit -m "Update sent links for $(date +'%Y-%m-%d')" || echo "No changes to commit"
-        git push
+          # ===== กันรันนาน / คุมจำนวนข่าว =====
+          MAX_LLM_ITEMS: "80"
+          MAX_PER_COUNTRY: "8"
+          MAX_GLOBAL_ITEMS: "20"
+          ENABLE_IMPACT_REWRITE: "false"
+          MAX_RETRIES: "3"
+
+          # ===== เร่งให้จบเร็วบน GitHub Actions =====
+          SLEEP_MIN: "0.2"
+          SLEEP_MAX: "0.6"
+          RUN_DEADLINE_MIN: "20"
+          RSS_TIMEOUT_SEC: "15"
+          ARTICLE_TIMEOUT_SEC: "12"
+
+          DRY_RUN: "false"
+        run: |
+          python -u news.py
+
+      # ---------- commit sent_links ----------
+      - name: Commit and push sent_links
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sent_links/ || true
+          git commit -m "Update sent links for $(date +'%Y-%m-%d')" || echo "No changes to commit"
+          git push || echo "Push skipped"
