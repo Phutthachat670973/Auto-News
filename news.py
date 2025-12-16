@@ -316,4 +316,452 @@ def looks_generic_bullets(bullets) -> bool:
         return True
     joined = " ".join([str(x) for x in bullets]).lower()
     generic_hit = any(p.replace(" ", "") in joined.replace(" ", "") for p in GENERIC_PATTERNS)
-    specific_hit = any(k in joined for k_
+    specific_hit = any(k in joined for k in SPECIFIC_HINTS)
+    return generic_hit and (not specific_hit)
+
+def _diversify_bullets(bullets):
+    if not bullets:
+        return bullets
+    starters = []
+    for b in bullets:
+        s = (b or "").strip()
+        starters.append(re.sub(r"\s+", "", s[:10]))
+    if len(set(starters)) == 1 and len(bullets) >= 2:
+        variants = ["อาจทำให้", "เสี่ยงที่", "คาดว่า", "มีโอกาส", "อาจต้อง"]
+        new = []
+        for i, b in enumerate(bullets):
+            bb = (b or "").strip()
+            bb = re.sub(r"^(คาดว่า|มีโอกาส|เป็นเหตุการณ์ที่|อาจ)\s*", "", bb)
+            new.append(f"{variants[i % len(variants)]} {bb}".strip())
+        return new
+    return bullets
+
+def rewrite_impact_bullets(news, country, projects, bullets):
+    prompt = f"""
+คุณคือ Analyst ของ PTTEP
+ช่วย "เขียนใหม่" bullet ผลกระทบให้เป็นภาษาไทยแบบภาษาคนและเฉพาะเจาะจงขึ้น (2–4 bullets)
+
+ข้อห้าม (สำคัญ):
+- ห้ามใช้ประโยคแม่แบบกว้าง ๆ เช่น "อาจกระทบต้นทุน/กฎระเบียบ/ตารางงาน/ความเสี่ยง" แบบรวม ๆ
+- ห้ามเขียนซ้ำโครงเดิมทุกบรรทัด (เช่นขึ้นต้นว่า "เป็นเหตุการณ์..." ทุกบรรทัด)
+
+สิ่งที่ต้องมี:
+- ทุก bullet ต้องมี "กลไก" อย่างน้อย 1 อย่าง: ใบอนุญาต / ภาษี-PSC / ความปลอดภัย / โลจิสติกส์-ขนส่ง / แรงงาน-ผู้รับเหมา / ประกันภัย / การเงิน-FX / ศุลกากร / คว่ำบาตร
+- ถ้าไม่แน่ใจ ให้ใช้คำว่า "คาดว่า/มีโอกาส/เสี่ยงที่" + เหตุผลสั้น ๆ 1 วลี
+- แต่ละ bullet 1 ประโยค ไม่เกิน ~24 คำ
+
+ตัวอย่างสไตล์ที่ดี (ตัวอย่างเท่านั้น):
+- "เสี่ยงที่งานภาคสนามต้องเพิ่มมาตรการความปลอดภัย ทำให้ค่าใช้จ่ายผู้รับเหมาสูงขึ้น"
+- "คาดว่าการอนุมัติใบอนุญาตอาจช้าลง ถ้ารัฐออกข้อกำหนดใหม่ในช่วงนี้"
+
+ข้อมูลข่าว:
+ประเทศ: {country}
+โครงการ: {", ".join(projects) if projects else "ALL"}
+หัวข้อ: {news.get("title","")}
+สรุปจาก RSS: {news.get("summary","")}
+
+bullet เดิม:
+{json.dumps(bullets, ensure_ascii=False)}
+
+ตอบกลับเป็น JSON เท่านั้น:
+{{"impact_bullets": ["...","..."]}}
+"""
+    r = call_gemini(prompt, want_json=True, temperature=0.75)
+    raw = (getattr(r, "text", "") or "").strip()
+    data = _extract_json_object(raw)
+    if isinstance(data, dict) and isinstance(data.get("impact_bullets"), list):
+        out = [str(x).strip() for x in data["impact_bullets"] if str(x).strip()]
+        return _diversify_bullets(out[:6])
+    return _diversify_bullets(bullets)
+
+FALLBACK_IMPACTS = [
+    "เสี่ยงที่ขั้นตอนอนุมัติ/ใบอนุญาตจะช้าลง หากหน่วยงานรัฐออกมาตรการเพิ่ม",
+    "อาจต้องเพิ่มงบความปลอดภัย/ประกันภัยของทีมงานและผู้รับเหมา ถ้าสถานการณ์ตึงตัว",
+    "โลจิสติกส์ (ท่าเรือ/ขนส่ง/ศุลกากร) อาจสะดุดระยะสั้น ทำให้เลื่อนส่งมอบของบางรายการ",
+    "มีโอกาสกระทบเงื่อนไขภาษี/PSC/กฎพลังงาน ต้องติดตามประกาศอย่างเป็นทางการ",
+    "ค่าเงิน/ต้นทุนการเงินอาจผันผวน ทำให้สัญญาจัดซื้อบางส่วนต้องเผื่อส่วนต่าง",
+]
+
+def rule_fallback(news):
+    feed_country = (news.get("feed_country") or "").strip()
+
+    if feed_country == "GLOBAL":
+        hints = news.get("countries_hint") or []
+        if len(hints) != 1:
+            return {"is_relevant": False}
+        c = hints[0]
+    else:
+        if feed_country not in PROJECT_COUNTRIES:
+            return {"is_relevant": False}
+        c = feed_country
+
+    bullets = random.sample(FALLBACK_IMPACTS, k=min(2, len(FALLBACK_IMPACTS)))
+    return {
+        "is_relevant": True,
+        "summary": "",
+        "topic_type": "other",
+        "region": "other",
+        "impact_bullets": _diversify_bullets(bullets)[:4],
+        "impact_level": "unknown",
+        "country": c,
+        "projects": ["ALL"],
+    }
+
+def gemini_tag_and_filter(news):
+    schema = {
+        "type": "object",
+        "properties": {
+            "is_relevant": {"type": "boolean"},
+            "summary": {"type": "string"},
+            "topic_type": {
+                "type": "string",
+                "enum": ["supply_disruption", "price_move", "policy", "investment", "geopolitics", "other"],
+            },
+            "region": {"type": "string", "enum": ["global", "asia", "europe", "middle_east", "us", "other"]},
+            "impact_bullets": {"type": "array", "items": {"type": "string"}},
+            "impact_level": {"type": "string", "enum": ["low", "medium", "high", "unknown"]},
+            "country": {"type": "string"},
+            "projects": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["is_relevant"],
+    }
+
+    feed_country = (news.get("feed_country") or "").strip()
+    countries_hint = news.get("countries_hint") or []
+    allowed = PROJECT_COUNTRIES
+
+    prompt = f"""
+คุณเป็นผู้ช่วยคัดกรองข่าวสำหรับ PTTEP
+
+รายการประเทศที่อนุญาต (ALLOWED) = {allowed}
+feed_country (โหมดแหล่งข่าว) = {feed_country}
+Hints จากข้อความข่าว (ชื่อประเทศที่จับได้) = {countries_hint}
+
+กติกาแบบเข้ม (STRICT):
+1) ห้ามประเทศนอกลิสต์:
+   - ถ้าข่าวหลักเกี่ยวกับประเทศที่ไม่อยู่ในรายการ → is_relevant = false
+2) ต้องเป็น "เหตุการณ์ในประเทศนั้น" จริง ๆ:
+   - ถ้าข่าวเป็น global/ตลาดโลก/หลายประเทศ และไม่ใช่เหตุการณ์ที่เกิดในประเทศใดประเทศหนึ่งชัดเจน → is_relevant = false
+3) ถ้าโหมด per_country:
+   - ถ้าประเทศหลักของข่าวไม่ใช่ "{feed_country}" → is_relevant = false
+   - ถ้า is_relevant = true → country ต้องเป็น "{feed_country}" เท่านั้น
+4) ถ้าโหมด global:
+   - ต้องเลือก country เป็นประเทศหลักเพียง 1 ประเทศใน ALLOWED
+   - ถ้าไม่มั่นใจประเทศหลัก → is_relevant = false
+
+ถ้า is_relevant = true ให้เติม:
+- country: ชื่อประเทศตามลิสต์ที่อนุญาต
+- projects: ถ้ากระทบภาพรวมประเทศ ให้ใส่ ["ALL"]
+- impact_bullets: 2–4 bullet ภาษาไทย "ภาษาคน"
+  (a) ห้ามประโยคแม่แบบรวม ๆ
+  (b) ทุก bullet ต้องมี "กลไก" อย่างน้อย 1 อย่าง (ใบอนุญาต/ภาษี-PSC/ความปลอดภัย/โลจิสติกส์/ผู้รับเหมา/ประกันภัย/FX/ศุลกากร/คว่ำบาตร)
+  (c) ถ้าไม่แน่ใจ ให้ใช้คำว่า "คาดว่า/มีโอกาส/เสี่ยงที่" + เหตุผลสั้น ๆ
+  (d) ห้ามขึ้นต้นซ้ำรูปแบบทุกบรรทัด
+- impact_level: low/medium/high/unknown
+- summary: ไทย 2–4 ประโยค (ถ้าไม่มั่นใจให้สั้น ๆ)
+
+อินพุตข่าว:
+หัวข้อ: {news.get("title","")}
+สรุปจาก RSS: {news.get("summary","")}
+
+ตอบกลับเป็น JSON เท่านั้น ตาม schema นี้:
+{json.dumps(schema, ensure_ascii=False)}
+"""
+    try:
+        r = call_gemini(prompt, want_json=True, temperature=0.35)
+        raw = (getattr(r, "text", "") or "").strip()
+        data = _extract_json_object(raw)
+        if not isinstance(data, dict):
+            return rule_fallback(news)
+
+        if "projects" in data and not isinstance(data.get("projects"), list):
+            data["projects"] = [str(data["projects"])]
+
+        bullets = data.get("impact_bullets")
+        if isinstance(bullets, str):
+            bullets = _impact_to_bullets(bullets)
+        if not isinstance(bullets, list):
+            bullets = []
+        bullets = [str(x).strip() for x in bullets if str(x).strip()]
+        data["impact_bullets"] = _diversify_bullets(bullets[:6])
+
+        if "impact_level" not in data:
+            data["impact_level"] = "unknown"
+
+        return data
+    except Exception:
+        return rule_fallback(news)
+
+
+# ============================================================================================================
+# FETCH NEWS WINDOW (21:00 yesterday -> 06:00 today, Bangkok time)
+# ============================================================================================================
+def fetch_news_window(start_ts: float):
+    now_local = datetime.now(bangkok_tz)
+    start = (now_local - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
+    end = now_local.replace(hour=6, minute=0, second=0, microsecond=0)
+
+    out = []
+    for site, feed_country, url in NEWS_FEEDS:
+        if _deadline_check(start_ts):
+            break
+
+        try:
+            feed = parse_feed_with_timeout(url)
+            entries = list(feed.entries or [])[:MAX_ENTRIES_PER_FEED]
+            for e in entries:
+                pub = getattr(e, "published", None) or getattr(e, "updated", None)
+                if not pub:
+                    continue
+
+                dt = dateutil_parser.parse(pub)
+                if dt.tzinfo is None:
+                    dt = bangkok_tz.localize(dt)
+                dt_local = dt.astimezone(bangkok_tz)
+
+                if not (start <= dt_local <= end):
+                    continue
+
+                link = _normalize_link(getattr(e, "link", None) or "")
+                if not link:
+                    continue
+
+                title = (getattr(e, "title", "") or "").strip()
+                summary = getattr(e, "summary", "") or ""
+                summary = re.sub(r"\s+", " ", re.sub("<.*?>", " ", summary)).strip()
+
+                hints = detect_project_countries(f"{title}\n{summary}")
+                out.append({
+                    "site": site,
+                    "feed_country": feed_country,
+                    "title": title,
+                    "summary": summary,
+                    "link": link,
+                    "published": dt_local,
+                    "date": dt_local.strftime("%d/%m/%Y %H:%M"),
+                    "countries_hint": hints,
+                })
+        except Exception as ex:
+            print(f"[WARN] feed failed: {site}/{feed_country} -> {type(ex).__name__}: {ex}")
+            continue
+
+    uniq, seen = [], set()
+    for n in out:
+        k = _normalize_link(n.get("link", ""))
+        if k and k not in seen:
+            seen.add(k)
+            uniq.append(n)
+
+    uniq.sort(key=lambda x: x["published"], reverse=True)
+    return uniq
+
+
+# ============================================================================================================
+# FLEX MESSAGE
+# ============================================================================================================
+def create_flex(news_items):
+    now_txt = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
+    bubbles = []
+
+    for n in news_items:
+        bullets = n.get("impact_bullets")
+        if not isinstance(bullets, list) or not bullets:
+            bullets = _impact_to_bullets(n.get("impact_reason", ""))
+
+        link = n.get("link") or "https://news.google.com/"
+        if not (isinstance(link, str) and link.startswith(("http://", "https://"))):
+            link = "https://news.google.com/"
+
+        img = n.get("image") or DEFAULT_ICON_URL
+        if not (isinstance(img, str) and img.startswith(("http://", "https://"))):
+            img = DEFAULT_ICON_URL
+
+        country_txt = (n.get("country") or "ไม่ระบุ").strip()
+        projects = n.get("projects") or []
+        proj_txt = ", ".join(projects[:3]) if isinstance(projects, list) and projects else "ALL"
+
+        header_box = {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": n.get("title", ""), "weight": "bold", "size": "lg", "wrap": True},
+                {"type": "text", "text": f"🗓 {n.get('date','')}", "size": "xs", "color": "#888888", "margin": "sm"},
+                {"type": "text", "text": f"🌍 {country_txt} | {n.get('site','')}", "size": "xs", "color": "#448AFF", "margin": "xs"},
+                {"type": "text", "text": f"โครงการ: {proj_txt} | ประเทศ: {country_txt}", "size": "xs", "color": "#666666", "margin": "sm", "wrap": True},
+            ],
+        }
+
+        impact_box = {
+            "type": "box",
+            "layout": "vertical",
+            "margin": "lg",
+            "contents": (
+                [{"type": "text", "text": "ผลกระทบต่อโครงการ", "size": "lg", "weight": "bold", "color": "#000000"}]
+                + [{"type": "text", "text": f"• {b}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"} for b in bullets[:6]]
+            ),
+        }
+
+        bubble = {
+            "type": "bubble",
+            "size": "mega",
+            "hero": {"type": "image", "url": img, "size": "full", "aspectRatio": "16:9", "aspectMode": "cover"},
+            "body": {"type": "box", "layout": "vertical", "contents": [header_box, impact_box]},
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "button", "style": "primary", "color": "#1DB446",
+                     "action": {"type": "uri", "label": "อ่านต่อ", "uri": link}}
+                ],
+            },
+        }
+        bubbles.append(bubble)
+
+    return [{
+        "type": "flex",
+        "altText": f"ข่าว PTTEP (Domestic) {now_txt}",
+        "contents": {"type": "carousel", "contents": bubbles},
+    }]
+
+
+# ============================================================================================================
+# BROADCAST LINE
+# ============================================================================================================
+def send_to_line(messages):
+    url = "https://api.line.me/v2/bot/message/broadcast"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+
+    for i, msg in enumerate(messages, 1):
+        payload = {"messages": [msg]}
+        print("=== LINE PAYLOAD (truncated) ===")
+        print(json.dumps({"messages": [{"type": msg.get("type"), "altText": msg.get("altText")}]} , ensure_ascii=False))
+
+        if DRY_RUN:
+            print("[DRY_RUN] ไม่ส่งจริง เพราะ DRY_RUN = true")
+            continue
+
+        r = S.post(url, headers=headers, json=payload, timeout=LINE_TIMEOUT_SEC)
+        print(f"Send {i}: {r.status_code}")
+        if r.status_code >= 300:
+            print("Response body:", r.text[:1000])
+            break
+
+
+# ============================================================================================================
+# MAIN WORKFLOW
+# ============================================================================================================
+def main():
+    start_ts = time.time()
+
+    print("ดึงข่าว..")
+    all_news = fetch_news_window(start_ts)
+    print("จำนวนข่าวดิบทั้งหมด:", len(all_news))
+    if not all_news:
+        print("ไม่พบข่าวในช่วงเวลา")
+        return
+
+    sent = load_sent_links()
+
+    per_country_count = {c: 0 for c in PROJECT_COUNTRIES}
+    candidates = []
+    global_candidates = []
+
+    for n in all_news:
+        if _deadline_check(start_ts):
+            print("[STOP] ถึง HARD_DEADLINE ระหว่างคัด candidates")
+            break
+
+        link_norm = _normalize_link(n.get("link", ""))
+        if link_norm and link_norm in sent:
+            continue
+
+        feed_country = (n.get("feed_country") or "").strip()
+
+        if feed_country in PROJECT_COUNTRIES:
+            if MAX_PER_COUNTRY is not None and per_country_count.get(feed_country, 0) >= MAX_PER_COUNTRY:
+                continue
+            candidates.append(n)
+            per_country_count[feed_country] = per_country_count.get(feed_country, 0) + 1
+        else:
+            global_candidates.append(n)
+
+    if MAX_GLOBAL_ITEMS is not None:
+        global_candidates = global_candidates[:MAX_GLOBAL_ITEMS]
+
+    combined = candidates + global_candidates
+    combined.sort(key=lambda x: x["published"], reverse=True)
+
+    selected = combined[:MAX_LLM_ITEMS] if (MAX_LLM_ITEMS is not None) else combined
+    print("จำนวนข่าวที่จะส่งเข้า LLM:", len(selected))
+
+    final = []
+    for idx, n in enumerate(selected, 1):
+        if _deadline_check(start_ts):
+            print(f"[STOP] ถึง HARD_DEADLINE (ได้ {len(final)} ข่าวแล้ว)")
+            break
+
+        print(f"[{idx}/{len(selected)}] LLM: {n.get('title','')[:80]}")
+        tag = gemini_tag_and_filter(n)
+
+        if not tag.get("is_relevant"):
+            time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
+            continue
+
+        country_llm = (tag.get("country") or "").strip()
+        if country_llm not in PROJECT_COUNTRIES:
+            time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
+            continue
+
+        feed_country = (n.get("feed_country") or "").strip()
+        if feed_country in PROJECT_COUNTRIES:
+            if country_llm != feed_country:
+                time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
+                continue
+        else:
+            hints = n.get("countries_hint") or []
+            if country_llm not in hints:
+                time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
+                continue
+
+        bullets = tag.get("impact_bullets") or []
+        if not isinstance(bullets, list):
+            bullets = _impact_to_bullets(str(bullets))
+
+        if ENABLE_IMPACT_REWRITE and looks_generic_bullets(bullets):
+            bullets = rewrite_impact_bullets(n, country_llm, tag.get("projects") or ["ALL"], bullets)
+
+        if not has_meaningful_impact(bullets):
+            time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
+            continue
+
+        n["country"] = country_llm
+        n["projects"] = tag.get("projects") or ["ALL"]
+        n["topic_type"] = tag.get("topic_type", "other")
+        n["region"] = tag.get("region", "other")
+        n["impact_level"] = tag.get("impact_level", "unknown")
+        n["impact_bullets"] = bullets[:6]
+
+        final.append(n)
+        time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
+
+    print("จำนวนข่าวผ่านเงื่อนไข:", len(final))
+    if not final:
+        print("ไม่มีข่าวที่ผ่านเงื่อนไขวันนี้")
+        return
+
+    for n in final:
+        if _deadline_check(start_ts):
+            print("[STOP] ถึง HARD_DEADLINE ระหว่างหา image")
+            break
+        img = fetch_article_image(n.get("link", ""))
+        n["image"] = img if (isinstance(img, str) and img.startswith(("http://", "https://"))) else DEFAULT_ICON_URL
+        time.sleep(0.15)
+
+    msgs = create_flex(final[:10])  # LINE carousel ไม่ควรเยอะเกิน
+    send_to_line(msgs)
+
+    save_sent_links([n.get("link", "") for n in final])
+    print("เสร็จสิ้น (Gemini calls:", GEMINI_CALLS, ")")
+
+if __name__ == "__main__":
+    main()
