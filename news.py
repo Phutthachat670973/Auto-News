@@ -12,6 +12,7 @@ import re
 import json
 import time
 import random
+from collections import deque
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, quote_plus
 
@@ -19,8 +20,16 @@ import feedparser
 import requests
 from dateutil import parser as dateutil_parser
 import pytz
-import google.generativeai as genai
 
+try:
+    # New SDK (recommended)
+    from google import genai as genai_client
+    from google.genai import types as genai_types
+    _USE_GOOGLE_GENAI = True
+except Exception:
+    # Legacy SDK (deprecated but kept for backward compatibility)
+    import google.generativeai as genai
+    _USE_GOOGLE_GENAI = False
 
 # ============================================================================================================
 # ENV
@@ -33,11 +42,25 @@ if not GEMINI_API_KEY:
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("ไม่พบ LINE_CHANNEL_ACCESS_TOKEN")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel(os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash"))
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+
+if _USE_GOOGLE_GENAI:
+    client = genai_client.Client(api_key=GEMINI_API_KEY)
+else:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 
 GEMINI_DAILY_BUDGET = int(os.getenv("GEMINI_DAILY_BUDGET", "250"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "6"))
+
+# Gemini free-tier has a strict per-minute request limit (RPM).
+# ✅ แนะนำ: free tier ตั้ง 4–5 (ค่าเริ่มต้น 5)
+GEMINI_RPM_LIMIT = int(os.getenv("GEMINI_RPM_LIMIT", "5"))  # 0 = unlimited (ไม่แนะนำกับ free tier)
+GEMINI_RPM_WINDOW_SEC = int(os.getenv("GEMINI_RPM_WINDOW_SEC", "60"))
+GEMINI_MIN_JITTER_SEC = float(os.getenv("GEMINI_MIN_JITTER_SEC", "0.2"))
+GEMINI_MAX_JITTER_SEC = float(os.getenv("GEMINI_MAX_JITTER_SEC", "0.8"))
+
+GEMINI_CALL_TIMES = deque()
 
 def _as_limit(env_name: str, default: str = "0"):
     """<=0 => None (unlimited)"""
@@ -74,7 +97,6 @@ S = requests.Session()
 S.headers.update({"User-Agent": "Mozilla/5.0"})
 
 GEMINI_CALLS = 0
-
 
 # ============================================================================================================
 # COUNTRIES
@@ -118,7 +140,6 @@ def detect_project_countries(text: str):
             hits.append(c)
     return sorted(set(hits))
 
-
 # ============================================================================================================
 # PROJECTS (แก้ชื่อให้ตรงของจริงได้เลย)
 # ============================================================================================================
@@ -140,7 +161,6 @@ PROJECTS_BY_COUNTRY = {
 def projects_for_country(country: str):
     return PROJECTS_BY_COUNTRY.get(country, [])
 
-
 # ============================================================================================================
 # RSS
 # ============================================================================================================
@@ -158,26 +178,20 @@ for c in PROJECT_COUNTRIES:
     NEWS_FEEDS.append(("GoogleNews", c, google_news_rss(COUNTRY_QUERY[c])))
 NEWS_FEEDS.extend(LEGACY_FEEDS)
 
-
 # ============================================================================================================
 # TOPIC GATE (กันข่าวสังคม/ไลฟ์สไตล์หลุด)
 # ============================================================================================================
 TOPIC_KEYWORDS = [
-    # energy / upstream
     "oil","gas","lng","crude","petroleum","upstream","offshore","rig","drilling","pipeline",
     "refinery","psc","concession","opec","energy","power","electricity","renewable",
-    # policy / economy
     "tax","royalty","permit","license","sanction","tariff","regulation","policy","election",
     "inflation","currency","fx","interest rate","central bank",
-    # security / logistics (operation-related)
     "border","conflict","protest","strike","security","attack","port","shipping","customs","logistics","insurance",
-    # thai
     "น้ำมัน","ก๊าซ","ปิโตรเลียม","สำรวจ","ผลิต","แท่นขุด","ท่อส่ง","สัมปทาน","psc",
     "ภาษี","ใบอนุญาต","กฎระเบียบ","คว่ำบาตร","การเลือกตั้ง","ค่าเงิน","ดอกเบี้ย",
     "ชายแดน","ความไม่สงบ","ประท้วง","นัดหยุดงาน","ท่าเรือ","ขนส่ง","ศุลกากร","โลจิสติกส์","ประกันภัย",
 ]
 
-# คำที่มักบอกว่าเป็นข่าว “สังคม/คดี/อาชญากรรมทั่วไป” (ตัดทิ้ง)
 NON_PROJECTY_KEYWORDS = [
     "shooting","murder","rape","assault","crime","sentenced","prison","court","police",
     "victims","holocaust","celebrity","fashion","sports","festival","heritage","conservation",
@@ -189,18 +203,14 @@ def passes_topic_gate(title: str, summary: str) -> bool:
     t = f"{title or ''} {summary or ''}".lower()
     if any(k in t for k in TOPIC_KEYWORDS):
         return True
-    # ถ้าไม่มี keyword หลัก แต่มีคำบอกข่าวสังคมชัด ๆ -> ตัด
     if any(k in t for k in NON_PROJECTY_KEYWORDS):
         return False
     return False
 
-
 # ============================================================================================================
 # FOREIGN-LOCATION GATE (กัน “Mexico … in Kansas”)
-# หลัก: ถ้า feed เป็นประเทศ X แต่ข้อความชี้ชัดว่าเหตุเกิดใน US/UK/... และแทบไม่พูดถึง X => ตัด
 # ============================================================================================================
 FOREIGN_MARKERS = [
-    # US/UK/EU etc (เพิ่มได้)
     "united states","u.s.","usa","kansas","texas","new york","washington",
     "united kingdom","uk","england","london",
     "canada","toronto",
@@ -211,18 +221,12 @@ def likely_foreign_event(feed_country: str, title: str, summary: str) -> bool:
     if feed_country not in PROJECT_COUNTRIES:
         return False
     t = f"{title or ''} {summary or ''}".lower()
-
-    # ถ้ามี marker ต่างประเทศเด่น ๆ
     foreign_hit = any(m in t for m in FOREIGN_MARKERS)
     if not foreign_hit:
         return False
-
-    # ถ้าไม่มีคำบ่งชี้ประเทศเป้าหมายในข้อความเลย -> โอกาสสูงว่า “เหตุเกิดนอกประเทศ”
     target_keys = PROJECT_COUNTRY_SYNONYMS.get(feed_country, [])
     target_hit = any(k in t for k in target_keys)
-
     return (not target_hit)
-
 
 # ============================================================================================================
 # HELPERS
@@ -304,55 +308,123 @@ def fetch_article_image(url: str):
     try:
         if not url or not url.startswith(("http://","https://")):
             return None
-
         r = S.get(url, timeout=ARTICLE_TIMEOUT_SEC, allow_redirects=True)
         if r.status_code >= 300:
             return None
-
         html = r.text
-
         m = re.search(r'property=["\']og:image["\']\s+content=["\']([^"\']+)["\']', html, re.I)
         if m:
             return m.group(1).strip()
-
         m = re.search(r'name=["\']twitter:image["\']\s+content=["\']([^"\']+)["\']', html, re.I)
         if m:
             return m.group(1).strip()
-
         return None
     except Exception:
         return None
 
+# ============================================================================================================
+# GEMINI (✅ มี RPM limiter + retry_delay)
+# ============================================================================================================
+def _extract_retry_after_seconds(err_text: str):
+    s = (err_text or "")
+    m = re.search(r"retry\s+in\s+([0-9.]+)\s*s", s, flags=re.I)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            pass
+    m = re.search(r"retry_delay\s*\{[^}]*seconds:\s*(\d+)", s, flags=re.I)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            pass
+    m = re.search(r"Retry-After\s*[:=]\s*(\d+)", s, flags=re.I)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            pass
+    return None
 
-# ============================================================================================================
-# GEMINI
-# ============================================================================================================
+def _rate_limit_wait():
+    """Simple sliding-window RPM limiter."""
+    if GEMINI_RPM_LIMIT <= 0:
+        return
+    now = time.time()
+    while GEMINI_CALL_TIMES and (now - GEMINI_CALL_TIMES[0]) >= GEMINI_RPM_WINDOW_SEC:
+        GEMINI_CALL_TIMES.popleft()
+    if len(GEMINI_CALL_TIMES) < GEMINI_RPM_LIMIT:
+        return
+    sleep_for = GEMINI_RPM_WINDOW_SEC - (now - GEMINI_CALL_TIMES[0]) + 0.05
+    if sleep_for > 0:
+        time.sleep(sleep_for)
+    now = time.time()
+    while GEMINI_CALL_TIMES and (now - GEMINI_CALL_TIMES[0]) >= GEMINI_RPM_WINDOW_SEC:
+        GEMINI_CALL_TIMES.popleft()
+
 def call_gemini(prompt: str, want_json: bool = False, temperature: float = 0.35):
+    """Gemini call with RPM throttling + retry using server suggested delay (429)."""
     global GEMINI_CALLS
     if GEMINI_CALLS >= GEMINI_DAILY_BUDGET:
-        raise RuntimeError("เกินโควต้า Gemini ประจำวัน")
+        raise RuntimeError("เกินโควต้า Gemini ประจำวัน (ตาม GEMINI_DAILY_BUDGET ที่ตั้งเอง)")
 
     last_error = None
     for i in range(1, MAX_RETRIES + 1):
         try:
-            gen_cfg = {"temperature": float(temperature), "max_output_tokens": 900}
-            if want_json:
-                gen_cfg["response_mime_type"] = "application/json"
-            try:
-                r = model.generate_content(prompt, generation_config=gen_cfg)
-            except TypeError:
-                r = model.generate_content(prompt)
+            _rate_limit_wait()
+            GEMINI_CALL_TIMES.append(time.time())  # count attempt in window
+
+            max_tokens = 900
+            if _USE_GOOGLE_GENAI:
+                cfg = genai_types.GenerateContentConfig(
+                    temperature=float(temperature),
+                    max_output_tokens=max_tokens,
+                    response_mime_type=("application/json" if want_json else None),
+                )
+                r = client.models.generate_content(
+                    model=GEMINI_MODEL_NAME,
+                    contents=prompt,
+                    config=cfg,
+                )
+            else:
+                gen_cfg = {"temperature": float(temperature), "max_output_tokens": max_tokens}
+                if want_json:
+                    gen_cfg["response_mime_type"] = "application/json"
+                try:
+                    r = model.generate_content(prompt, generation_config=gen_cfg)
+                except TypeError:
+                    r = model.generate_content(prompt)
+
             GEMINI_CALLS += 1
             return r
+
         except Exception as e:
             last_error = e
-            msg = str(e).lower()
-            if any(x in msg for x in ["429","unavailable","deadline","503","500"]) and i < MAX_RETRIES:
-                time.sleep(3 * i)
-                continue
-            raise e
-    raise last_error
+            msg = str(e)
+            low = msg.lower()
 
+            is_429 = (
+                ("429" in low)
+                or ("resourceexhausted" in low)
+                or ("quota exceeded" in low)
+                or ("rate limit" in low)
+            )
+            transient = any(x in low for x in ["unavailable", "deadline", "503", "500", "timeout", "temporarily"])
+
+            if (is_429 or transient) and i < MAX_RETRIES:
+                retry_after = _extract_retry_after_seconds(msg)
+                base = float(retry_after) if retry_after is not None else float(3 * i)
+                base = max(1.0, min(base, 120.0))
+                jitter = random.uniform(GEMINI_MIN_JITTER_SEC, GEMINI_MAX_JITTER_SEC)
+                sleep_for = base + jitter
+                print(f"[Gemini] retry {i}/{MAX_RETRIES} in {sleep_for:.1f}s ({type(e).__name__})")
+                time.sleep(sleep_for)
+                continue
+
+            raise
+
+    raise last_error
 
 GENERIC_PATTERNS = [
     "อาจกระทบต้นทุน", "อาจกระทบกฎระเบียบ", "อาจกระทบตารางงาน",
@@ -367,19 +439,9 @@ SPECIFIC_HINTS = [
 def looks_generic_bullets(bullets) -> bool:
     if not bullets or not isinstance(bullets, list):
         return True
-
     joined = " ".join([str(x) for x in bullets]).lower()
-
-    generic_hit = any(
-        p.replace(" ", "") in joined.replace(" ", "")
-        for p in GENERIC_PATTERNS
-    )
-
-    specific_hit = any(
-        k.lower() in joined
-        for k in SPECIFIC_HINTS
-    )
-
+    generic_hit = any(p.replace(" ", "") in joined.replace(" ", "") for p in GENERIC_PATTERNS)
+    specific_hit = any(k.lower() in joined for k in SPECIFIC_HINTS)
     return generic_hit and (not specific_hit)
 
 def diversify_bullets(bullets):
@@ -424,13 +486,10 @@ bullet เดิม:
         return diversify_bullets(out[:6])
     return diversify_bullets(bullets)
 
-
 def gemini_tag_and_filter(news):
     feed_country = (news.get("feed_country") or "").strip()
     hints = news.get("countries_hint") or []
     allowed = PROJECT_COUNTRIES
-
-    # ส่งรายชื่อโครงการของประเทศที่กำลังพิจารณา (ลด token)
     country_projects = projects_for_country(feed_country) if feed_country in PROJECT_COUNTRIES else []
 
     schema = {
@@ -487,7 +546,6 @@ summary: {news.get("summary","")}
     if country != feed_country:
         return {"is_relevant": False}
 
-    # projects: must be in list, else ALL
     allowed_projects = set(projects_for_country(country))
     projects = data.get("projects") or ["ALL"]
     if not isinstance(projects, list):
@@ -512,7 +570,6 @@ summary: {news.get("summary","")}
         evidence = [str(evidence)]
     evidence = [str(x).strip() for x in evidence if str(x).strip()][:2]
 
-    # evidence sanity: ต้องพบในข้อความบ้าง (กัน hallucination)
     text_lower = f"{news.get('title','')} {news.get('summary','')}".lower()
     if evidence:
         if not any(ev.lower() in text_lower for ev in evidence if len(ev) >= 4):
@@ -527,7 +584,6 @@ summary: {news.get("summary","")}
         "evidence": evidence,
         "why_relevant": (data.get("why_relevant") or "").strip(),
     }
-
 
 # ============================================================================================================
 # FETCH WINDOW: 21:00 yesterday -> 06:00 today (Bangkok)
@@ -579,7 +635,6 @@ def fetch_news_window():
             print(f"[WARN] feed failed: {site}/{feed_country} -> {type(ex).__name__}: {ex}")
             continue
 
-    # dedupe by normalized link
     uniq, seen = [], set()
     for n in out:
         k = _normalize_link(n["link"])
@@ -589,7 +644,6 @@ def fetch_news_window():
 
     uniq.sort(key=lambda x: x["published"], reverse=True)
     return uniq
-
 
 # ============================================================================================================
 # FLEX
@@ -621,12 +675,6 @@ def create_flex(news_items):
         bubble = {
             "type": "bubble",
             "size": "mega",
-            "hero": {"_ATTACHMENT": "IGNORE"},
-        }
-
-        bubble = {
-            "type": "bubble",
-            "size": "mega",
             "hero": {
                 "type": "image",
                 "url": img,
@@ -648,9 +696,7 @@ def create_flex(news_items):
                             {"type": "text", "text": f"{country} | {n.get('site','')}", "size": "sm", "color": "#1E90FF", "wrap": True},
                         ],
                     },
-                    # ✅ เหลือบรรทัดเดียว
                     {"type": "text", "text": f"โครงการที่เกี่ยวข้อง: {proj_txt}", "size": "sm", "color": "#666666", "wrap": True, "margin": "sm"},
-
                     {"type": "text", "text": "ผลกระทบต่อโครงการ", "size": "lg", "weight": "bold", "color": "#000000", "margin": "lg"},
                     *[
                         {"type": "text", "text": f"• {b}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"}
@@ -675,7 +721,6 @@ def create_flex(news_items):
         "contents": {"type": "carousel", "contents": bubbles},
     }]
 
-
 # ============================================================================================================
 # LINE SEND
 # ============================================================================================================
@@ -697,7 +742,6 @@ def send_to_line(messages):
         if r.status_code >= 300:
             print("Response:", r.text[:1200])
             break
-
 
 # ============================================================================================================
 # MAIN
@@ -731,11 +775,9 @@ def main():
         title, summary = n.get("title",""), n.get("summary","")
         feed_country = (n.get("feed_country") or "").strip()
 
-        # ✅ Topic Gate
         if not passes_topic_gate(title, summary):
             continue
 
-        # ✅ Foreign-location Gate (เฉพาะ per-country feeds)
         if feed_country in PROJECT_COUNTRIES and likely_foreign_event(feed_country, title, summary):
             continue
 
@@ -776,13 +818,11 @@ def main():
         projects = tag.get("projects") or ["ALL"]
         bullets = tag.get("impact_bullets") or []
 
-        # ✅ ถ้า LLM ตอบ ALL -> แทนด้วยโครงการของประเทศนั้น “ให้เป็นอันเดียว”
         if projects == ["ALL"]:
             country_projects = projects_for_country(country)
             if country_projects:
                 projects = country_projects
 
-        # rewrite เฉพาะ generic
         if ENABLE_IMPACT_REWRITE and looks_generic_bullets(bullets):
             bullets = rewrite_impact_bullets(n, country, bullets)
 
@@ -793,7 +833,7 @@ def main():
             continue
 
         n["country"] = country
-        n["projects"] = projects  # ✅ ใช้อันเดียว (project line เดียว)
+        n["projects"] = projects
         n["impact_bullets"] = bullets[:6]
         n["impact_level"] = tag.get("impact_level", "unknown")
         n["evidence"] = tag.get("evidence", [])
@@ -816,13 +856,11 @@ def main():
         n["image"] = img if (isinstance(img, str) and img.startswith(("http://","https://"))) else DEFAULT_ICON_URL
         time.sleep(0.12)
 
-    # LINE carousel ไม่ควรยาวเกิน
     msgs = create_flex(final[:10])
     send_to_line(msgs)
 
     save_sent_links([n["link"] for n in final])
     print("เสร็จสิ้น (Gemini calls:", GEMINI_CALLS, ")")
-
 
 if __name__ == "__main__":
     main()
