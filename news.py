@@ -1,30 +1,10 @@
 # news.py
 # ============================================================================================================
-# PTTEP News Bot (Groq) — LLM-first selection (no keyword gate) + SINGLE BULLET + Better source credibility
-#
-# ✅ ตามที่คุณขอ “โค้ดรวมทุกอัน”:
-# 1) ปิด keyword filter (ค่า default) แล้วให้ LLM คัดเลือกข่าวเองเป็นหลัก
-# 2) “ผลกระทบต่อโครงการ” เหลือ Bullet เดียว (แต่ยาว/ละเอียด 1–2 ประโยค)
-# 3) กันข่าวไม่เกี่ยว (lifestyle/award/pets/celebrity ฯลฯ) โดยให้ LLM ตัดทิ้งแบบเข้ม
-# 4) แก้ resolve Google News ให้ไม่ไปติด lh3.googleusercontent.com / asset URL
-# 5) ปรับคะแนนความน่าเชื่อถือให้ไม่ต่ำหมด (GoogleNews aggregator ไม่ต่ำสุด + energy trade press ระดับกลาง)
-#
-# REQUIRED ENV:
-# - GROQ_API_KEY
-# - LINE_CHANNEL_ACCESS_TOKEN
-#
-# OPTIONAL ENV:
-# - GROQ_MODEL_NAME (default: llama-3.1-8b-instant)
-# - LLM_BATCH_SIZE (default: 10)
-# - MAX_LLM_ITEMS, MAX_PER_COUNTRY, MAX_GLOBAL_ITEMS (default: 0 = unlimited)
-# - MAX_RETRIES (default: 6)
-# - ENABLE_IMPACT_REWRITE (default: true)
-# - RUN_DEADLINE_MIN, RSS_TIMEOUT_SEC, ARTICLE_TIMEOUT_SEC
-# - SLEEP_MIN, SLEEP_MAX
-# - DRY_RUN (default: false)
-# - SHOW_SOURCE_RATING (default: true)
-# - MIN_SOURCE_SCORE (default: 0)
-# - USE_KEYWORD_GATE (default: false)  # ปิด keyword gate ตามที่ขอ
+# PTTEP News Bot (Groq) — LLM-first selection (no keyword gate) + ไทยล้วน + 1 bullet
+# Fix:
+# - รูปหาย: ป้องกัน final_url หลุดไปเป็น tracking/asset (google-analytics / googleusercontent / gstatic ฯลฯ)
+# - resolve Google News ให้ดึง publisher URL แบบปลอดภัย (prefer canonical/url= และอ่านเฉพาะ href)
+# - ภาษาผลกระทบ: บังคับภาษาไทยเท่านั้น + ถ้าอังกฤษหลุด จะ rewrite ให้เป็นไทย
 # ============================================================================================================
 
 import os
@@ -88,13 +68,14 @@ SHOW_SOURCE_RATING = os.getenv("SHOW_SOURCE_RATING", "true").strip().lower() in 
 MIN_SOURCE_SCORE = int(os.getenv("MIN_SOURCE_SCORE", "0"))
 
 USE_KEYWORD_GATE = os.getenv("USE_KEYWORD_GATE", "false").strip().lower() in ["1", "true", "yes", "y"]
-
 MAX_ENTRIES_PER_FEED = int(os.getenv("MAX_ENTRIES_PER_FEED", "80"))
 
-DEFAULT_ICON_URL = os.getenv(
-    "DEFAULT_ICON_URL",
+# fallback hero ที่ “ควรขึ้นแน่ๆ”
+DEFAULT_HERO_URL = os.getenv(
+    "DEFAULT_HERO_URL",
     "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
 )
+DEFAULT_ICON_URL = os.getenv("DEFAULT_ICON_URL", DEFAULT_HERO_URL)
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 S = requests.Session()
@@ -142,7 +123,7 @@ def projects_for_country(country: str) -> List[str]:
     return PROJECTS_BY_COUNTRY.get(country, [])
 
 # ============================================================================================================
-# RSS (Google News + legacy)
+# RSS
 # ============================================================================================================
 
 def google_news_rss(q: str, hl="en", gl="US", ceid="US:en"):
@@ -160,44 +141,37 @@ for c in PROJECT_COUNTRIES:
 NEWS_FEEDS.extend(LEGACY_FEEDS)
 
 # ============================================================================================================
-# Optional keyword gate (DEFAULT: OFF) + always-block non-projecty
+# Optional keyword gate (DEFAULT OFF) + always-block non-projecty
 # ============================================================================================================
 
 TOPIC_KEYWORDS = [
     "oil","gas","lng","crude","petroleum","upstream","offshore","rig","drilling","pipeline",
-    "refinery","psc","concession","opec","energy","power","electricity","renewable",
+    "refinery","psc","concession","opec","energy","power","electricity",
     "น้ำมัน","ก๊าซ","ปิโตรเลียม","สำรวจ","ผลิต","แท่นขุด","ท่อส่ง","สัมปทาน","psc",
-    "policy","regulation","regulatory","license","permit","tax","royalty","sanction","tariff",
-    "รัฐบาล","นโยบาย","กฎระเบียบ","ใบอนุญาต","ภาษี","ค่าภาคหลวง","คว่ำบาตร","ภาษีนำเข้า",
-    "election","coup","junta","border","conflict","clashes","attack","terror",
-    "เลือกตั้ง","รัฐประหาร","รัฐบาลทหาร","ชายแดน","ความขัดแย้ง","ปะทะ","โจมตี","ก่อการร้าย",
-    "port","shipping","customs","logistics","strike","blockade","freight","supply chain",
-    "ท่าเรือ","ขนส่ง","ศุลกากร","โลจิสติกส์","นัดหยุดงาน","ปิดล้อม","ซัพพลายเชน",
-    "fx","currency","capital control","downgrade","rate hike","inflation","central bank","credit",
+    "policy","regulation","regulatory","license","permit","tax","royalty","sanction",
+    "รัฐบาล","นโยบาย","กฎระเบียบ","ใบอนุญาต","ภาษี","ค่าภาคหลวง","คว่ำบาตร",
+    "election","coup","junta","border","conflict","clashes","attack",
+    "เลือกตั้ง","รัฐประหาร","ชายแดน","ความขัดแย้ง","ปะทะ","โจมตี",
+    "port","shipping","customs","logistics","strike","blockade",
+    "ท่าเรือ","ขนส่ง","ศุลกากร","โลจิสติกส์","นัดหยุดงาน","ปิดล้อม",
+    "fx","currency","capital control","downgrade","rate hike","inflation","central bank",
     "ค่าเงิน","อัตราแลกเปลี่ยน","ควบคุมเงินทุน","ลดอันดับเครดิต","ขึ้นดอกเบี้ย","เงินเฟ้อ","ธนาคารกลาง",
     "flood","storm","typhoon","earthquake","landslide","drought","insurance",
     "น้ำท่วม","พายุ","ไต้ฝุ่น","แผ่นดินไหว","ดินถล่ม","ภัยแล้ง","ประกัน",
 ]
 
-# อันนี้ “ตัดทิ้งแน่ๆ” แม้ปิด keyword gate
 NON_PROJECTY_KEYWORDS = [
     "celebrity","fashion","sports","festival","gossip","pet","pets","dog","cat","award","prize",
     "ดารา","บันเทิง","กีฬา","แฟชั่น","เทศกาล","ซุบซิบ","สัตว์เลี้ยง","หมา","แมว","รางวัล",
-    "murder","rape","random assault","ฆาตกรรม","ข่มขืน",
 ]
 
 def passes_topic_gate(title: str, summary: str) -> bool:
-    # default: no keyword gate -> ให้ LLM คัดเอง แต่ตัดหมวดที่ไม่เอาแน่ๆ
     t = f"{title or ''} {summary or ''}".lower()
     if any(k in t for k in NON_PROJECTY_KEYWORDS):
         return False
-
     if not USE_KEYWORD_GATE:
         return True
-
-    if any(k in t for k in TOPIC_KEYWORDS):
-        return True
-    return False
+    return any(k in t for k in TOPIC_KEYWORDS)
 
 # ============================================================================================================
 # URL normalize + sent_links
@@ -240,7 +214,7 @@ def save_sent_links(links):
             f.write(x + "\n")
 
 # ============================================================================================================
-# Better resolve Google News -> publisher (avoid lh3.googleusercontent.com / assets)
+# Resolve Google News -> publisher (กัน tracking/asset)
 # ============================================================================================================
 
 def _get_domain(u: str) -> str:
@@ -253,8 +227,9 @@ def _get_domain(u: str) -> str:
     except Exception:
         return ""
 
+IMAGE_EXTS = (".jpg",".jpeg",".png",".gif",".webp",".svg",".ico")
+
 DISALLOWED_HOSTS = {
-    "news.google.com",
     "lh3.googleusercontent.com",
     "googleusercontent.com",
     "gstatic.com",
@@ -262,7 +237,14 @@ DISALLOWED_HOSTS = {
     "support.google.com",
 }
 
-IMAGE_EXTS = (".jpg",".jpeg",".png",".gif",".webp",".svg",".ico")
+TRACKER_HOSTS = {
+    "google-analytics.com",
+    "www.google-analytics.com",
+    "googletagmanager.com",
+    "doubleclick.net",
+    "stats.g.doubleclick.net",
+    "t.co",
+}
 
 def _is_good_publisher_url(u: str) -> bool:
     if not u or not u.startswith(("http://","https://")):
@@ -272,6 +254,8 @@ def _is_good_publisher_url(u: str) -> bool:
         return False
     if host in DISALLOWED_HOSTS or any(host.endswith(x) for x in DISALLOWED_HOSTS):
         return False
+    if host in TRACKER_HOSTS or any(host.endswith(x) for x in TRACKER_HOSTS):
+        return False
     path = (urlparse(u).path or "").lower()
     if any(path.endswith(ext) for ext in IMAGE_EXTS):
         return False
@@ -279,47 +263,69 @@ def _is_good_publisher_url(u: str) -> bool:
 
 def resolve_final_url(url: str) -> str:
     """
-    - Follow redirects
-    - If Google News page -> extract encoded url=publisher...
-    - Never return googleusercontent/gstatic/assets/images
+    เป้าหมาย: ได้ publisher URL จริง
+    - ห้ามหลุดเป็น tracking/asset (google-analytics / googleusercontent / gstatic)
+    - ถ้าแกะไม่ได้จริงๆ ให้คืน url เดิม (ไม่สุ่มหยิบ url จาก html)
     """
     if not url:
         return url
+
     try:
         r = S.get(url, timeout=min(ARTICLE_TIMEOUT_SEC, 10), allow_redirects=True)
         final = r.url or url
         host = _get_domain(final)
 
+        # ถ้า redirect ไป tracking/asset -> ทิ้ง กลับไปใช้ต้นทาง
+        if host in TRACKER_HOSTS or any(host.endswith(x) for x in TRACKER_HOSTS):
+            try: r.close()
+            except: pass
+            return url
+
+        # กรณีเป็น Google News
         if host == "news.google.com":
             html = r.text or ""
 
-            # 1) best: url=encoded publisher
+            # 1) canonical
+            m = re.search(r'rel=["\']canonical["\']\s+href=["\']([^"\']+)["\']', html, re.I)
+            if m:
+                cand = m.group(1).strip()
+                if _is_good_publisher_url(cand):
+                    try: r.close()
+                    except: pass
+                    return cand
+
+            # 2) url=encoded publisher
             m = re.search(r"(?:\?|&|amp;)url=(https?%3A%2F%2F[^&\"']+)", html, re.I)
             if m:
-                pub = unquote(m.group(1))
-                if _is_good_publisher_url(pub):
+                cand = unquote(m.group(1))
+                if _is_good_publisher_url(cand):
                     try: r.close()
                     except: pass
-                    return pub
+                    return cand
 
-            # 2) fallback: scan urls but pick only good publisher urls
-            for mm in re.finditer(r'https?://[^\s"\'<>]+', html, re.I):
-                candidate = mm.group(0).strip()
-                if _is_good_publisher_url(candidate):
+            # 3) อ่านเฉพาะ href (กันหยิบ src/pixel/tracker)
+            hrefs = re.findall(r'href=["\'](https?://[^"\']+)["\']', html, flags=re.I)
+            for cand in hrefs[:200]:
+                cand = cand.strip()
+                if _is_good_publisher_url(cand):
                     try: r.close()
                     except: pass
-                    return candidate
+                    return cand
+
+            # แกะไม่ได้จริงๆ -> ให้คืนเป็น news.google.com (อย่างน้อยไม่หลุดไป tracking)
+            try: r.close()
+            except: pass
+            return final
 
         try: r.close()
         except: pass
-
-        # final might still be google news; keep it (but credibility scorer will treat as aggregator)
         return final
+
     except Exception:
         return url
 
 # ============================================================================================================
-# Source credibility scoring (not low for everything)
+# Credibility scoring
 # ============================================================================================================
 
 def _is_https(u: str) -> bool:
@@ -346,6 +352,17 @@ def assess_source_credibility(original_url: str, final_url: str, title: str) -> 
     signals = []
     fu = final_url or original_url
     domain = _get_domain(fu)
+
+    # ถ้าเป็น tracker ให้กดต่ำทันที
+    if domain in TRACKER_HOSTS or any(domain.endswith(x) for x in TRACKER_HOSTS):
+        return {
+            "domain": domain,
+            "final_url": original_url,  # fallback
+            "score": 0,
+            "rating": "low",
+            "rating_th": "ต่ำ",
+            "signals": ["tracker-url"],
+        }
 
     if _is_https(fu):
         score += 1
@@ -398,7 +415,7 @@ def assess_source_credibility(original_url: str, final_url: str, title: str) -> 
     }
 
 # ============================================================================================================
-# Parse feeds
+# Feed parsing + image fetch
 # ============================================================================================================
 
 def parse_feed_with_timeout(url: str):
@@ -406,20 +423,47 @@ def parse_feed_with_timeout(url: str):
     r.raise_for_status()
     return feedparser.parse(r.text)
 
+def _is_good_image_url(u: str) -> bool:
+    if not u or not isinstance(u, str):
+        return False
+    if not u.startswith("https://"):
+        return False
+    host = _get_domain(u)
+    if host in DISALLOWED_HOSTS or any(host.endswith(x) for x in DISALLOWED_HOSTS):
+        return False
+    if host in TRACKER_HOSTS or any(host.endswith(x) for x in TRACKER_HOSTS):
+        return False
+    # LINE ส่วนใหญ่รับได้แม้ไม่มีนามสกุล แต่กันโคตรแปลกๆไว้
+    if len(u) > 1200:
+        return False
+    return True
+
 def fetch_article_image(url: str):
+    """Parse og:image/twitter:image from publisher page (ถ้าเป็น Google News/ไม่ใช่ publisher ก็จะไม่ค่อยได้)"""
     try:
         if not url or not url.startswith(("http://","https://")):
             return None
+        # ถ้า url เป็น google news มักไม่ให้ og:image ที่ usable -> ไม่ฝืน
+        if _get_domain(url) == "news.google.com":
+            return None
+
         r = S.get(url, timeout=ARTICLE_TIMEOUT_SEC, allow_redirects=True)
         if r.status_code >= 300:
             return None
         html = r.text or ""
+
         m = re.search(r'property=["\']og:image["\']\s+content=["\']([^"\']+)["\']', html, re.I)
         if m:
-            return m.group(1).strip()
+            u = m.group(1).strip()
+            if _is_good_image_url(u):
+                return u
+
         m = re.search(r'name=["\']twitter:image["\']\s+content=["\']([^"\']+)["\']', html, re.I)
         if m:
-            return m.group(1).strip()
+            u = m.group(1).strip()
+            if _is_good_image_url(u):
+                return u
+
         return None
     except Exception:
         return None
@@ -525,10 +569,7 @@ def validate_evidence_in_text(title: str, summary: str, evidence_list: list) -> 
             ok += 1
     return ok >= 1
 
-# กัน “ปนบริบท” ง่ายๆ: ถ้า bullet มีคำที่ไม่อยู่ใน title/summary แบบชัดๆบางคำ ให้ reject
-CROSS_TOPIC_GUARD_TERMS = [
-    "cambodia","กัมพูชา","casino","คาสิโน","bridge","สะพาน",
-]
+CROSS_TOPIC_GUARD_TERMS = ["cambodia","กัมพูชา","casino","คาสิโน","bridge","สะพาน"]
 def guard_cross_topic(title: str, summary: str, bullets: list[str]) -> bool:
     text = f"{title or ''} {summary or ''}".lower()
     for b in bullets[:1]:
@@ -538,8 +579,19 @@ def guard_cross_topic(title: str, summary: str, bullets: list[str]) -> bool:
                 return False
     return True
 
+def english_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    letters = sum(1 for c in text if c.isalpha())
+    ascii_letters = sum(1 for c in text if ('A' <= c <= 'Z') or ('a' <= c <= 'z'))
+    return (ascii_letters / max(1, letters))
+
+def is_mostly_english(text: str) -> bool:
+    # ถ้าเป็นอังกฤษเยอะ -> ถือว่าไม่ผ่าน
+    return english_ratio(text) >= 0.55
+
 # ============================================================================================================
-# GROQ calls + rewrite bullet (single)
+# GROQ calls + rewrite bullet (Thai only)
 # ============================================================================================================
 
 def _is_429(e: Exception) -> bool:
@@ -552,7 +604,7 @@ def call_groq(prompt: str, temperature: float = 0.35) -> str:
     resp = groq_client.chat.completions.create(
         model=GROQ_MODEL_NAME,
         messages=[
-            {"role": "system", "content": "Return STRICT JSON only. No markdown. No extra text."},
+            {"role": "system", "content": "ตอบเป็น JSON เท่านั้น ห้ามมี markdown ห้ามมีข้อความอื่น"},
             {"role": "user", "content": prompt},
         ],
         temperature=float(temperature),
@@ -580,15 +632,8 @@ def call_groq_with_retries(prompt: str, temperature: float = 0.35) -> str:
             raise
     raise last
 
-GENERIC_PATTERNS = [
-    "อาจกระทบต้นทุน", "อาจกระทบกฎระเบียบ", "อาจกระทบตารางงาน",
-    "ความเสี่ยงต่อการดำเนินงาน", "อาจส่งผลกระทบ", "อาจกระทบต่อโครงการ",
-]
-SPECIFIC_HINTS = [
-    "ใบอนุญาต","ภาษี","psc","สัมปทาน","ประกัน","ผู้รับเหมา","แรงงาน",
-    "ท่าเรือ","ขนส่ง","ศุลกากร","นำเข้า","ค่าเงิน","fx","ความปลอดภัย",
-    "คว่ำบาตร","sanction","ประท้วง","นัดหยุดงาน","ความไม่สงบ",
-]
+GENERIC_PATTERNS = ["อาจกระทบต้นทุน", "อาจกระทบกฎระเบียบ", "อาจกระทบตารางงาน", "อาจส่งผลกระทบ", "อาจกระทบต่อโครงการ"]
+SPECIFIC_HINTS = ["ใบอนุญาต","ภาษี","psc","สัมปทาน","ประกัน","ผู้รับเหมา","แรงงาน","ท่าเรือ","ขนส่ง","ศุลกากร","ค่าเงิน","คว่ำบาตร","นัดหยุดงาน","ความไม่สงบ","ความปลอดภัย"]
 def looks_generic_or_short_one(bullets) -> bool:
     if not bullets or not isinstance(bullets, list):
         return True
@@ -599,12 +644,13 @@ def looks_generic_or_short_one(bullets) -> bool:
     too_short = len(joined) < 70
     return (generic_hit and not specific_hit) or too_short
 
-def rewrite_impact_bullet_one(news, country, bullets):
+def rewrite_impact_bullet_one_thai(news, country, bullets):
     prompt = f"""
 คุณคือ Analyst ของ PTTEP
 ช่วยเขียน "ผลกระทบต่อโครงการ" ให้เหลือ 1 bullet เท่านั้น (1–2 ประโยค) โดยต้องเฉพาะเจาะจงและโยงกับข่าวจริง
 
 ข้อกำหนด:
+- เขียนเป็นภาษาไทยเท่านั้น ห้ามใช้ภาษาอังกฤษ
 - ต้องอธิบายเส้นทางผลกระทบ: ประเด็นข่าว -> กลไก -> กระทบโครงการยังไง
 - ต้องมีคำ/วลีจาก title/summary อย่างน้อย 1 จุด (ห้ามเดา)
 - ห้ามปนบริบท: ห้ามพูดถึงประเทศ/เหตุการณ์/คำสำคัญที่ไม่อยู่ในหัวข้อ/สรุป
@@ -620,16 +666,15 @@ bullet เดิม:
 ตอบเป็น JSON เท่านั้น:
 {{"impact_bullets": ["..."]}}
 """
-    text = call_groq_with_retries(prompt, temperature=0.6)
+    text = call_groq_with_retries(prompt, temperature=0.55)
     data = _extract_json_object(text)
     if isinstance(data, dict) and isinstance(data.get("impact_bullets"), list):
-        out = clean_bullets(data["impact_bullets"])
-        out = diversify_bullets(out[:1])
+        out = diversify_bullets(clean_bullets(data["impact_bullets"])[:1])
         return out
     return diversify_bullets(clean_bullets(bullets))[:1]
 
 # ============================================================================================================
-# LLM selection (LLM-first) — strict rules to reject non-project news
+# LLM selection (Thai-only) — strict reject non-project news
 # ============================================================================================================
 
 def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
@@ -649,17 +694,19 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
 คุณเป็นผู้ช่วยคัดกรองข่าวเพื่อประเมิน “ผลกระทบต่อโครงการ PTTEP ในประเทศนั้นๆ”
 (ให้คัดโดย LLM เป็นหลัก ไม่พึ่ง keyword)
 
+คำตอบทั้งหมดต้องเป็นภาษาไทยเท่านั้น ห้ามมีภาษาอังกฤษ
+
 ให้ถือว่า “เกี่ยวข้องกับโครงการ” ก็ต่อเมื่อเข้าเงื่อนไขอย่างใดอย่างหนึ่ง:
-A) Energy/E&P/Upstream/PSC/Concession/Regulatory ด้านพลังงาน หรือโครงสร้างพื้นฐานพลังงาน (ท่อ/ท่าเรือ/ไฟฟ้า)
-B) Political/Security ที่กระทบความมั่นคง/การเข้าถึงไซต์/การทำงานของรัฐ/ใบอนุญาต
-C) Macro-finance ระดับประเทศ/ภาคพลังงาน (ค่าเงิน, capital control, sanctions, sovereign credit, ภาษี/กฎลงทุนที่กระทบภาคพลังงาน)
-D) Disaster ที่กระทบโครงสร้างพื้นฐาน/โลจิสติกส์/ความปลอดภัยในพื้นที่ปฏิบัติการ
-E) Contractor/Counterparty/Insurance/Logistics ที่กระทบการจัดหา/ขนส่ง/ประกัน/สัญญาโครงการ
+A) พลังงาน/สำรวจผลิต/E&P/Upstream/PSC/สัมปทาน/กฎระเบียบพลังงาน หรือโครงสร้างพื้นฐานพลังงาน (ท่อ/ท่าเรือ/ไฟฟ้า)
+B) การเมือง/ความมั่นคง ที่กระทบความปลอดภัย/การเข้าถึงไซต์/การทำงานของรัฐ/ใบอนุญาต
+C) การเงินมหภาคระดับประเทศที่กระทบภาคพลังงาน (ค่าเงิน, ควบคุมเงินทุน, คว่ำบาตร, เครดิตประเทศ, ภาษี/กฎลงทุนที่กระทบพลังงาน)
+D) ภัยพิบัติที่กระทบโครงสร้างพื้นฐาน/โลจิสติกส์/ความปลอดภัยพื้นที่ปฏิบัติการ
+E) คู่สัญญา/ผู้รับเหมา/ประกัน/โลจิสติกส์ ที่กระทบสัญญา/การจัดหา/การขนส่ง
 
 ให้ “ไม่เกี่ยวข้อง” ทันที ถ้าเป็น:
-- lifestyle/consumer (เช่น pet owners, รางวัล, กีฬา, บันเทิง, gossip)
+- lifestyle/consumer (เช่น สัตว์เลี้ยง, รางวัล, กีฬา, บันเทิง, gossip)
 - ข่าวเฉพาะบุคคล/ครอบครัวที่ไม่ใช่ระดับประเทศ/ภาคพลังงาน
-- award/prize ที่ไม่เกี่ยวกับกฎระเบียบ/การอนุมัติ/การลงทุนพลังงาน
+- award/prize ที่ไม่โยงกับกฎระเบียบ/การอนุมัติ/การลงทุนพลังงาน
 
 กติกาเข้ม:
 1) evidence ต้องเป็นวลีที่คัดมาจาก title/summary ของข่าวนั้นเท่านั้น (ห้ามแต่งเพิ่ม)
@@ -676,7 +723,6 @@ E) Contractor/Counterparty/Insurance/Logistics ที่กระทบการ
       "is_relevant": true/false,
       "country": "Thailand",
       "topic_category": "energy|policy_regulatory|security|macro_finance|disaster_infra|logistics|contractor_counterparty|other",
-      "mechanisms": ["...","..."],
       "impact_bullets": ["..."],
       "impact_level": "low|medium|high|unknown",
       "evidence": ["...","..."],
@@ -768,7 +814,7 @@ def fetch_news_window():
     return uniq
 
 # ============================================================================================================
-# FLEX (Bullet เดียว)
+# FLEX (ไทย + bullet เดียว + fallback รูปเสมอ)
 # ============================================================================================================
 
 def _shorten(items, take=4):
@@ -784,13 +830,15 @@ def create_flex(news_items):
     bubbles = []
 
     for n in news_items:
-        bullets = clean_bullets(n.get("impact_bullets") or [])[:1]  # ✅ bullet เดียว
+        bullets = clean_bullets(n.get("impact_bullets") or [])[:1]
         country = (n.get("country") or "ไม่ระบุ").strip()
         projects = n.get("projects") or ["ALL"]
         proj_txt = _shorten(projects, take=4)
 
         link = n.get("final_url") or n.get("link") or "https://news.google.com/"
-        img = n.get("image") or DEFAULT_ICON_URL
+        img = n.get("image") or DEFAULT_HERO_URL
+        if not _is_good_image_url(img):
+            img = DEFAULT_HERO_URL
 
         cred_txt = ""
         if SHOW_SOURCE_RATING:
@@ -818,6 +866,7 @@ def create_flex(news_items):
             contents.append({"type": "text", "text": cred_txt, "size": "xs", "color": "#666666", "wrap": True, "margin": "sm"})
 
         contents.append({"type": "text", "text": "ผลกระทบต่อโครงการ", "size": "lg", "weight": "bold", "color": "#000000", "margin": "lg"})
+
         if bullets:
             contents.append({"type": "text", "text": f"• {bullets[0]}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"})
         else:
@@ -893,14 +942,12 @@ def main():
             print("ถึง deadline ระหว่าง pre-filter (หยุด)")
             break
 
-        link_norm = _normalize_link(n["link"])
-        if link_norm in sent:
+        if _normalize_link(n["link"]) in sent:
             continue
 
         title, summary = n.get("title",""), n.get("summary","")
         feed_country = (n.get("feed_country") or "").strip()
 
-        # ปิด keyword gate แล้ว — แต่ยังตัด NON_PROJECTY แน่ๆ
         if not passes_topic_gate(title, summary):
             continue
 
@@ -915,10 +962,9 @@ def main():
     if MAX_GLOBAL_ITEMS is not None:
         global_candidates = global_candidates[:MAX_GLOBAL_ITEMS]
 
-    selected = candidates + global_candidates
+    selected = (candidates + global_candidates)
     selected.sort(key=lambda x: x["published"], reverse=True)
 
-    # ---------- Near-duplicate titles ----------
     selected = dedupe_near_titles(selected, threshold=0.88)
     print("จำนวนข่าวหลังตัดซ้ำใกล้เคียง:", len(selected))
 
@@ -938,6 +984,11 @@ def main():
 
         original = n.get("link", "")
         final_url = resolve_final_url(original)
+
+        # กัน final_url หลุดเป็น tracker
+        if _get_domain(final_url) in TRACKER_HOSTS or any(_get_domain(final_url).endswith(x) for x in TRACKER_HOSTS):
+            final_url = original
+
         n["final_url"] = final_url
 
         cred = assess_source_credibility(original, final_url, n.get("title", ""))
@@ -976,14 +1027,11 @@ def main():
 
         feed_country = (n.get("feed_country") or "").strip()
         country = (tag.get("country") or "").strip()
-
-        # บังคับให้ประเทศที่ LLM เลือกต้องเท่ากับ feed_country
         if country != feed_country:
             continue
 
         topic_category = (tag.get("topic_category") or "").strip().lower()
         if topic_category == "other":
-            # กัน lifestyle/award/pets ฯลฯ
             continue
 
         title = n.get("title", "")
@@ -993,29 +1041,36 @@ def main():
         if not isinstance(evidence, list):
             evidence = [str(evidence)]
         evidence = [str(x).strip() for x in evidence if str(x).strip()][:2]
-
         if not validate_evidence_in_text(title, summary, evidence):
             continue
 
-        bullets = clean_bullets(tag.get("impact_bullets") or [])
-        bullets = diversify_bullets(bullets[:1])  # ✅ เหลือ 1 bullet
+        bullets = diversify_bullets(clean_bullets(tag.get("impact_bullets") or [])[:1])
+        if not bullets:
+            continue
+
+        # กันอังกฤษหลุด
+        if is_mostly_english(bullets[0]):
+            bullets = rewrite_impact_bullet_one_thai(n, country, bullets)
+
+        # ถ้ายัง generic/สั้น -> rewrite ไทย
+        if ENABLE_IMPACT_REWRITE and (looks_generic_or_short_one(bullets) or is_mostly_english(bullets[0])):
+            bullets = rewrite_impact_bullet_one_thai(n, country, bullets)
+
+        bullets = diversify_bullets(clean_bullets(bullets)[:1])
+        if not bullets:
+            continue
+
+        if is_mostly_english(bullets[0]):
+            continue
 
         if not guard_cross_topic(title, summary, bullets):
             continue
-
-        if ENABLE_IMPACT_REWRITE and looks_generic_or_short_one(bullets):
-            bullets = rewrite_impact_bullet_one(n, country, bullets)
-            bullets = clean_bullets(bullets)
-            bullets = diversify_bullets(bullets[:1])
-            if not guard_cross_topic(title, summary, bullets):
-                continue
 
         if not has_meaningful_impact(bullets):
             continue
 
         projects = projects_for_country(country)
         if not projects:
-            # ตามที่ขอ: “ยกเว้นเรื่องปรับโครงการเป็น ALL” -> ประเทศมีรายการก็ใช้รายการ
             projects = ["ALL"]
 
         n["country"] = country
@@ -1024,7 +1079,6 @@ def main():
         n["impact_level"] = (tag.get("impact_level") or "unknown")
         n["evidence"] = evidence
         n["why_relevant"] = (tag.get("why_relevant") or "").strip()
-        n["mechanisms"] = (tag.get("mechanisms") or [])[:2]
 
         final.append(n)
 
@@ -1038,11 +1092,16 @@ def main():
         if deadline and time.time() > deadline:
             print("ถึง deadline ระหว่างหา image (หยุด)")
             break
-        img = fetch_article_image(n.get("final_url") or n.get("link",""))
-        n["image"] = img if (isinstance(img, str) and img.startswith(("http://", "https://"))) else DEFAULT_ICON_URL
-        time.sleep(0.12)
 
-    # ส่งสูงสุด 10 ใบต่อรอบ (กัน Flex หนัก/ยาวเกิน)
+        # ใช้ publisher url ถ้าหาได้, ไม่งั้นใช้ default
+        img = fetch_article_image(n.get("final_url") or n.get("link",""))
+        if _is_good_image_url(img or ""):
+            n["image"] = img
+        else:
+            n["image"] = DEFAULT_HERO_URL
+
+        time.sleep(0.10)
+
     msgs = create_flex(final[:10])
     send_to_line(msgs)
 
