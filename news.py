@@ -1,16 +1,13 @@
 # news.py
 # ============================================================================================================
-# PTTEP Domestic News Bot (Groq) — IMPACT LONGER + SOURCE CREDIBILITY CHECK
+# PTTEP Domestic News Bot (Groq) — SINGLE BULLET + BETTER SOURCE CREDIBILITY
 #
-# CHANGES (ตามที่คุณขอ):
-# ✅ ลบ "เหตุผลที่กระทบ" ออกจาก LLM output และ Flex
-# ✅ ทำ "ผลกระทบต่อโครงการ" ให้ยาว/ละเอียดขึ้น:
-#    - ขอ 4–6 bullets
-#    - แต่ละ bullet เฉพาะเจาะจง + มี impact path (อะไร -> กระทบอะไร -> ผลต่อโครงการ)
-# ✅ เพิ่ม "ความน่าเชื่อถือแหล่งข่าว":
-#    - resolve final URL (โดยเฉพาะ GoogleNews)
-#    - วิเคราะห์โดเมน + heuristic score -> rating สูง/กลาง/ต่ำ
-#    - เลือกกรองข่าวความน่าเชื่อถือต่ำด้วย ENV
+# ✅ ตามที่คุณขอ:
+# 1) ทำให้ “ผลกระทบต่อโครงการ” เหลือ Bullet เดียว (แต่ยาว/ละเอียด 1–2 ประโยค)
+# 2) แก้ระบบ “ความน่าเชื่อถือ” ไม่ให้ต่ำหมด:
+#    - พยายาม unwrap Google News ให้ได้โดเมนผู้เผยแพร่จริง
+#    - ปรับ scoring ให้สมเหตุสมผล (news.google.com ไม่ควรต่ำสุด)
+#    - เพิ่มกลุ่มสื่อสายพลังงาน (เช่น oilprice.com) ให้ได้คะแนนระดับกลาง
 #
 # REQUIRED ENV:
 # - GROQ_API_KEY
@@ -27,7 +24,7 @@
 # - DRY_RUN (default: false)
 #
 # - SHOW_SOURCE_RATING (default: true)          # แสดงระดับความน่าเชื่อถือบน Flex
-# - MIN_SOURCE_SCORE (default: 0)              # กรองเฉพาะข่าวคะแนน>=ค่านี้ (แนะนำ 1-2)
+# - MIN_SOURCE_SCORE (default: 0)              # กรองเฉพาะข่าวคะแนน>=ค่านี้ (แนะนำลอง 1-2)
 # ============================================================================================================
 
 import os
@@ -36,8 +33,8 @@ import json
 import time
 import random
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Tuple
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, quote_plus
+from typing import List, Dict, Any
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, quote_plus, unquote
 from difflib import SequenceMatcher
 
 import feedparser
@@ -137,14 +134,6 @@ PROJECT_COUNTRY_SYNONYMS = {
     "Brazil": ["brazil", "brasil", "บราซิล", "rio", "sao paulo"],
     "Mexico": ["mexico", "เม็กซิโก", "mexico city", "toluca", "guadalajara", "monterrey"],
 }
-
-def detect_project_countries(text: str):
-    t = (text or "").lower()
-    hits = []
-    for c, keys in PROJECT_COUNTRY_SYNONYMS.items():
-        if any(k in t for k in keys):
-            hits.append(c)
-    return sorted(set(hits))
 
 # NOTE: แก้ให้ตรงโครงการจริงของคุณได้เลย
 PROJECTS_BY_COUNTRY = {
@@ -252,38 +241,17 @@ def likely_foreign_event(feed_country: str, title: str, summary: str) -> bool:
     return (not target_hit)
 
 # ============================================================================================================
-# IMPACT MECHANISMS + Guard กันปนข่าว
+# MECHANISMS + Guard กันปนข่าว
 # ============================================================================================================
 
 MECHANISMS = {
-    "policy_regulatory": [
-        "policy", "regulation", "regulatory", "license", "permit", "tax", "royalty", "psc", "concession",
-        "รัฐบาล", "นโยบาย", "กฎระเบียบ", "ใบอนุญาต", "ภาษี", "ค่าภาคหลวง", "สัมปทาน", "psc"
-    ],
-    "security_politics": [
-        "election", "coup", "junta", "border", "conflict", "clashes", "attack", "terror",
-        "เลือกตั้ง", "รัฐประหาร", "รัฐบาลทหาร", "ชายแดน", "ความขัดแย้ง", "ปะทะ", "โจมตี", "ก่อการร้าย"
-    ],
-    "operations_hse": [
-        "shutdown", "outage", "incident", "accident", "blast", "fire", "injury", "safety",
-        "หยุดผลิต", "หยุดชะงัก", "อุบัติเหตุ", "ระเบิด", "ไฟไหม้", "บาดเจ็บ", "ความปลอดภัย"
-    ],
-    "logistics_supplychain": [
-        "port", "shipping", "customs", "logistics", "strike", "blockade", "pipeline", "equipment",
-        "ท่าเรือ", "ขนส่ง", "ศุลกากร", "โลจิสติกส์", "นัดหยุดงาน", "ปิดล้อม", "ท่อส่ง", "อุปกรณ์"
-    ],
-    "finance_macro": [
-        "fx", "currency", "capital control", "downgrade", "rate hike", "inflation", "sanction",
-        "ค่าเงิน", "อัตราแลกเปลี่ยน", "ควบคุมเงินทุน", "ลดอันดับเครดิต", "ขึ้นดอกเบี้ย", "เงินเฟ้อ", "คว่ำบาตร"
-    ],
-    "weather_disaster": [
-        "flood", "storm", "typhoon", "earthquake", "landslide", "drought", "insurance",
-        "น้ำท่วม", "พายุ", "ไต้ฝุ่น", "แผ่นดินไหว", "ดินถล่ม", "ภัยแล้ง", "ประกัน"
-    ],
-    "counterparty_contractor": [
-        "contractor", "counterparty", "default", "lawsuit", "arbitration", "bankruptcy", "insurance hardening",
-        "ผู้รับเหมา", "คู่สัญญา", "ผิดนัด", "ฟ้องร้อง", "อนุญาโต", "ล้มละลาย", "ประกันแพงขึ้น"
-    ],
+    "policy_regulatory": ["policy","regulation","regulatory","license","permit","tax","royalty","psc","concession","รัฐบาล","นโยบาย","กฎระเบียบ","ใบอนุญาต","ภาษี","ค่าภาคหลวง","สัมปทาน","psc"],
+    "security_politics": ["election","coup","junta","border","conflict","clashes","attack","terror","เลือกตั้ง","รัฐประหาร","รัฐบาลทหาร","ชายแดน","ความขัดแย้ง","ปะทะ","โจมตี","ก่อการร้าย"],
+    "operations_hse": ["shutdown","outage","incident","accident","blast","fire","injury","safety","หยุดผลิต","หยุดชะงัก","อุบัติเหตุ","ระเบิด","ไฟไหม้","บาดเจ็บ","ความปลอดภัย"],
+    "logistics_supplychain": ["port","shipping","customs","logistics","strike","blockade","pipeline","equipment","ท่าเรือ","ขนส่ง","ศุลกากร","โลจิสติกส์","นัดหยุดงาน","ปิดล้อม","ท่อส่ง","อุปกรณ์"],
+    "finance_macro": ["fx","currency","capital control","downgrade","rate hike","inflation","sanction","ค่าเงิน","อัตราแลกเปลี่ยน","ควบคุมเงินทุน","ลดอันดับเครดิต","ขึ้นดอกเบี้ย","เงินเฟ้อ","คว่ำบาตร"],
+    "weather_disaster": ["flood","storm","typhoon","earthquake","landslide","drought","insurance","น้ำท่วม","พายุ","ไต้ฝุ่น","แผ่นดินไหว","ดินถล่ม","ภัยแล้ง","ประกัน"],
+    "counterparty_contractor": ["contractor","counterparty","default","lawsuit","arbitration","bankruptcy","insurance hardening","ผู้รับเหมา","คู่สัญญา","ผิดนัด","ฟ้องร้อง","อนุญาโต","ล้มละลาย","ประกันแพงขึ้น"],
 }
 
 CROSS_TOPIC_GUARD_TERMS = [
@@ -321,7 +289,7 @@ def infer_mechanisms_from_text(title: str, summary: str) -> list[str]:
 
 def guard_cross_topic(title: str, summary: str, bullets: list[str]) -> bool:
     text = f"{title or ''} {summary or ''}".lower()
-    for b in bullets[:8]:
+    for b in bullets[:3]:
         bl = (b or "").lower()
         for term in CROSS_TOPIC_GUARD_TERMS:
             if term.lower() in bl and term.lower() not in text:
@@ -329,31 +297,28 @@ def guard_cross_topic(title: str, summary: str, bullets: list[str]) -> bool:
     return True
 
 # ============================================================================================================
-# SOURCE CREDIBILITY (heuristic)
+# SOURCE CREDIBILITY (better heuristic + unwrap Google News)
 # ============================================================================================================
 
-# ตัวอย่าง list พื้นฐาน — เพิ่ม/ลดได้ตามชอบ
 HIGH_TRUST_DOMAINS = {
-    "reuters.com", "bloomberg.com", "wsj.com", "ft.com", "economist.com",
-    "apnews.com", "bbc.co.uk", "bbc.com", "nytimes.com", "washingtonpost.com",
-    "theguardian.com", "aljazeera.com",
-    "nhk.or.jp", "nikkei.com",
-    "spglobal.com", "iea.org", "opec.org",
-    "worldbank.org", "imf.org",
-    "who.int", "un.org",
-    "gov", "edu"
+    "reuters.com","bloomberg.com","wsj.com","ft.com","economist.com",
+    "apnews.com","bbc.co.uk","bbc.com","nytimes.com","washingtonpost.com",
+    "theguardian.com","aljazeera.com","nhk.or.jp","nikkei.com",
+    "spglobal.com","iea.org","opec.org","worldbank.org","imf.org","who.int","un.org",
+    "gov","edu",
 }
 
-LOW_TRUST_HINTS = [
-    "click", "viral", "rumor", "shocking", "unbelievable", "exposed",
-    "หวย", "ทำนาย", "ดวง", "แจก", "เครดิตฟรี",
-]
+# สื่อ/เว็บสายพลังงาน-เทรด (ให้ระดับกลาง ไม่เท่ากลุ่ม major)
+ENERGY_TRADE_DOMAINS = {
+    "oilprice.com", "rigzone.com", "argusmedia.com", "energyintel.com",
+}
+
+LOW_TRUST_HINTS = ["click","viral","rumor","shocking","unbelievable","exposed","หวย","ทำนาย","ดวง","แจก","เครดิตฟรี"]
 
 def _get_domain(u: str) -> str:
     try:
         p = urlparse(u)
-        host = (p.netloc or "").lower()
-        host = host.split(":")[0]
+        host = (p.netloc or "").lower().split(":")[0]
         if host.startswith("www."):
             host = host[4:]
         return host
@@ -367,13 +332,42 @@ def _is_https(u: str) -> bool:
         return False
 
 def resolve_final_url(url: str) -> str:
-    """Resolve redirects (important for news.google.com). Uses GET stream to keep it light."""
+    """
+    1) allow_redirects เพื่อได้ final
+    2) ถ้ายังเป็น news.google.com -> พยายามแกะ publisher URL จาก HTML (url=... ที่ถูก encode)
+    """
     if not url:
         return url
     try:
-        r = S.get(url, timeout=min(ARTICLE_TIMEOUT_SEC, 10), allow_redirects=True, stream=True)
+        r = S.get(url, timeout=min(ARTICLE_TIMEOUT_SEC, 10), allow_redirects=True)
         final = r.url or url
-        # close connection fast
+        host = _get_domain(final)
+
+        if host == "news.google.com":
+            html = r.text or ""
+
+            # pattern: url=https%3A%2F%2Fpublisher...
+            m = re.search(r"(?:\?|&|amp;)url=(https?%3A%2F%2F[^&\"']+)", html, re.I)
+            if m:
+                pub = unquote(m.group(1))
+                if pub.startswith(("http://","https://")) and _get_domain(pub) != "news.google.com":
+                    try:
+                        r.close()
+                    except Exception:
+                        pass
+                    return pub
+
+            # fallback: หา https://... ที่ไม่ใช่ google
+            m2 = re.search(r"https?://(?!news\.google\.com)[^\s\"'<>]+", html, re.I)
+            if m2:
+                pub2 = m2.group(0).strip()
+                if pub2.startswith(("http://","https://")):
+                    try:
+                        r.close()
+                    except Exception:
+                        pass
+                    return pub2
+
         try:
             r.close()
         except Exception:
@@ -384,13 +378,14 @@ def resolve_final_url(url: str) -> str:
 
 def assess_source_credibility(original_url: str, final_url: str, site: str, title: str) -> Dict[str, Any]:
     """
-    Heuristic scoring:
-    - +3 if domain in high trust list (exact or suffix match)
-    - +2 if .gov/.edu
+    Scoring (ปรับให้ไม่ต่ำหมด):
     - +1 https
-    - +1 if site is GoogleNews but final domain is high trust
-    - -2 if clickbait hints in title or domain
-    - -1 if too many hyphens in domain
+    - +3 domain major (reuters/bloomberg/...)
+    - +2 energy trade domains (oilprice/rigzone/argus...)
+    - +2 .gov/.edu
+    - +2 ถ้าโดเมนยังเป็น news.google.com (อย่างน้อยเป็น aggregator) -> ไม่ควรต่ำสุด
+    - -2 clickbait hints ใน title/domain
+    - -1 domain มี hyphen เยอะผิดปกติ
     """
     signals = []
     score = 0
@@ -402,18 +397,15 @@ def assess_source_credibility(original_url: str, final_url: str, site: str, titl
         score += 1
         signals.append("https")
 
-    # gov/edu quick trust
     if domain.endswith(".gov") or domain.endswith(".edu"):
         score += 2
         signals.append("gov/edu")
 
-    # exact or suffix high-trust match
     def _is_high_trust(d: str) -> bool:
         if d in HIGH_TRUST_DOMAINS:
             return True
-        # suffix match เช่น subdomain.reuters.com
         for hd in HIGH_TRUST_DOMAINS:
-            if hd in ["gov", "edu"]:
+            if hd in ["gov","edu"]:
                 continue
             if d.endswith(hd):
                 return True
@@ -421,19 +413,21 @@ def assess_source_credibility(original_url: str, final_url: str, site: str, titl
 
     if _is_high_trust(domain):
         score += 3
-        signals.append("known-major-domain")
+        signals.append("major-domain")
 
-    # google news -> credit final domain
-    if (site or "").lower() == "googlenews" and _is_high_trust(domain):
-        score += 1
-        signals.append("googlenews-to-major")
+    if domain in ENERGY_TRADE_DOMAINS or any(domain.endswith(x) for x in ENERGY_TRADE_DOMAINS):
+        score += 2
+        signals.append("energy-trade-press")
 
-    # clickbait / low-trust hints
+    # ถ้ายังเป็น Google News ให้ไม่นับต่ำสุด
+    if domain == "news.google.com":
+        score += 2
+        signals.append("google-news-aggregator")
+
     t = (title or "").lower()
     if any(h in t for h in LOW_TRUST_HINTS):
         score -= 2
         signals.append("clickbait-terms-in-title")
-
     if any(h in domain for h in ["free-", "viral", "click", "rumor"]):
         score -= 2
         signals.append("suspicious-domain-hint")
@@ -442,16 +436,12 @@ def assess_source_credibility(original_url: str, final_url: str, site: str, titl
         score -= 1
         signals.append("many-hyphens-domain")
 
-    # rating
-    if score >= 4:
-        rating = "high"
-        rating_th = "สูง"
-    elif score >= 2:
-        rating = "medium"
-        rating_th = "กลาง"
+    if score >= 5:
+        rating, rating_th = "high", "สูง"
+    elif score >= 3:
+        rating, rating_th = "medium", "กลาง"
     else:
-        rating = "low"
-        rating_th = "ต่ำ"
+        rating, rating_th = "low", "ต่ำ"
 
     return {
         "domain": domain,
@@ -604,23 +594,21 @@ def diversify_bullets(bullets):
     return out
 
 def has_meaningful_impact(bullets) -> bool:
-    """
-    ปรับให้ "ยาวขึ้น": ต้องมีอย่างน้อย 3 bullets หรือความยาวรวมพอสมควร
-    """
+    """รองรับ Bullet เดียว แต่ต้องยาวพอ"""
     if not bullets or not isinstance(bullets, list):
         return False
     bullets = [str(x).strip() for x in bullets if str(x).strip()]
-    if len(bullets) < 3:
+    if len(bullets) < 1:
         return False
     txt = " ".join(bullets)
     bad = ["ยังไม่พบผลกระทบ","ไม่พบผลกระทบ","ไม่ระบุผลกระทบ","ไม่เกี่ยวข้อง","ข้อมูลไม่เพียงพอ"]
     t = txt.lower().replace(" ", "")
     if any(x.replace(" ", "") in t for x in bad):
         return False
-    return len(txt.strip()) >= 80  # ยาวขึ้นกว่าก่อน
+    return len(txt.strip()) >= 70
 
 # ============================================================================================================
-# GROQ LLM (retry + batch)
+# GROQ LLM
 # ============================================================================================================
 
 def _is_429(e: Exception) -> bool:
@@ -661,46 +649,37 @@ def call_groq_with_retries(prompt: str, temperature: float = 0.35) -> str:
             raise
     raise last
 
-# “ยาวขึ้น + เฉพาะเจาะจงขึ้น” -> ถ้า bullet ยัง generic/สั้น ให้ rewrite
 GENERIC_PATTERNS = [
     "อาจกระทบต้นทุน", "อาจกระทบกฎระเบียบ", "อาจกระทบตารางงาน",
-    "ความเสี่ยงต่อการดำเนินงาน", "กระทบต้นทุน/กฎระเบียบ/ตารางงาน/ความเสี่ยง",
-    "อาจส่งผลกระทบ", "อาจกระทบต่อโครงการ",
+    "ความเสี่ยงต่อการดำเนินงาน", "อาจส่งผลกระทบ", "อาจกระทบต่อโครงการ",
 ]
+
 SPECIFIC_HINTS = [
     "ใบอนุญาต","ภาษี","psc","สัมปทาน","ประกัน","ผู้รับเหมา","แรงงาน",
     "ท่าเรือ","ขนส่ง","ศุลกากร","นำเข้า","ค่าเงิน","fx","ความปลอดภัย",
     "คว่ำบาตร","sanction","ประท้วง","นัดหยุดงาน","ความไม่สงบ",
 ]
 
-def looks_generic_or_short(bullets) -> bool:
+def looks_generic_or_short_one(bullets) -> bool:
     if not bullets or not isinstance(bullets, list):
         return True
     bullets = [str(x).strip() for x in bullets if str(x).strip()]
     joined = " ".join(bullets).lower()
     generic_hit = any(p.replace(" ", "") in joined.replace(" ", "") for p in GENERIC_PATTERNS)
     specific_hit = any(k.lower() in joined for k in SPECIFIC_HINTS)
-    too_few = len(bullets) < 4
-    too_short = len(joined) < 120
-    return (generic_hit and not specific_hit) or too_few or too_short
+    too_short = len(joined) < 70
+    return (generic_hit and not specific_hit) or too_short
 
-def rewrite_impact_bullets_long(news, country, bullets):
-    """
-    Rewrite ให้ยาวขึ้น (4–6 bullets) โดย:
-    - 1 bullet = 1 กลไก/เส้นทางผลกระทบ
-    - มีคำสำคัญจาก title/summary อย่างน้อย 1 จุด (กันมั่ว)
-    """
+def rewrite_impact_bullet_one(news, country, bullets):
     prompt = f"""
 คุณคือ Analyst ของ PTTEP
-ช่วยเขียน "ผลกระทบต่อโครงการ" ให้ละเอียดขึ้น (4–6 bullets) จากหัวข้อ/สรุปข่าวด้านล่าง
+ช่วยเขียน "ผลกระทบต่อโครงการ" ให้เหลือ 1 bullet เท่านั้น (1–2 ประโยค) โดยต้องเฉพาะเจาะจงและโยงกับข่าวจริง
 
-ข้อกำหนดสำคัญ:
-- ทุก bullet ต้องอธิบายเส้นทางผลกระทบแบบ "เหตุการณ์/ประเด็น -> กลไก -> กระทบโครงการยังไง"
-- ต้องเฉพาะเจาะจง: ระบุว่ากระทบด้านไหน เช่น ใบอนุญาต/ภาษี-PSC/โลจิสติกส์/ผู้รับเหมา/ประกันภัย/FX/ความปลอดภัย/การเข้าถึงไซต์/การขนส่ง/การชำระเงิน ฯลฯ
-- ต้องหยิบ “คำ/วลี” จาก title/summary อย่างน้อย 1 จุดในแต่ละ bullet (ห้ามเดา)
+ข้อกำหนด:
+- ต้องอธิบายเส้นทางผลกระทบ: ประเด็นข่าว -> กลไก -> กระทบโครงการยังไง
+- ต้องมีคำ/วลีจาก title/summary อย่างน้อย 1 จุด (ห้ามเดา)
 - ห้ามปนบริบท: ห้ามพูดถึงประเทศ/เหตุการณ์/คำสำคัญที่ไม่อยู่ในหัวข้อ/สรุป
-- เขียนภาษาไทยแบบคนทำงาน, ชัด, อ่านง่าย
-- 1 bullet ควรยาวประมาณ 18–35 คำ (ไม่สั้นเกินไป)
+- ความยาวประมาณ 25–45 คำ
 
 ประเทศ: {country}
 หัวข้อ: {news.get("title","")}
@@ -710,16 +689,16 @@ bullet เดิม:
 {json.dumps(bullets, ensure_ascii=False)}
 
 ตอบเป็น JSON เท่านั้น:
-{{"impact_bullets": ["...","...","...","..."]}}
+{{"impact_bullets": ["..."]}}
 """
     text = call_groq_with_retries(prompt, temperature=0.65)
     data = _extract_json_object(text)
     if isinstance(data, dict) and isinstance(data.get("impact_bullets"), list):
         out = [str(x).strip() for x in data["impact_bullets"] if str(x).strip()]
         out = clean_bullets(out)
-        out = diversify_bullets(out[:8])
+        out = diversify_bullets(out[:1])
         return out
-    return diversify_bullets(clean_bullets(bullets))
+    return diversify_bullets(clean_bullets(bullets))[:1]
 
 def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
@@ -736,16 +715,17 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
             })
 
         prompt = f"""
-คุณเป็นผู้ช่วยคัดกรองข่าวเพื่อประเมิน “ผลกระทบต่อโครงการ” (รับข่าวได้กว้าง: การเมือง/การเงิน/ภัยพิบัติ/โลจิสติกส์/พลังงาน ฯลฯ)
+คุณเป็นผู้ช่วยคัดกรองข่าวเพื่อประเมิน “ผลกระทบต่อโครงการ” (รับข่าวกว้าง: การเมือง/การเงิน/ภัยพิบัติ/โลจิสติกส์/พลังงาน ฯลฯ)
 
 นิยาม “เกี่ยวข้องกับโครงการ” = ต้องมีอย่างน้อย 1 กลไก:
 - policy_regulatory / security_politics / operations_hse / logistics_supplychain / finance_macro / weather_disaster / counterparty_contractor
 
 กติกาเข้ม:
 1) evidence ต้องเป็นวลีที่คัดมาจาก title/summary ของข่าวนั้นเท่านั้น (ห้ามแต่งเพิ่ม)
-2) impact_bullets ต้อง 3–6 bullets และต้องโยงกับ evidence พร้อมระบุ "กระทบอะไร" ให้ชัด
-3) ห้ามปนบริบท: ห้ามพูดถึงเหตุการณ์/ประเทศ/คำสำคัญที่ไม่อยู่ใน title/summary ของข่าวนั้น
-4) ถ้าไม่มั่นใจ → is_relevant=false
+2) impact_bullets ต้องมี "1 bullet เท่านั้น" (1–2 ประโยค, 25–45 คำ) และต้องโยงกับ evidence
+3) ใน bullet ต้องมีคำ/วลีจาก title/summary อย่างน้อย 1 จุด (ห้ามเดา)
+4) ห้ามปนบริบท: ห้ามพูดถึงเหตุการณ์/ประเทศ/คำสำคัญที่ไม่อยู่ใน title/summary ของข่าวนั้น
+5) ถ้าไม่มั่นใจ → is_relevant=false
 
 ตอบเป็น JSON เท่านั้น รูปแบบ:
 {{
@@ -755,7 +735,7 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
       "is_relevant": true/false,
       "country": "Thailand",
       "mechanisms": ["finance_macro", "weather_disaster"],
-      "impact_bullets": ["...","...","..."],
+      "impact_bullets": ["..."],
       "impact_level": "low|medium|high|unknown",
       "evidence": ["...","..."],
       "why_relevant": "..."
@@ -835,7 +815,6 @@ def fetch_news_window():
             print(f"[WARN] feed failed: {site}/{feed_country} -> {type(ex).__name__}: {ex}")
             continue
 
-    # dedupe exact link
     uniq, seen = [], set()
     for n in out:
         k = _normalize_link(n["link"])
@@ -864,6 +843,7 @@ def create_flex(news_items):
 
     for n in news_items:
         bullets = clean_bullets(n.get("impact_bullets") or [])
+        bullets = bullets[:1]  # ✅ เหลือ 1 bullet
         country = (n.get("country") or "ไม่ระบุ").strip()
         projects = n.get("projects") or ["ALL"]
         proj_txt = _shorten(projects, take=4)
@@ -871,7 +851,6 @@ def create_flex(news_items):
         link = n.get("final_url") or n.get("link") or "https://news.google.com/"
         img = n.get("image") or DEFAULT_ICON_URL
 
-        # credibility text
         cred_txt = ""
         if SHOW_SOURCE_RATING:
             rating_th = (n.get("source_rating_th") or "").strip()
@@ -903,7 +882,7 @@ def create_flex(news_items):
         contents.append({"type": "text", "text": "ผลกระทบต่อโครงการ", "size": "lg", "weight": "bold", "color": "#000000", "margin": "lg"})
         contents.extend([
             {"type": "text", "text": f"• {b}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"}
-            for b in bullets[:8]
+            for b in bullets[:1]
         ])
 
         bubble = {
@@ -1016,7 +995,7 @@ def main():
         print("ไม่มีข่าวให้ประเมิน")
         return
 
-    # ---------- Resolve final URL + credibility (ทำแค่ใน selected เพื่อลดโหลด) ----------
+    # ---------- Resolve final URL + credibility ----------
     for n in selected:
         if deadline and time.time() > deadline:
             print("ถึง deadline ระหว่าง resolve url (หยุด)")
@@ -1042,7 +1021,7 @@ def main():
             print("ไม่เหลือข่าวหลังกรองความน่าเชื่อถือ")
             return
 
-    # ---------- LLM filter + impact (BATCH) ----------
+    # ---------- LLM filter + impact ----------
     try:
         tags = groq_batch_tag_and_filter(selected, chunk_size=LLM_BATCH_SIZE)
     except Exception as e:
@@ -1066,7 +1045,6 @@ def main():
         feed_country = (n.get("feed_country") or "").strip()
         country = (tag.get("country") or "").strip()
 
-        # strict: country must match feed_country
         if country != feed_country:
             continue
 
@@ -1085,31 +1063,29 @@ def main():
             continue
 
         bullets = clean_bullets(tag.get("impact_bullets") or [])
-        bullets = diversify_bullets(bullets[:8])
+        bullets = diversify_bullets(bullets[:1])  # ✅ เหลือ 1 bullet
 
-        # กันปนข่าว
         if not guard_cross_topic(title, summary, bullets):
             continue
 
-        # ทำให้ “ยาวขึ้น” ถ้ายัง generic/สั้น
-        if ENABLE_IMPACT_REWRITE and looks_generic_or_short(bullets):
-            bullets = rewrite_impact_bullets_long(n, country, bullets)
+        # rewrite ถ้ายัง generic/สั้น
+        if ENABLE_IMPACT_REWRITE and looks_generic_or_short_one(bullets):
+            bullets = rewrite_impact_bullet_one(n, country, bullets)
             bullets = clean_bullets(bullets)
-            bullets = diversify_bullets(bullets[:8])
+            bullets = diversify_bullets(bullets[:1])
             if not guard_cross_topic(title, summary, bullets):
                 continue
 
         if not has_meaningful_impact(bullets):
             continue
 
-        # คงชื่อโครงการตามประเทศไว้ก่อน
         projects = projects_for_country(country)
         if not projects:
             projects = ["ALL"]
 
         n["country"] = country
         n["projects"] = projects[:12]
-        n["impact_bullets"] = bullets[:8]
+        n["impact_bullets"] = bullets[:1]
         n["impact_level"] = (tag.get("impact_level") or "unknown")
         n["evidence"] = evidence
         n["why_relevant"] = (tag.get("why_relevant") or "").strip()
@@ -1134,7 +1110,6 @@ def main():
     msgs = create_flex(final[:10])
     send_to_line(msgs)
 
-    # บันทึกลิงก์ที่ส่งแล้ว (ใช้ final_url ถ้ามี เพื่อกันซ้ำแม่นขึ้น)
     save_sent_links([n.get("final_url") or n.get("link") for n in final])
     print("เสร็จสิ้น (Groq calls:", GROQ_CALLS, ")")
 
