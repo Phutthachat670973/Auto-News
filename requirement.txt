@@ -1,4 +1,4 @@
-google-generativeai>=0.7.2
+groq
 feedparser>=6.0.11
 python-dateutil>=2.9.0.post0
 pytz>=2024.1
