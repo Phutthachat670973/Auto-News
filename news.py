@@ -1,13 +1,16 @@
 # news.py
 # ============================================================================================================
-# PTTEP Domestic News Bot (Best Fix) + Groq (Free/High quota)
+# PTTEP Domestic News Bot (Best Fix) + Groq
 #
-# GOAL (ตามที่คุณต้องการ):
-# - รับ “ข่าวอะไรก็ได้” ที่มีโอกาสกระทบโครงการ: การเมือง/พลังงาน/การเงิน/ภัยพิบัติ/โลจิสติกส์/ฯลฯ
-# - บังคับให้ LLM ให้ "evidence" ที่ต้องพบใน title/summary จริง
-# - กันอาการ “ปนข่าว” (เช่น ข่าวน้ำท่วม แต่ impact ไปชายแดน)
-# - ลดข่าวซ้ำ (near-duplicate) ก่อนส่งเข้า LLM
-# - (ตามคำสั่งคุณ) โครงการ: คง “ชื่อโครงการตามประเทศ” ไว้ก่อน (ไม่บังคับ ALL)
+# NEW (ตามที่คุณขอ):
+# ✅ เพิ่ม "Reason" (เหตุผลว่าทำไมกระทบ/กระทบยังไง) จาก LLM และแสดงใน Flex
+#
+# KEY BEHAVIOR:
+# - รับข่าวกว้าง: การเมือง/พลังงาน/การเงิน/ภัยพิบัติ/โลจิสติกส์/ฯลฯ
+# - บังคับ evidence ต้องพบใน title/summary จริง
+# - กันปนข่าวด้วย cross-topic guard
+# - ลดข่าวซ้ำใกล้เคียงก่อนส่งเข้า LLM
+# - โครงการ: คงชื่อโครงการตามประเทศไว้ก่อน (ไม่บังคับ ALL) ยกเว้น fallback ไม่มี mapping
 #
 # REQUIRED ENV:
 # - GROQ_API_KEY
@@ -30,7 +33,7 @@ import json
 import time
 import random
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, quote_plus
 from difflib import SequenceMatcher
 
@@ -64,7 +67,7 @@ def _as_limit(env_name: str, default: str = "0"):
         return None
 
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "6"))
-LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", os.getenv("LLM_BATCH_SIZE", "10")))
+LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
 
 MAX_PER_COUNTRY = _as_limit("MAX_PER_COUNTRY", "0")
 MAX_GLOBAL_ITEMS = _as_limit("MAX_GLOBAL_ITEMS", "0")
@@ -175,7 +178,7 @@ for c in PROJECT_COUNTRIES:
 NEWS_FEEDS.extend(LEGACY_FEEDS)
 
 # ============================================================================================================
-# TOPIC GATE (กว้างตามโจทย์: การเมือง/การเงิน/ภัยพิบัติ/โลจิสติกส์/พลังงาน ฯลฯ)
+# TOPIC GATE
 # ============================================================================================================
 
 TOPIC_KEYWORDS = [
@@ -208,7 +211,6 @@ TOPIC_KEYWORDS = [
 NON_PROJECTY_KEYWORDS = [
     "celebrity","fashion","sports","festival","gossip",
     "ดารา","บันเทิง","กีฬา","แฟชั่น","เทศกาล",
-    # crime-only (แต่ถ้าเป็นเหตุความปลอดภัยใหญ่/ก่อการร้าย จะเข้า TOPIC อยู่แล้ว)
     "murder","rape","random assault","holocaust",
     "ฆาตกรรม","ข่มขืน",
 ]
@@ -222,7 +224,7 @@ def passes_topic_gate(title: str, summary: str) -> bool:
     return False
 
 # ============================================================================================================
-# FOREIGN-LOCATION GATE (กันข่าวที่ feed ประเทศ A แต่เหตุเกิดประเทศ B)
+# FOREIGN-LOCATION GATE
 # ============================================================================================================
 
 FOREIGN_MARKERS = [
@@ -244,7 +246,7 @@ def likely_foreign_event(feed_country: str, title: str, summary: str) -> bool:
     return (not target_hit)
 
 # ============================================================================================================
-# IMPACT MECHANISMS (7 กลไก) + Guard กันปนข่าว
+# IMPACT MECHANISMS + Guard กันปนข่าว + Reason helpers
 # ============================================================================================================
 
 MECHANISMS = {
@@ -283,6 +285,16 @@ CROSS_TOPIC_GUARD_TERMS = [
     "คาสิโน", "casino", "สะพาน", "bridge",
 ]
 
+MECH_LABEL_TH = {
+    "policy_regulatory": "นโยบาย/กฎระเบียบ/ภาษี",
+    "security_politics": "ความมั่นคง/การเมือง",
+    "operations_hse": "การดำเนินงาน/ความปลอดภัย",
+    "logistics_supplychain": "โลจิสติกส์/ซัพพลายเชน",
+    "finance_macro": "การเงิน/เศรษฐกิจมหภาค",
+    "weather_disaster": "ภัยพิบัติ/สภาพอากาศ",
+    "counterparty_contractor": "คู่สัญญา/ผู้รับเหมา",
+}
+
 def _contains_phrase(haystack: str, phrase: str) -> bool:
     if not phrase:
         return False
@@ -320,8 +332,31 @@ def guard_cross_topic(title: str, summary: str, bullets: list[str]) -> bool:
                 return False
     return True
 
+def clean_reason(reason: str) -> str:
+    r = (reason or "").strip()
+    r = re.sub(r"\s+", " ", r)
+    if len(r) > 220:
+        r = r[:217].rstrip() + "..."
+    return r
+
+def guard_reason_cross_topic(title: str, summary: str, reason: str) -> bool:
+    text = f"{title or ''} {summary or ''}".lower()
+    rl = (reason or "").lower()
+    for term in CROSS_TOPIC_GUARD_TERMS:
+        if term.lower() in rl and term.lower() not in text:
+            return False
+    return True
+
+def fallback_reason_from_mechs_evidence(mechs: list[str], evidence: list[str]) -> str:
+    m = (mechs[0] if mechs else "")
+    mth = MECH_LABEL_TH.get(m, "ปัจจัยภายนอก")
+    ev = (evidence[0] if evidence else "")
+    if ev:
+        return f"ข่าวมีประเด็นด้าน {mth} (หลักฐาน: “{ev}”) ซึ่งอาจทำให้ต้นทุน/เงื่อนไข/ความเสี่ยงของโครงการเปลี่ยนแปลง"
+    return f"ข่าวมีประเด็นด้าน {mth} ซึ่งอาจทำให้ต้นทุน/เงื่อนไข/ความเสี่ยงของโครงการเปลี่ยนแปลง"
+
 # ============================================================================================================
-# HELPERS: URL normalize + sent_links
+# HELPERS: URL normalize + sent_links + network
 # ============================================================================================================
 
 def _normalize_link(url: str) -> str:
@@ -366,7 +401,7 @@ def parse_feed_with_timeout(url: str):
     return feedparser.parse(r.text)
 
 def fetch_article_image(url: str):
-    """Follow redirects (important for Google News) then parse og:image/twitter:image."""
+    """Follow redirects then parse og:image/twitter:image."""
     try:
         if not url or not url.startswith(("http://","https://")):
             return None
@@ -540,7 +575,7 @@ def rewrite_impact_bullets(news, country, bullets):
 - ห้ามใช้ประโยคแม่แบบกว้าง ๆ เช่น "อาจกระทบต้นทุน/กฎระเบียบ/ตารางงาน/ความเสี่ยง" แบบรวม ๆ
 - ทุก bullet ต้องมี “กลไก” อย่างน้อย 1 อย่าง เช่น ใบอนุญาต/ภาษี-PSC/ความปลอดภัย/โลจิสติกส์/ผู้รับเหมา/ประกันภัย/FX/ศุลกากร/คว่ำบาตร
 - ต้องโยงกับ “หัวข้อ/สรุป” อย่างน้อย 1 จุด (ห้ามเดา)
-- ห้ามพูดถึงเหตุการณ์/ประเทศ/คำสำคัญที่ไม่อยู่ในหัวข้อ/สรุป
+- ห้ามปนบริบท: ห้ามพูดถึงเหตุการณ์/ประเทศ/คำสำคัญที่ไม่อยู่ในหัวข้อ/สรุป
 - 1 ประโยค/บรรทัด ไม่เกิน ~24 คำ
 
 ประเทศ: {country}
@@ -563,11 +598,6 @@ bullet เดิม:
     return diversify_bullets(clean_bullets(bullets))
 
 def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
-    """
-    ส่งเป็นชุด ลด calls:
-    - input: list ข่าว
-    - output: list tag dict (ตำแหน่งตรงกัน)
-    """
     results: List[Dict[str, Any]] = []
     for i in range(0, len(news_list), chunk_size):
         chunk = news_list[i:i + chunk_size]
@@ -585,19 +615,20 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
 คุณเป็นผู้ช่วยคัดกรองข่าวเพื่อประเมิน “ผลกระทบต่อโครงการ” (รับข่าวได้กว้าง: การเมือง/การเงิน/ภัยพิบัติ/โลจิสติกส์/พลังงาน ฯลฯ)
 
 นิยาม “เกี่ยวข้องกับโครงการ” = ต้องมีอย่างน้อย 1 กลไก:
-- policy_regulatory (กฎ/ใบอนุญาต/ภาษี/PSC/สัมปทาน/นโยบายรัฐ)
-- security_politics (ความไม่สงบ/เลือกตั้ง/รัฐประหาร/ชายแดน/ความขัดแย้ง)
-- operations_hse (อุบัติเหตุใหญ่/หยุดผลิต/ความปลอดภัย/ปิดพื้นที่)
-- logistics_supplychain (ท่าเรือ/ขนส่ง/ศุลกากร/นัดหยุดงาน/อุปกรณ์/ท่อส่ง)
-- finance_macro (FX/ดอกเบี้ย/เครดิต/คว่ำบาตร/ควบคุมเงินทุน)
-- weather_disaster (น้ำท่วม/พายุ/แผ่นดินไหว/ประกันภัย)
-- counterparty_contractor (ผู้รับเหมา/คู่สัญญา/ผิดนัด/ข้อพิพาท/ประกันแพง)
+- policy_regulatory
+- security_politics
+- operations_hse
+- logistics_supplychain
+- finance_macro
+- weather_disaster
+- counterparty_contractor
 
 กติกาเข้ม:
 1) evidence ต้องเป็นวลีที่คัดมาจาก title/summary ของข่าวนั้นเท่านั้น (ห้ามแต่งเพิ่ม)
-2) ทุก impact_bullet ต้องโยงกับ evidence และต้องมี “กลไก” อย่างน้อย 1 อย่าง
-3) ห้ามปนบริบท: ห้ามพูดถึงเหตุการณ์/ประเทศ/คำสำคัญที่ไม่อยู่ใน title/summary ของข่าวนั้น
-4) ถ้าไม่มั่นใจ → is_relevant=false
+2) reason ต้องเป็น 1–2 ประโยค อธิบาย "ทำไมกระทบ/กระทบยังไง" โดยต้องอ้างอิง evidence
+3) ทุก impact_bullet ต้องโยงกับ evidence และต้องมี “กลไก” อย่างน้อย 1 อย่าง
+4) ห้ามปนบริบท: ห้ามพูดถึงเหตุการณ์/ประเทศ/คำสำคัญที่ไม่อยู่ใน title/summary ของข่าวนั้น
+5) ถ้าไม่มั่นใจ → is_relevant=false
 
 ตอบเป็น JSON เท่านั้น รูปแบบ:
 {{
@@ -607,6 +638,7 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
       "is_relevant": true/false,
       "country": "Thailand",
       "mechanisms": ["finance_macro", "weather_disaster"],
+      "reason": "เหตุผลสั้น ๆ 1-2 ประโยค",
       "impact_bullets": ["...","..."],
       "impact_level": "low|medium|high|unknown",
       "evidence": ["...","..."],
@@ -675,8 +707,6 @@ def fetch_news_window():
                 summary_raw = getattr(e, "summary", "") or ""
                 summary = re.sub(r"\s+", " ", re.sub("<.*?>", " ", summary_raw)).strip()
 
-                hints = detect_project_countries(f"{title}\n{summary}")
-
                 out.append({
                     "site": site,
                     "feed_country": feed_country,
@@ -684,7 +714,6 @@ def fetch_news_window():
                     "summary": summary,
                     "link": link,
                     "published": dt_local,
-                    "countries_hint": hints,
                 })
         except Exception as ex:
             print(f"[WARN] feed failed: {site}/{feed_country} -> {type(ex).__name__}: {ex}")
@@ -718,11 +747,13 @@ def create_flex(news_items):
     bubbles = []
 
     for n in news_items:
-        bullets = n.get("impact_bullets") or []
-        bullets = clean_bullets(bullets)
+        bullets = clean_bullets(n.get("impact_bullets") or [])
         country = (n.get("country") or "ไม่ระบุ").strip()
         projects = n.get("projects") or ["ALL"]
         proj_txt = _shorten(projects, take=4)
+
+        reason = (n.get("reason") or "").strip()
+        reason = clean_reason(reason)
 
         link = n.get("link") or "https://news.google.com/"
         img = n.get("image") or DEFAULT_ICON_URL
@@ -746,6 +777,7 @@ def create_flex(news_items):
                         ],
                     },
                     {"type": "text", "text": f"โครงการที่เกี่ยวข้อง: {proj_txt}", "size": "sm", "color": "#666666", "wrap": True, "margin": "sm"},
+                    {"type": "text", "text": f"เหตุผลที่กระทบ: {reason}", "size": "sm", "color": "#444444", "wrap": True, "margin": "sm"},
                     {"type": "text", "text": "ผลกระทบต่อโครงการ", "size": "lg", "weight": "bold", "color": "#000000", "margin": "lg"},
                     *[
                         {"type": "text", "text": f"• {b}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"}
@@ -882,11 +914,9 @@ def main():
         feed_country = (n.get("feed_country") or "").strip()
         country = (tag.get("country") or "").strip()
 
-        # strict: country must match feed_country
         if country != feed_country:
             continue
 
-        # mechanisms: from LLM else infer
         mechs = tag.get("mechanisms") or []
         if not isinstance(mechs, list):
             mechs = [str(mechs)]
@@ -894,7 +924,6 @@ def main():
         if not mechs:
             mechs = infer_mechanisms_from_text(title, summary)
 
-        # evidence must appear in title/summary
         evidence = tag.get("evidence") or []
         if not isinstance(evidence, list):
             evidence = [str(evidence)]
@@ -902,10 +931,8 @@ def main():
         if not validate_evidence_in_text(title, summary, evidence):
             continue
 
-        # bullets clean + dedupe + cross-topic guard
         bullets = clean_bullets(tag.get("impact_bullets") or [])
         bullets = diversify_bullets(bullets[:6])
-
         if not guard_cross_topic(title, summary, bullets):
             continue
 
@@ -919,13 +946,21 @@ def main():
         if not has_meaningful_impact(bullets):
             continue
 
+        # ✅ Reason
+        reason = clean_reason(tag.get("reason") or "")
+        if reason and (not guard_reason_cross_topic(title, summary, reason)):
+            reason = ""
+        if not reason:
+            reason = clean_reason(fallback_reason_from_mechs_evidence(mechs, evidence))
+
         # ✅ ตามที่คุณต้องการ: คงชื่อโครงการตามประเทศไว้ก่อน
         projects = projects_for_country(country)
         if not projects:
-            projects = ["ALL"]  # fallback กันกรณีไม่มี mapping จริง ๆ
+            projects = ["ALL"]
 
         n["country"] = country
         n["projects"] = projects[:12]
+        n["reason"] = reason
         n["impact_bullets"] = bullets[:6]
         n["impact_level"] = (tag.get("impact_level") or "unknown")
         n["evidence"] = evidence
