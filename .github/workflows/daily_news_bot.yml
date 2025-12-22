@@ -34,17 +34,15 @@ jobs:
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
 
-          # ✅ Groq
+          # ✅ Groq (ต้องมี secret นี้)
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL_NAME: llama-3.1-8b-instant
 
-          # (ถ้าโค้ดคุณยังรองรับ Gemini อยู่ จะใส่ไว้ก็ได้)
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
-          # ====== แนะนำค่าเพื่อ “ตรง + จบเร็ว” ======
-          MAX_LLM_ITEMS: "90"          # 0 = ไม่จำกัด (ไม่แนะนำบน Actions)
+          # ====== Limits / Speed ======
+          MAX_LLM_ITEMS: "90"
           MAX_PER_COUNTRY: "12"
           MAX_GLOBAL_ITEMS: "20"
+          LLM_BATCH_SIZE: "10"
           MAX_RETRIES: "3"
           ENABLE_IMPACT_REWRITE: "true"
 
