@@ -33,6 +33,12 @@ jobs:
       - name: Run news.py
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+
+          # ✅ Groq
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL_NAME: llama-3.1-8b-instant
+
+          # (ถ้าโค้ดคุณยังรองรับ Gemini อยู่ จะใส่ไว้ก็ได้)
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
           # ====== แนะนำค่าเพื่อ “ตรง + จบเร็ว” ======
