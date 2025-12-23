@@ -30,7 +30,7 @@ jobs:
       - name: Syntax check
         run: python -m py_compile news.py
 
-            - name: Run news.py
+      - name: Run news.py
         env:
           # ====== Required Secrets ======
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
