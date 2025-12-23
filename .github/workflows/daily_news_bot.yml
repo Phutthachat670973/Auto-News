@@ -30,32 +30,48 @@ jobs:
       - name: Syntax check
         run: python -m py_compile news.py
 
-      - name: Run news.py
+            - name: Run news.py
         env:
+          # ====== Required Secrets ======
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-
-          # ✅ Groq (ต้องมี secret นี้)
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+
+          # ====== Model ======
           GROQ_MODEL_NAME: llama-3.1-8b-instant
 
-          # ====== Limits / Speed ======
-          MAX_LLM_ITEMS: "90"
-          MAX_PER_COUNTRY: "12"
-          MAX_GLOBAL_ITEMS: "20"
-          LLM_BATCH_SIZE: "10"
-          MAX_RETRIES: "3"
+          # ====== Output mode ======
+          OUTPUT_MODE: "both"              # both | project_only | digest_only
+          ADD_SECTION_HEADERS: "true"      # แทรกหัวข้อคั่นก่อนแต่ละชุด
+
+          # ====== Anti-429 / Throughput (สำคัญสุด) ======
+          SELECT_LIMIT: "25"               # ลดจำนวนข่าวเข้า LLM (แนะนำ 20-35)
+          LLM_BATCH_SIZE: "25"             # เพิ่ม batch เพื่อลดจำนวนครั้งที่เรียก
+          MAX_RETRIES: "10"                # retry ให้พอรอ rate limit
+          SLEEP_MIN: "6"                   # ยิงช้าลง
+          SLEEP_MAX: "10"
+
+          # ====== Project mode controls ======
+          PROJECT_SEND_LIMIT: "10"         # จำกัดจำนวนข่าวฝั่งโครงการ (ตั้ง 1 ถ้าอยากให้ 1 ข่าว)
+          MIN_SOURCE_SCORE: "0"            # คัดทิ้งแหล่งคะแนนต่ำ (เช่น 0.6)
+          SHOW_SOURCE_RATING: "true"       # แสดงคะแนนความน่าเชื่อถือใน Flex
+          USE_KEYWORD_GATE: "false"        # true = ต้องติด keyword ก่อนถึงเข้า LLM
           ENABLE_IMPACT_REWRITE: "true"
 
-          # ====== กันค้าง/เพิ่มความเสถียร ======
-          RUN_DEADLINE_MIN: "20"
-          RSS_TIMEOUT_SEC: "15"
-          ARTICLE_TIMEOUT_SEC: "12"
-          SLEEP_MIN: "0.2"
-          SLEEP_MAX: "0.6"
+          # ====== Digest mode controls ======
+          DIGEST_MAX_PER_SECTION: "8"      # จำกัดจำนวนข่าวต่อหมวดใน digest
 
+          # ====== Misc / Network ======
+          USER_AGENT: "Mozilla/5.0 (NewsBot)"
+          DEFAULT_HERO_URL: ""             # ใส่ URL รูป fallback ถ้าต้องการ
+
+          # ====== Tracking ======
+          TRACK_DIR: "sent_links"
+
+          # ====== Run mode ======
           DRY_RUN: "false"
         run: |
           python -u news.py
+
 
       - name: Commit and push sent_links
         if: always()
