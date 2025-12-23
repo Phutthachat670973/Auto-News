@@ -1,22 +1,21 @@
-# news.py
+# news.py  (PATCHED: Groq retries + dual output)
 # ============================================================================================================
-# NEWS BOT: Dual output in one run
-# 1) Project Impact (เดิม): คัดข่าว+เขียน "ผลกระทบต่อโครงการ" แล้วส่ง LINE (Text/Flex)
-# 2) Energy Digest (ใหม่): ส่ง "สรุปหัวข้อข่าวพลังงาน" + "สรุปสาระสำคัญข่าวพลังงาน" แบบตัวอย่างที่ให้มา
+# โค้ดรวมเวอร์ชันแก้ปัญหา "Groq call failed: None" + ลดโอกาสโดน 429
 #
-# โหมดการส่ง (ENV):
+# ✅ แก้หลัก:
+# - call_groq_with_retries(): เก็บ error/สถานะไว้ทุกกรณี, รองรับ 429 Retry-After, backoff, log ชัด
+#
+# ✅ โหมดส่ง:
 # - OUTPUT_MODE=both (default)       -> ส่ง 2 ชุดติดกัน: [Project Impact] + [Energy Digest]
-# - OUTPUT_MODE=project_only         -> ส่งเฉพาะโครงการ
-# - OUTPUT_MODE=digest_only          -> ส่งเฉพาะแบบใหม่
+# - OUTPUT_MODE=project_only         -> เฉพาะโครงการ
+# - OUTPUT_MODE=digest_only          -> เฉพาะแบบใหม่
 #
-# จำกัดจำนวนข่าว (ENV):
-# - PROJECT_SEND_LIMIT=10            -> จำกัดจำนวนข่าวฝั่งโครงการ
-# - DIGEST_MAX_PER_SECTION=8         -> จำกัดจำนวนข่าวต่อหมวดใน digest
-#
-# ตัวเลือกหัวข้อคั่น (ENV):
-# - ADD_SECTION_HEADERS=true/false   -> แสดงหัวข้อคั่นก่อนส่งแต่ละชุด
-#
-# หมายเหตุ: โค้ดนี้ออกแบบให้ “ใช้งานได้ทันที” บน GitHub Actions / Local โดยใช้ ENV เท่านั้น
+# ✅ ENV แนะนำ (ช่วยลด 429):
+#   LLM_BATCH_SIZE=15
+#   SLEEP_MIN=3
+#   SLEEP_MAX=6
+#   MAX_RETRIES=10
+#   SELECT_LIMIT=45 (หรือ 30 เพื่อลด call)
 # ============================================================================================================
 
 import os
@@ -24,7 +23,7 @@ import re
 import json
 import time
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
@@ -33,9 +32,6 @@ from dateutil import parser as dateutil_parser
 import pytz
 import requests
 
-# -----------------------------
-# Optional dotenv (local dev)
-# -----------------------------
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv()
@@ -51,7 +47,6 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 
 if not GROQ_API_KEY:
     raise RuntimeError("ไม่พบ GROQ_API_KEY")
-
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("ไม่พบ LINE_CHANNEL_ACCESS_TOKEN")
 
@@ -65,24 +60,21 @@ SLEEP_BETWEEN_CALLS = (
 LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
 DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes", "y")
 
-# Project-mode controls (เดิม)
 PROJECT_SEND_LIMIT = int(os.getenv("PROJECT_SEND_LIMIT", "10"))
 MIN_SOURCE_SCORE = float(os.getenv("MIN_SOURCE_SCORE", "0"))
 SHOW_SOURCE_RATING = os.getenv("SHOW_SOURCE_RATING", "true").strip().lower() in ("1", "true", "yes", "y")
 ENABLE_IMPACT_REWRITE = os.getenv("ENABLE_IMPACT_REWRITE", "true").strip().lower() in ("1", "true", "yes", "y")
 USE_KEYWORD_GATE = os.getenv("USE_KEYWORD_GATE", "false").strip().lower() in ("1", "true", "yes", "y")
 
-# Dual output mode
 OUTPUT_MODE = os.getenv("OUTPUT_MODE", "both").strip().lower()  # both | project_only | digest_only
 ADD_SECTION_HEADERS = os.getenv("ADD_SECTION_HEADERS", "true").strip().lower() in ("1", "true", "yes", "y")
 
-# Digest-mode controls (ใหม่)
 DIGEST_MAX_PER_SECTION = int(os.getenv("DIGEST_MAX_PER_SECTION", "8"))
+SELECT_LIMIT = int(os.getenv("SELECT_LIMIT", "45"))
 
 DEFAULT_HERO_URL = os.getenv("DEFAULT_HERO_URL", "").strip()
 USER_AGENT = os.getenv("USER_AGENT", "Mozilla/5.0 (NewsBot)").strip()
 
-# Timezone
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 
 # ============================================================================================================
@@ -90,20 +82,14 @@ bangkok_tz = pytz.timezone("Asia/Bangkok")
 # ============================================================================================================
 
 RSS_FEEDS: List[Dict[str, str]] = [
-    # International
     {"name": "OilPrice", "url": "https://oilprice.com/rss/main", "country": "Global"},
-    {"name": "Reuters Energy (fallback)", "url": "https://www.reuters.com/rssFeed/energyNews", "country": "Global"},
-    {"name": "Bloomberg Energy (fallback)", "url": "https://www.bloomberg.com/feed/podcast/etf-report.xml", "country": "Global"},
-    # Thailand / local (ตัวอย่าง)
     {"name": "Prachachat", "url": "https://www.prachachat.net/feed", "country": "Thailand"},
     {"name": "Bangkokbiznews", "url": "https://www.bangkokbiznews.com/rss", "country": "Thailand"},
     {"name": "PostToday", "url": "https://www.posttoday.com/rss", "country": "Thailand"},
-    # Add more as needed...
 ]
 
 # ============================================================================================================
-# STYLE LEARNING EXAMPLES (Few-shot)
-# ให้ LLM ยึดโทนและรูปแบบตามตัวอย่างของคุณ
+# STYLE EXAMPLES (Few-shot)
 # ============================================================================================================
 
 STYLE_EXAMPLES = """
@@ -138,18 +124,16 @@ def ensure_dir(path: str) -> None:
 
 def normalize_url(url: str) -> str:
     try:
-        u = url.strip()
+        u = (url or "").strip()
         if not u:
             return u
         p = urlparse(u)
-        # remove tracking params
         q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
              if k.lower() not in ("utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid")]
-        new_query = urlencode(q)
-        p2 = p._replace(query=new_query, fragment="")
+        p2 = p._replace(query=urlencode(q), fragment="")
         return urlunparse(p2)
     except Exception:
-        return url.strip()
+        return (url or "").strip()
 
 def load_sent_links() -> set:
     ensure_dir(TRACK_DIR)
@@ -176,8 +160,7 @@ def save_sent_links(links: List[str]) -> None:
 # ============================================================================================================
 
 def http_get(url: str, timeout: int = 15) -> requests.Response:
-    headers = {"User-Agent": USER_AGENT}
-    return requests.get(url, headers=headers, timeout=timeout)
+    return requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
 
 def resolve_final_url(url: str) -> str:
     try:
@@ -203,7 +186,7 @@ def extract_og_image(url: str) -> Optional[str]:
         return None
 
 # ============================================================================================================
-# GROQ API
+# GROQ API (PATCHED)
 # ============================================================================================================
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -227,30 +210,61 @@ def call_groq_with_retries(prompt: str, temperature: float = 0.25, max_tokens: i
         "max_tokens": max_tokens,
     }
 
-    last_err = None
+    last_err: Optional[Exception] = None
+    last_status: Optional[int] = None
+    last_body: str = ""
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             _sleep_jitter()
             r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=60)
+            last_status = r.status_code
+            last_body = (r.text or "")[:500]
+
             if r.status_code == 429:
-                time.sleep(2.0 * attempt)
+                last_err = RuntimeError(f"429 Too Many Requests: {last_body}")
+                ra = r.headers.get("retry-after")
+                if ra and ra.strip().isdigit():
+                    wait_s = int(ra.strip())
+                else:
+                    wait_s = min(30, 2 * attempt + random.uniform(0.0, 1.5))
+                print(f"[GROQ] 429 rate limited. attempt={attempt}/{MAX_RETRIES}, sleep={wait_s:.1f}s")
+                time.sleep(wait_s)
                 continue
+
+            if r.status_code in (401, 403):
+                raise RuntimeError(f"GROQ auth failed {r.status_code}: {last_body}")
+
+            if r.status_code >= 500:
+                last_err = RuntimeError(f"GROQ server error {r.status_code}: {last_body}")
+                wait_s = min(30, 2 * attempt + random.uniform(0.0, 1.5))
+                print(f"[GROQ] {r.status_code} server error. attempt={attempt}/{MAX_RETRIES}, sleep={wait_s:.1f}s")
+                time.sleep(wait_s)
+                continue
+
             r.raise_for_status()
             data = r.json()
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
+            if not isinstance(content, str) or not content.strip():
+                raise RuntimeError(f"GROQ empty content: {json.dumps(data)[:300]}")
+            return content
+
         except Exception as e:
             last_err = e
-            time.sleep(1.5 * attempt)
-    raise RuntimeError(f"Groq call failed: {last_err}")
+            wait_s = min(30, 1.5 * attempt + random.uniform(0.0, 1.0))
+            print(f"[GROQ] error: {type(e).__name__}: {e}. attempt={attempt}/{MAX_RETRIES}, sleep={wait_s:.1f}s")
+            time.sleep(wait_s)
+
+    raise RuntimeError(
+        f"Groq call failed after {MAX_RETRIES} retries (last_status={last_status}): {last_err} | body={last_body}"
+    )
 
 def _extract_json_object(text: str) -> Any:
-    # try direct json
-    t = text.strip()
+    t = (text or "").strip()
     try:
         return json.loads(t)
     except Exception:
         pass
-    # attempt to find first { ... } block
     m = re.search(r"\{.*\}", t, re.DOTALL)
     if not m:
         return None
@@ -267,19 +281,14 @@ HIGH_TRUST_DOMAINS = {
     "reuters.com", "bloomberg.com", "wsj.com", "ft.com", "nytimes.com",
     "theguardian.com", "bbc.co.uk", "bbc.com", "oilprice.com",
     "prachachat.net", "bangkokbiznews.com", "posttoday.com",
-    "energynewscenter.com", "mgronline.com", "matichon.co.th",
+    "energynewscenter.com", "matichon.co.th",
 }
-
-MED_TRUST_DOMAINS = {
-    "msn.com", "yahoo.com", "investing.com", "seekingalpha.com", "marketwatch.com",
-}
+MED_TRUST_DOMAINS = {"msn.com", "yahoo.com", "investing.com", "marketwatch.com"}
 
 def domain_of(url: str) -> str:
     try:
         h = urlparse(url).netloc.lower()
-        if h.startswith("www."):
-            h = h[4:]
-        return h
+        return h[4:] if h.startswith("www.") else h
     except Exception:
         return ""
 
@@ -291,7 +300,6 @@ def source_score(url: str) -> float:
         return 0.85
     if d in MED_TRUST_DOMAINS:
         return 0.6
-    # fallback: treat unknown as low-mid
     return 0.45
 
 # ============================================================================================================
@@ -308,17 +316,12 @@ def parse_datetime(dt_str: str) -> Optional[datetime]:
         return None
 
 def fetch_feed(feed: Dict[str, str]) -> List[Dict[str, Any]]:
-    url = feed["url"]
-    country = feed.get("country", "").strip() or "Global"
-    name = feed.get("name", "feed").strip()
-
-    d = feedparser.parse(url)
+    d = feedparser.parse(feed["url"])
     items = []
     for e in d.entries:
         link = e.get("link", "") or ""
         title = (e.get("title", "") or "").strip()
         summary = (e.get("summary", "") or e.get("description", "") or "").strip()
-
         published = None
         for k in ("published", "updated", "pubDate"):
             if e.get(k):
@@ -326,8 +329,8 @@ def fetch_feed(feed: Dict[str, str]) -> List[Dict[str, Any]]:
                 if published:
                     break
         items.append({
-            "feed_name": name,
-            "feed_country": country,
+            "feed_name": feed.get("name", "feed"),
+            "feed_country": feed.get("country", "Global"),
             "title": title,
             "summary": summary,
             "link": normalize_url(link),
@@ -342,27 +345,21 @@ def load_news() -> List[Dict[str, Any]]:
             all_items.extend(fetch_feed(f))
         except Exception as e:
             print("Feed error:", f.get("name"), e)
-    # basic sort newest first
     all_items.sort(key=lambda x: x.get("published") or datetime.min.replace(tzinfo=bangkok_tz), reverse=True)
     return all_items
 
 def dedupe_news(items: List[Dict[str, Any]], sent: set) -> List[Dict[str, Any]]:
-    out = []
-    seen = set()
+    out, seen = [], set()
     for n in items:
         link = normalize_url(n.get("link", ""))
-        if not link:
-            continue
-        if link in sent:
-            continue
-        if link in seen:
+        if not link or link in sent or link in seen:
             continue
         seen.add(link)
         out.append(n)
     return out
 
 # ============================================================================================================
-# Project-mode LLM: tag & filter + impact rewrite (เดิม)
+# Project-mode LLM (เดิม)
 # ============================================================================================================
 
 PROJECT_CATEGORIES = [
@@ -376,32 +373,27 @@ PROJECT_CATEGORIES = [
     "Other",
 ]
 
+def enforce_thai(text: str) -> str:
+    if not text:
+        return text
+    eng = re.findall(r"[A-Za-z]{3,}", text)
+    if len(eng) >= 4:
+        prompt = f"ช่วยเขียนใหม่ให้เป็นภาษาไทยล้วน อ่านลื่น และคงความหมายเดิม\nข้อความ:\n{text}"
+        try:
+            out = call_groq_with_retries(prompt, temperature=0.2, max_tokens=900)
+            return out.strip()
+        except Exception:
+            return text
+    return text
+
 def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
-    """
-    คืน list ขนานกับ news_list:
-    {
-      "pass": true/false,
-      "country": "...",
-      "project": "...",
-      "impact": "..."   # bullet เดียว
-      "category": "..."
-    }
-    """
     results: List[Dict[str, Any]] = []
     for i in range(0, len(news_list), chunk_size):
         chunk = news_list[i:i + chunk_size]
-        payload = []
-        for idx, n in enumerate(chunk):
-            payload.append({
-                "id": idx,
-                "feed_country": (n.get("feed_country") or "").strip(),
-                "title": n.get("title", ""),
-                "summary": n.get("summary", ""),
-            })
+        payload = [{"id": idx, "feed_country": (n.get("feed_country") or "").strip(), "title": n.get("title",""), "summary": n.get("summary","")} for idx, n in enumerate(chunk)]
 
         prompt = f"""
 คุณคือผู้ช่วยคัดกรองข่าวเพื่อ "ผลกระทบต่อโครงการพลังงานตามประเทศ/โครงการ"
-ให้คัดเฉพาะข่าวที่มีผลต่อ: พลังงาน การเมือง การเงิน ค่าเงิน โลจิสติกส์ ห่วงโซ่อุปทาน น้ำมัน/ก๊าซ/LNG/ค่าไฟ ฯลฯ
 ถ้าไม่เกี่ยวข้องเลยให้ pass=false
 
 เมื่อ pass=true ให้ระบุ:
@@ -415,18 +407,7 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
 - ห้ามใส่คำว่า PTTEP ใน impact
 
 ตอบเป็น JSON เท่านั้น:
-{{
-  "items":[
-    {{
-      "id":0,
-      "pass":true,
-      "country":"Thailand",
-      "project":"-",
-      "category":"Power / Electricity",
-      "impact":"..."
-    }}
-  ]
-}}
+{{"items":[{{"id":0,"pass":true,"country":"Thailand","project":"-","category":"Power / Electricity","impact":"..."}}]}}
 
 ข่าวชุดนี้:
 {json.dumps(payload, ensure_ascii=False)}
@@ -439,40 +420,14 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
                 results.append({"pass": False})
             continue
 
-        by_id = {}
-        for it in data["items"]:
-            if isinstance(it, dict) and "id" in it:
-                by_id[it.get("id")] = it
-
-        for idx, _n in enumerate(chunk):
+        by_id = {it.get("id"): it for it in data["items"] if isinstance(it, dict) and "id" in it}
+        for idx in range(len(chunk)):
             it = by_id.get(idx, {"pass": False})
-            if not isinstance(it, dict):
-                it = {"pass": False}
-            results.append(it)
-
+            results.append(it if isinstance(it, dict) else {"pass": False})
     return results
 
-def enforce_thai(text: str) -> str:
-    # บังคับภาษาไทยเท่านั้น + ถ้าอังกฤษหลุด จะ rewrite ให้เป็นไทย
-    if not text:
-        return text
-    # หากมีตัวอักษรอังกฤษจำนวนมาก ให้ rewrite
-    eng = re.findall(r"[A-Za-z]{3,}", text)
-    if len(eng) >= 4:
-        prompt = f"""
-ช่วยเขียนใหม่ให้เป็นภาษาไทยล้วน อ่านลื่น และคงความหมายเดิม
-ข้อความ:
-{text}
-"""
-        try:
-            out = call_groq_with_retries(prompt, temperature=0.2, max_tokens=900)
-            return out.strip()
-        except Exception:
-            return text
-    return text
-
 # ============================================================================================================
-# Digest-mode LLM: energy digest classify + summarize (ใหม่)
+# Digest-mode LLM (ใหม่)
 # ============================================================================================================
 
 DIGEST_CATEGORIES = [
@@ -483,7 +438,6 @@ DIGEST_CATEGORIES = [
     "intl_lng",
     "intl_tech_other",
 ]
-
 BUCKET_LABELS = {
     "domestic_policy": "🔸ข่าวนโยบายพลังงาน",
     "domestic_lng": "🔸ข่าวธุรกิจก๊าซธรรมชาติและ LNG",
@@ -494,26 +448,10 @@ BUCKET_LABELS = {
 }
 
 def groq_batch_energy_digest(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
-    """
-    คืน list ขนานกับ news_list:
-    {
-      "is_energy": true/false,
-      "bucket": one of DIGEST_CATEGORIES,
-      "headline_th": "...",
-      "summary_th": "..."   # 2-4 ประโยค โทนแบบตัวอย่าง
-    }
-    """
     results: List[Dict[str, Any]] = []
     for i in range(0, len(news_list), chunk_size):
         chunk = news_list[i:i + chunk_size]
-        payload = []
-        for idx, n in enumerate(chunk):
-            payload.append({
-                "id": idx,
-                "feed_country": (n.get("feed_country") or "").strip(),
-                "title": n.get("title", ""),
-                "summary": n.get("summary", ""),
-            })
+        payload = [{"id": idx, "feed_country": (n.get("feed_country") or "").strip(), "title": n.get("title",""), "summary": n.get("summary","")} for idx, n in enumerate(chunk)]
 
         prompt = f"""
 คุณเป็นบรรณาธิการสรุปข่าวพลังงานรายวัน ภาษาไทย
@@ -536,23 +474,12 @@ def groq_batch_energy_digest(news_list: List[Dict[str, Any]], chunk_size: int = 
 
 ผลลัพธ์สำหรับข่าวที่เข้าเกณฑ์:
 - headline_th: หัวข้อไทย 1 บรรทัด (สั้น กระชับ แบบข่าว)
-- summary_th: 2–4 ประโยค แบบตัวอย่างด้านบน (ข่าวรายงาน) และต้องมีคำ/วลีจาก title/summary อย่างน้อย 1 จุด
+- summary_th: 2–4 ประโยค แบบตัวอย่างด้านบน และต้องมีคำ/วลีจาก title/summary อย่างน้อย 1 จุด
 ข้อห้าม:
 - ห้ามเดาข้อมูลนอก title/summary
-- ห้ามมีภาษาอังกฤษยาว ๆ (ยกเว้นคำย่อที่จำเป็นเช่น LNG, AI)
 
 ตอบเป็น JSON เท่านั้น:
-{{
-  "items":[
-    {{
-      "id":0,
-      "is_energy":true,
-      "bucket":"domestic_policy",
-      "headline_th":"...",
-      "summary_th":"..."
-    }}
-  ]
-}}
+{{"items":[{{"id":0,"is_energy":true,"bucket":"domestic_policy","headline_th":"...","summary_th":"..."}}]}}
 
 ข่าวชุดนี้:
 {json.dumps(payload, ensure_ascii=False)}
@@ -565,67 +492,49 @@ def groq_batch_energy_digest(news_list: List[Dict[str, Any]], chunk_size: int = 
                 results.append({"is_energy": False})
             continue
 
-        by_id = {}
-        for it in data["items"]:
-            if isinstance(it, dict) and "id" in it:
-                by_id[it.get("id")] = it
-
-        for idx, _n in enumerate(chunk):
+        by_id = {it.get("id"): it for it in data["items"] if isinstance(it, dict) and "id" in it}
+        for idx in range(len(chunk)):
             it = by_id.get(idx, {"is_energy": False})
-            if not isinstance(it, dict):
-                it = {"is_energy": False}
-            # enforce thai on outputs
-            if it.get("is_energy"):
+            if isinstance(it, dict) and it.get("is_energy"):
                 it["headline_th"] = enforce_thai((it.get("headline_th") or "").strip())
                 it["summary_th"] = enforce_thai((it.get("summary_th") or "").strip())
-            results.append(it)
-
+            results.append(it if isinstance(it, dict) else {"is_energy": False})
     return results
 
 # ============================================================================================================
-# Digest text formatting
+# Digest formatting
 # ============================================================================================================
 
 THAI_MONTH_ABBR = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."]
 
 def thai_date_str(dt: datetime) -> str:
     dt = dt.astimezone(bangkok_tz)
-    day = dt.day
-    mon = THAI_MONTH_ABBR[dt.month - 1]
-    year_be = dt.year + 543
-    return f"{day} {mon} {year_be}"
+    return f"{dt.day} {THAI_MONTH_ABBR[dt.month-1]} {dt.year+543}"
 
 def news_items_by_bucket(items: List[Dict[str, Any]], bucket: str) -> List[Dict[str, Any]]:
-    xs = [x for x in items if (x.get("bucket") == bucket)]
+    xs = [x for x in items if x.get("bucket") == bucket]
     xs.sort(key=lambda z: z.get("published") or datetime.min.replace(tzinfo=bangkok_tz), reverse=True)
     return xs[:DIGEST_MAX_PER_SECTION]
 
 def _render_section(items: List[Dict[str, Any]], with_summary: bool) -> str:
     if not items:
         return "-"
-
     lines = []
     for i, n in enumerate(items, 1):
         head = (n.get("headline_th") or n.get("title") or "").strip()
         summ = (n.get("summary_th") or "").strip()
         link = (n.get("final_url") or n.get("link") or "").strip()
-
         if with_summary:
-            # ✅ สาระสำคัญ: "1.กระทรวง..." (ไม่เว้นวรรค)
-            text = summ if summ else head
-            lines.append(f"{i}.{text}")
+            lines.append(f"{i}.{summ if summ else head}")   # no space after dot
             if link:
                 lines.append(link)
         else:
-            # ✅ หัวข้อข่าว: "1. พลังงาน..." (เว้นวรรค)
-            lines.append(f"{i}. {head if head else (n.get('title') or '')}")
-
+            lines.append(f"{i}. {head if head else (n.get('title') or '')}")  # space after dot
     return "\n".join(lines)
 
 def build_energy_digest_text(news_items: List[Dict[str, Any]], report_dt: datetime, with_summary: bool) -> str:
-    date_txt = thai_date_str(report_dt)
     title = "สรุปสาระสำคัญข่าวพลังงาน" if with_summary else "สรุปหัวข้อข่าวพลังงาน"
-    out = [f"{title} วันที่ {date_txt}"]
+    out = [f"{title} วันที่ {thai_date_str(report_dt)}"]
 
     out.append("🔹ข่าวในประเทศ\u202f ")
     for b in ["domestic_policy", "domestic_lng", "domestic_tech_other"]:
@@ -665,39 +574,32 @@ def create_text_messages(text: str) -> List[Dict[str, Any]]:
 
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 LINE_BROADCAST_URL = "https://api.line.me/v2/bot/message/broadcast"
-
 LINE_TARGET = os.getenv("LINE_TARGET", "broadcast").strip().lower()  # broadcast | user
 LINE_USER_ID = os.getenv("LINE_USER_ID", "").strip()
 
 def send_to_line(messages: List[Dict[str, Any]]) -> None:
     if DRY_RUN:
-        print("[DRY_RUN] send_to_line messages:", json.dumps(messages, ensure_ascii=False)[:800], "...")
+        print("[DRY_RUN] messages:", json.dumps(messages, ensure_ascii=False)[:900], "...")
         return
-
-    headers = {
-        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
+    headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}
     if LINE_TARGET == "user":
         if not LINE_USER_ID:
             raise RuntimeError("LINE_TARGET=user แต่ไม่พบ LINE_USER_ID")
-        payload = {"to": LINE_USER_ID, "messages": messages}
         url = LINE_PUSH_URL
+        payload = {"to": LINE_USER_ID, "messages": messages}
     else:
-        payload = {"messages": messages}
         url = LINE_BROADCAST_URL
+        payload = {"messages": messages}
 
     r = requests.post(url, headers=headers, json=payload, timeout=60)
     if r.status_code >= 400:
         raise RuntimeError(f"LINE API error {r.status_code}: {r.text}")
 
 # ============================================================================================================
-# Optional: Flex message builder (เดิม) - เก็บไว้ให้ compatibility
+# Flex builder (project mode)
 # ============================================================================================================
 
 def create_flex(news: Dict[str, Any]) -> Dict[str, Any]:
-    # Minimal flex based on impact content
     hero = news.get("hero") or DEFAULT_HERO_URL
     title = (news.get("title") or "")[:80]
     impact = (news.get("impact") or "").strip()
@@ -705,23 +607,19 @@ def create_flex(news: Dict[str, Any]) -> Dict[str, Any]:
     project = (news.get("project") or "-").strip()
     category = (news.get("category") or "-").strip()
     link = (news.get("final_url") or news.get("link") or "").strip()
-
-    # Source rating
-    score = news.get("source_score", 0.0)
+    score = float(news.get("source_score") or 0.0)
     src_txt = f"ความน่าเชื่อถือ: {score:.2f}" if SHOW_SOURCE_RATING else ""
 
-    body_contents = [
-        {"type": "text", "text": title, "weight": "bold", "wrap": True, "size": "md"},
+    body = [
+        {"type": "text", "text": title or "ข่าว", "weight": "bold", "wrap": True, "size": "md"},
         {"type": "text", "text": f"ประเทศ: {country}", "wrap": True, "size": "sm", "color": "#555555"},
         {"type": "text", "text": f"โครงการ: {project}", "wrap": True, "size": "sm", "color": "#555555"},
         {"type": "text", "text": f"ประเภท: {category}", "wrap": True, "size": "sm", "color": "#555555"},
     ]
-
     if src_txt:
-        body_contents.append({"type": "text", "text": src_txt, "wrap": True, "size": "xs", "color": "#888888"})
-
-    body_contents.append({"type": "separator", "margin": "md"})
-    body_contents.append({"type": "text", "text": impact, "wrap": True, "size": "sm"})
+        body.append({"type": "text", "text": src_txt, "wrap": True, "size": "xs", "color": "#888888"})
+    body.append({"type": "separator", "margin": "md"})
+    body.append({"type": "text", "text": impact, "wrap": True, "size": "sm"})
 
     flex = {
         "type": "flex",
@@ -735,23 +633,17 @@ def create_flex(news: Dict[str, Any]) -> Dict[str, Any]:
                 "aspectRatio": "20:13",
                 "aspectMode": "cover",
             } if hero else None,
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "contents": [c for c in body_contents if c],
-            },
+            "body": {"type": "box", "layout": "vertical", "contents": [c for c in body if c]},
             "footer": {
                 "type": "box",
                 "layout": "vertical",
                 "spacing": "sm",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "link",
-                        "height": "sm",
-                        "action": {"type": "uri", "label": "อ่านข่าว", "uri": link or news.get("link") or ""},
-                    }
-                ],
+                "contents": [{
+                    "type": "button",
+                    "style": "link",
+                    "height": "sm",
+                    "action": {"type": "uri", "label": "อ่านข่าว", "uri": link},
+                }],
                 "flex": 0,
             },
         },
@@ -759,29 +651,21 @@ def create_flex(news: Dict[str, Any]) -> Dict[str, Any]:
     return flex
 
 # ============================================================================================================
-# Keyword gate (optional) (เดิม)
+# Optional keyword gate
 # ============================================================================================================
 
-KEYWORDS = [
-    "oil", "crude", "gas", "lng", "opec", "power", "electricity", "sanction",
-    "pipeline", "refinery", "diesel", "gasoline", "brent", "wti", "dubai",
-    "ค่าไฟ", "น้ำมัน", "ก๊าซ", "LNG", "พลังงาน", "โรงไฟฟ้า", "คว่ำบาตร"
-]
+KEYWORDS = ["oil","crude","gas","lng","opec","power","electricity","sanction","pipeline","refinery","diesel","gasoline","brent","wti","dubai",
+            "ค่าไฟ","น้ำมัน","ก๊าซ","LNG","พลังงาน","โรงไฟฟ้า","คว่ำบาตร"]
 
 def keyword_hit(n: Dict[str, Any]) -> bool:
-    t = (n.get("title") or "") + " " + (n.get("summary") or "")
-    tl = t.lower()
-    for kw in KEYWORDS:
-        if kw.lower() in tl:
-            return True
-    return False
+    t = ((n.get("title") or "") + " " + (n.get("summary") or "")).lower()
+    return any(kw.lower() in t for kw in KEYWORDS)
 
 # ============================================================================================================
-# Main pipeline
+# Prepare items
 # ============================================================================================================
 
 def prepare_items(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # Resolve final URLs & hero images & source score
     out = []
     for n in raw:
         link = n.get("link", "")
@@ -790,7 +674,6 @@ def prepare_items(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         final_url = resolve_final_url(link)
         hero = extract_og_image(final_url) or DEFAULT_HERO_URL
         sc = source_score(final_url)
-
         n2 = dict(n)
         n2["final_url"] = final_url
         n2["hero"] = hero
@@ -798,20 +681,15 @@ def prepare_items(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         out.append(n2)
     return out
 
+# ============================================================================================================
+# Project mode runner
+# ============================================================================================================
+
 def run_project_mode(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """
-    Returns:
-      messages (LINE messages list)
-      sent_links (links to track)
-    """
-    # Optional keyword gate (เดิม)
     if USE_KEYWORD_GATE:
         selected = [x for x in selected if keyword_hit(x)]
+    selected = [x for x in selected if float(x.get("source_score", 0.0)) >= MIN_SOURCE_SCORE]
 
-    # Score filter
-    selected = [x for x in selected if (x.get("source_score", 0.0) >= MIN_SOURCE_SCORE)]
-
-    # LLM tag & filter
     tags = groq_batch_tag_and_filter(selected, chunk_size=LLM_BATCH_SIZE)
 
     passed = []
@@ -825,27 +703,21 @@ def run_project_mode(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any
         n2["impact"] = enforce_thai((t.get("impact") or "").strip())
         passed.append(n2)
 
-    # Limit output
     passed.sort(key=lambda x: x.get("published") or datetime.min.replace(tzinfo=bangkok_tz), reverse=True)
     passed = passed[:PROJECT_SEND_LIMIT]
 
     if not passed:
         return (create_text_messages("ไม่พบข่าวที่มีผลกระทบต่อโครงการตามเงื่อนไข"), [])
 
-    # Build LINE messages: ส่งเป็น Flex ทีละข่าว (หรือจะเปลี่ยนเป็น Text ก็ได้)
-    msgs: List[Dict[str, Any]] = []
-    for n in passed:
-        msgs.append(create_flex(n))
-
+    msgs = [create_flex(n) for n in passed]
     links = [x.get("link") for x in passed if x.get("link")]
     return (msgs, links)
 
+# ============================================================================================================
+# Digest mode runner
+# ============================================================================================================
+
 def run_digest_mode(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """
-    Returns:
-      messages (LINE messages list)  -> text digest (2 ชุด: สาระสำคัญ + หัวข้อข่าว)
-      sent_links (links to track)
-    """
     digest_tags = groq_batch_energy_digest(selected, chunk_size=LLM_BATCH_SIZE)
 
     digest_items = []
@@ -855,7 +727,6 @@ def run_digest_mode(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
         bucket = (tag.get("bucket") or "").strip()
         if bucket not in DIGEST_CATEGORIES:
             continue
-
         n2 = dict(n)
         n2["bucket"] = bucket
         n2["headline_th"] = (tag.get("headline_th") or "").strip()
@@ -865,10 +736,7 @@ def run_digest_mode(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
     if not digest_items:
         return (create_text_messages("ไม่พบข่าวที่เข้าหมวดข่าวพลังงานสำหรับสรุปแบบใหม่"), [])
 
-    report_dt = max(
-        [x.get("published") for x in digest_items if x.get("published")],
-        default=datetime.now(bangkok_tz),
-    )
+    report_dt = max([x.get("published") for x in digest_items if x.get("published")], default=datetime.now(bangkok_tz))
 
     text_full = build_energy_digest_text(digest_items, report_dt, with_summary=True)
     text_titles = build_energy_digest_text(digest_items, report_dt, with_summary=False)
@@ -881,6 +749,10 @@ def run_digest_mode(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
     links = [x.get("link") for x in digest_items if x.get("link")]
     return (msgs, links)
 
+# ============================================================================================================
+# Main
+# ============================================================================================================
+
 def main():
     print("ดึงข่าว...")
     raw = load_news()
@@ -890,19 +762,13 @@ def main():
     raw = dedupe_news(raw, sent)
     print("หลังตัดข่าวซ้ำ/เคยส่ง:", len(raw))
 
-    # เลือกชุดข่าวที่จะส่งเข้า LLM (คุณปรับได้)
-    # เลือกข่าวล่าสุด 80 รายการเป็นต้น
-    selected = raw[:80]
+    selected = raw[:max(1, SELECT_LIMIT)]
     selected = prepare_items(selected)
+
+    mode = OUTPUT_MODE if OUTPUT_MODE in ("both", "project_only", "digest_only") else "both"
 
     all_msgs: List[Dict[str, Any]] = []
     all_links: List[str] = []
-
-    if OUTPUT_MODE not in ("both", "project_only", "digest_only"):
-        print("OUTPUT_MODE ไม่ถูกต้อง -> ใช้ both")
-        mode = "both"
-    else:
-        mode = OUTPUT_MODE
 
     if mode in ("both", "project_only"):
         if ADD_SECTION_HEADERS:
@@ -911,9 +777,8 @@ def main():
         all_msgs += msgs
         all_links += links
 
-    if mode == "both":
-        if ADD_SECTION_HEADERS:
-            all_msgs += create_text_messages("")
+    if mode == "both" and ADD_SECTION_HEADERS:
+        all_msgs += create_text_messages("")
 
     if mode in ("both", "digest_only"):
         if ADD_SECTION_HEADERS:
@@ -922,12 +787,8 @@ def main():
         all_msgs += msgs
         all_links += links
 
-    # ส่ง LINE
     send_to_line(all_msgs)
-
-    # บันทึกกันส่งซ้ำ
     save_sent_links([normalize_url(x) for x in all_links if x])
-
     print("ส่งสำเร็จ:", len(all_msgs), "messages")
 
 if __name__ == "__main__":
