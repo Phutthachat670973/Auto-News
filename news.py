@@ -1,21 +1,24 @@
-# news.py  (PATCHED: Groq retries + dual output)
+# news.py
 # ============================================================================================================
-# โค้ดรวมเวอร์ชันแก้ปัญหา "Groq call failed: None" + ลดโอกาสโดน 429
+# Dual Output News Bot (Project Impact + Energy Digest) + ลด Token + กัน 429
 #
-# ✅ แก้หลัก:
-# - call_groq_with_retries(): เก็บ error/สถานะไว้ทุกกรณี, รองรับ 429 Retry-After, backoff, log ชัด
+# ✅ แก้ 429 หลัก ๆ ด้วย:
+# 1) ลดขนาด input ต่อ request (clip title/summary)
+# 2) ลด output ต่อ request (ลด max_tokens)
+# 3) ทำ backoff/retry ให้ถูกต้อง + log ชัด
+# 4) ปรับ batch ให้ “ไม่ใหญ่เกิน” จน 1 call กิน token เยอะ
 #
-# ✅ โหมดส่ง:
-# - OUTPUT_MODE=both (default)       -> ส่ง 2 ชุดติดกัน: [Project Impact] + [Energy Digest]
+# โหมดส่ง (ENV):
+# - OUTPUT_MODE=both (default)       -> ส่ง 2 ชุด: Project Impact + Energy Digest
 # - OUTPUT_MODE=project_only         -> เฉพาะโครงการ
-# - OUTPUT_MODE=digest_only          -> เฉพาะแบบใหม่
+# - OUTPUT_MODE=digest_only          -> เฉพาะ digest
 #
-# ✅ ENV แนะนำ (ช่วยลด 429):
-#   LLM_BATCH_SIZE=15
-#   SLEEP_MIN=3
-#   SLEEP_MAX=6
+# ตัวแปรสำคัญกัน 429 (ENV แนะนำ):
+#   SELECT_LIMIT=25
+#   LLM_BATCH_SIZE=12
+#   SLEEP_MIN=8
+#   SLEEP_MAX=12
 #   MAX_RETRIES=10
-#   SELECT_LIMIT=45 (หรือ 30 เพื่อลด call)
 # ============================================================================================================
 
 import os
@@ -44,7 +47,6 @@ except Exception:
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-
 if not GROQ_API_KEY:
     raise RuntimeError("ไม่พบ GROQ_API_KEY")
 if not LINE_CHANNEL_ACCESS_TOKEN:
@@ -52,33 +54,38 @@ if not LINE_CHANNEL_ACCESS_TOKEN:
 
 GROQ_MODEL_NAME = os.getenv("GROQ_MODEL_NAME", "llama-3.1-8b-instant").strip()
 
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "6"))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "10"))
 SLEEP_BETWEEN_CALLS = (
-    float(os.getenv("SLEEP_MIN", "1.0")),
-    float(os.getenv("SLEEP_MAX", "2.0")),
+    float(os.getenv("SLEEP_MIN", "8")),
+    float(os.getenv("SLEEP_MAX", "12")),
 )
-LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
+LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "12"))
 DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes", "y")
-
-PROJECT_SEND_LIMIT = int(os.getenv("PROJECT_SEND_LIMIT", "10"))
-MIN_SOURCE_SCORE = float(os.getenv("MIN_SOURCE_SCORE", "0"))
-SHOW_SOURCE_RATING = os.getenv("SHOW_SOURCE_RATING", "true").strip().lower() in ("1", "true", "yes", "y")
-ENABLE_IMPACT_REWRITE = os.getenv("ENABLE_IMPACT_REWRITE", "true").strip().lower() in ("1", "true", "yes", "y")
-USE_KEYWORD_GATE = os.getenv("USE_KEYWORD_GATE", "false").strip().lower() in ("1", "true", "yes", "y")
 
 OUTPUT_MODE = os.getenv("OUTPUT_MODE", "both").strip().lower()  # both | project_only | digest_only
 ADD_SECTION_HEADERS = os.getenv("ADD_SECTION_HEADERS", "true").strip().lower() in ("1", "true", "yes", "y")
 
+# จำกัดจำนวนข่าวเข้า LLM (ถ้าไม่ใส่ SELECT_LIMIT จะ fallback ไป MAX_LLM_ITEMS หรือ 45)
+SELECT_LIMIT = int(os.getenv("SELECT_LIMIT", os.getenv("MAX_LLM_ITEMS", "45")))
 DIGEST_MAX_PER_SECTION = int(os.getenv("DIGEST_MAX_PER_SECTION", "8"))
-SELECT_LIMIT = int(os.getenv("SELECT_LIMIT", "45"))
 
+# Project mode controls
+PROJECT_SEND_LIMIT = int(os.getenv("PROJECT_SEND_LIMIT", "10"))
+MIN_SOURCE_SCORE = float(os.getenv("MIN_SOURCE_SCORE", "0"))
+SHOW_SOURCE_RATING = os.getenv("SHOW_SOURCE_RATING", "true").strip().lower() in ("1", "true", "yes", "y")
+USE_KEYWORD_GATE = os.getenv("USE_KEYWORD_GATE", "false").strip().lower() in ("1", "true", "yes", "y")
+
+# Network
 DEFAULT_HERO_URL = os.getenv("DEFAULT_HERO_URL", "").strip()
 USER_AGENT = os.getenv("USER_AGENT", "Mozilla/5.0 (NewsBot)").strip()
 
+TRACK_DIR = os.getenv("TRACK_DIR", "sent_links").strip()
+
+# Timezone
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 
 # ============================================================================================================
-# RSS FEEDS (ปรับ/เพิ่มได้)
+# RSS FEEDS (เพิ่มได้)
 # ============================================================================================================
 
 RSS_FEEDS: List[Dict[str, str]] = [
@@ -86,38 +93,40 @@ RSS_FEEDS: List[Dict[str, str]] = [
     {"name": "Prachachat", "url": "https://www.prachachat.net/feed", "country": "Thailand"},
     {"name": "Bangkokbiznews", "url": "https://www.bangkokbiznews.com/rss", "country": "Thailand"},
     {"name": "PostToday", "url": "https://www.posttoday.com/rss", "country": "Thailand"},
+    # เพิ่มแหล่งอื่น ๆ ได้ตามต้องการ
 ]
 
 # ============================================================================================================
-# STYLE EXAMPLES (Few-shot)
+# Token reduction helpers
+# ============================================================================================================
+
+def clean_ws(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip())
+
+def clip(s: str, n: int) -> str:
+    s = clean_ws(s)
+    return s if len(s) <= n else s[:n] + "…"
+
+# ============================================================================================================
+# STYLE EXAMPLES (ย่อแล้ว ลด token)
 # ============================================================================================================
 
 STYLE_EXAMPLES = """
-ตัวอย่างรูปแบบที่ถูกต้อง (ต้องเขียนเลียนแบบโทน/สำนวน/ความยาว):
+ตัวอย่างสไตล์ที่ต้องการ:
 
-[ตัวอย่างหัวข้อข่าว]
-🔸ข่าวนโยบายพลังงาน
+[หัวข้อข่าว]
 1. พลังงานคุมเข้มแท่นขุดเจาะอ่าวไทย สกัดโดรนป่วน ไม่กระทบการผลิต
-2. ‘โซลาร์ประชาชน’ รอ ครม.ชุดใหม่ ห่วงแผนพลังงานไทยเดินบนเส้นบาง ๆ
 
-[ตัวอย่างสาระสำคัญข่าว]
-🔸ข่าวนโยบายพลังงาน
-1.กระทรวงพลังงานสั่งยกระดับมาตรการรักษาความปลอดภัยรอบแท่นขุดเจาะปิโตรเลียมในอ่าวไทย หลังพบโดรนและเรือไม่ทราบฝ่ายรุกล้ำพื้นที่ โดยร่วมกับกองทัพเรือเฝ้าระวัง 24 ชม. พร้อมใช้ 5 มาตรการเข้มงวด แต่ยืนยันว่าการผลิตพลังงานและโครงสร้างพื้นฐานยังดำเนินไปตามปกติ ไม่ได้รับผลกระทบจากเหตุการณ์นี้
-(ตามด้วยลิงก์บรรทัดถัดไป)
-2.ความกังวลเกี่ยวกับโครงการ “โซลาร์ประชาชน” ที่ต้องรอการอนุมัติจากคณะรัฐมนตรีชุดใหม่ และประเด็นเกี่ยวกับทิศทางแผนพลังงานไทยยังคงอยู่บนเส้นบาง ๆ ระหว่างความมั่นคงพลังงานและการเปลี่ยนผ่านไปสู่พลังงานสะอาด
+[สาระสำคัญข่าว]
+1.กระทรวงพลังงานสั่งยกระดับมาตรการความปลอดภัยรอบแท่นขุดเจาะในอ่าวไทย หลังพบความพยายามรุกล้ำพื้นที่ จับตาเฝ้าระวังต่อเนื่อง แต่ยืนยันการผลิตยังดำเนินปกติ ไม่ได้รับผลกระทบ
 (ตามด้วยลิงก์บรรทัดถัดไป)
 
-กติกาสไตล์:
-- headline_th: เป็นหัวข้อสั้น 1 บรรทัด (แนวข่าวตัวอย่าง)
-- summary_th: 2–4 ประโยค โทนรายงานข่าวแบบตัวอย่าง เน้น “เกิดอะไรขึ้น/ใคร/ผลต่อพลังงานหรือความมั่นคง/ทิศทาง”
-- ห้ามเดาข้อมูลนอก title/summary
+กติกา: headline_th 1 บรรทัด / summary_th 2–4 ประโยค โทนรายงานข่าว ห้ามเดานอก title/summary
 """
 
 # ============================================================================================================
-# Helpers: URL normalize / dedupe
+# URL normalize / dedupe
 # ============================================================================================================
-
-TRACK_DIR = os.getenv("TRACK_DIR", "sent_links").strip()
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
@@ -129,9 +138,8 @@ def normalize_url(url: str) -> str:
             return u
         p = urlparse(u)
         q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
-             if k.lower() not in ("utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid")]
-        p2 = p._replace(query=urlencode(q), fragment="")
-        return urlunparse(p2)
+             if k.lower() not in ("utm_source","utm_medium","utm_campaign","utm_term","utm_content","fbclid","gclid")]
+        return urlunparse(p._replace(query=urlencode(q), fragment=""))
     except Exception:
         return (url or "").strip()
 
@@ -195,11 +203,8 @@ def _sleep_jitter():
     a, b = SLEEP_BETWEEN_CALLS
     time.sleep(random.uniform(a, b))
 
-def call_groq_with_retries(prompt: str, temperature: float = 0.25, max_tokens: int = 1200) -> str:
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",
-    }
+def call_groq_with_retries(prompt: str, temperature: float = 0.25, max_tokens: int = 900) -> str:
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": GROQ_MODEL_NAME,
         "messages": [
@@ -227,7 +232,7 @@ def call_groq_with_retries(prompt: str, temperature: float = 0.25, max_tokens: i
                 if ra and ra.strip().isdigit():
                     wait_s = int(ra.strip())
                 else:
-                    wait_s = min(30, 2 * attempt + random.uniform(0.0, 1.5))
+                    wait_s = min(60, 5 * attempt + random.uniform(0.0, 2.0))
                 print(f"[GROQ] 429 rate limited. attempt={attempt}/{MAX_RETRIES}, sleep={wait_s:.1f}s")
                 time.sleep(wait_s)
                 continue
@@ -237,7 +242,7 @@ def call_groq_with_retries(prompt: str, temperature: float = 0.25, max_tokens: i
 
             if r.status_code >= 500:
                 last_err = RuntimeError(f"GROQ server error {r.status_code}: {last_body}")
-                wait_s = min(30, 2 * attempt + random.uniform(0.0, 1.5))
+                wait_s = min(60, 3 * attempt + random.uniform(0.0, 2.0))
                 print(f"[GROQ] {r.status_code} server error. attempt={attempt}/{MAX_RETRIES}, sleep={wait_s:.1f}s")
                 time.sleep(wait_s)
                 continue
@@ -251,7 +256,7 @@ def call_groq_with_retries(prompt: str, temperature: float = 0.25, max_tokens: i
 
         except Exception as e:
             last_err = e
-            wait_s = min(30, 1.5 * attempt + random.uniform(0.0, 1.0))
+            wait_s = min(60, 3 * attempt + random.uniform(0.0, 2.0))
             print(f"[GROQ] error: {type(e).__name__}: {e}. attempt={attempt}/{MAX_RETRIES}, sleep={wait_s:.1f}s")
             time.sleep(wait_s)
 
@@ -274,16 +279,14 @@ def _extract_json_object(text: str) -> Any:
         return None
 
 # ============================================================================================================
-# Credibility scoring (simple heuristic)
+# Credibility scoring (heuristic)
 # ============================================================================================================
 
 HIGH_TRUST_DOMAINS = {
-    "reuters.com", "bloomberg.com", "wsj.com", "ft.com", "nytimes.com",
-    "theguardian.com", "bbc.co.uk", "bbc.com", "oilprice.com",
-    "prachachat.net", "bangkokbiznews.com", "posttoday.com",
-    "energynewscenter.com", "matichon.co.th",
+    "reuters.com","bloomberg.com","wsj.com","ft.com","bbc.com","bbc.co.uk",
+    "oilprice.com","prachachat.net","bangkokbiznews.com","posttoday.com","energynewscenter.com","matichon.co.th"
 }
-MED_TRUST_DOMAINS = {"msn.com", "yahoo.com", "investing.com", "marketwatch.com"}
+MED_TRUST_DOMAINS = {"msn.com","yahoo.com","investing.com","marketwatch.com"}
 
 def domain_of(url: str) -> str:
     try:
@@ -303,7 +306,7 @@ def source_score(url: str) -> float:
     return 0.45
 
 # ============================================================================================================
-# Parse RSS feeds
+# RSS parsing
 # ============================================================================================================
 
 def parse_datetime(dt_str: str) -> Optional[datetime]:
@@ -317,17 +320,19 @@ def parse_datetime(dt_str: str) -> Optional[datetime]:
 
 def fetch_feed(feed: Dict[str, str]) -> List[Dict[str, Any]]:
     d = feedparser.parse(feed["url"])
-    items = []
+    items: List[Dict[str, Any]] = []
     for e in d.entries:
         link = e.get("link", "") or ""
         title = (e.get("title", "") or "").strip()
         summary = (e.get("summary", "") or e.get("description", "") or "").strip()
+
         published = None
         for k in ("published", "updated", "pubDate"):
             if e.get(k):
                 published = parse_datetime(e.get(k))
                 if published:
                     break
+
         items.append({
             "feed_name": feed.get("name", "feed"),
             "feed_country": feed.get("country", "Global"),
@@ -342,9 +347,12 @@ def load_news() -> List[Dict[str, Any]]:
     all_items: List[Dict[str, Any]] = []
     for f in RSS_FEEDS:
         try:
-            all_items.extend(fetch_feed(f))
+            items = fetch_feed(f)
+            print(f"[FEED] {f.get('name')} -> {len(items)} items")
+            all_items.extend(items)
         except Exception as e:
-            print("Feed error:", f.get("name"), e)
+            print("[FEED ERROR]", f.get("name"), f.get("url"), e)
+
     all_items.sort(key=lambda x: x.get("published") or datetime.min.replace(tzinfo=bangkok_tz), reverse=True)
     return all_items
 
@@ -359,7 +367,25 @@ def dedupe_news(items: List[Dict[str, Any]], sent: set) -> List[Dict[str, Any]]:
     return out
 
 # ============================================================================================================
-# Project-mode LLM (เดิม)
+# Thai enforcement (optional rewrite if english leak)
+# ============================================================================================================
+
+def enforce_thai(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return text
+    eng = re.findall(r"[A-Za-z]{3,}", text)
+    if len(eng) >= 4:
+        prompt = f"ช่วยเขียนใหม่ให้เป็นภาษาไทยล้วน อ่านลื่น และคงความหมายเดิม\nข้อความ:\n{text}"
+        try:
+            out = call_groq_with_retries(prompt, temperature=0.2, max_tokens=450)
+            return out.strip()
+        except Exception:
+            return text
+    return text
+
+# ============================================================================================================
+# Project-mode LLM
 # ============================================================================================================
 
 PROJECT_CATEGORIES = [
@@ -373,24 +399,20 @@ PROJECT_CATEGORIES = [
     "Other",
 ]
 
-def enforce_thai(text: str) -> str:
-    if not text:
-        return text
-    eng = re.findall(r"[A-Za-z]{3,}", text)
-    if len(eng) >= 4:
-        prompt = f"ช่วยเขียนใหม่ให้เป็นภาษาไทยล้วน อ่านลื่น และคงความหมายเดิม\nข้อความ:\n{text}"
-        try:
-            out = call_groq_with_retries(prompt, temperature=0.2, max_tokens=900)
-            return out.strip()
-        except Exception:
-            return text
-    return text
-
-def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
+def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 12) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
+
     for i in range(0, len(news_list), chunk_size):
         chunk = news_list[i:i + chunk_size]
-        payload = [{"id": idx, "feed_country": (n.get("feed_country") or "").strip(), "title": n.get("title",""), "summary": n.get("summary","")} for idx, n in enumerate(chunk)]
+        payload = []
+        for idx, n in enumerate(chunk):
+            payload.append({
+                "id": idx,
+                "feed_country": (n.get("feed_country") or "").strip(),
+                # ✅ ลด token: clip input
+                "title": clip(n.get("title", ""), 160),
+                "summary": clip(n.get("summary", ""), 420),
+            })
 
         prompt = f"""
 คุณคือผู้ช่วยคัดกรองข่าวเพื่อ "ผลกระทบต่อโครงการพลังงานตามประเทศ/โครงการ"
@@ -400,7 +422,7 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
 - country: ประเทศที่ข่าวส่งผลชัดเจน (ถ้าไม่แน่ให้ใช้ feed_country หรือ "Global")
 - project: ชื่อโครงการ (ถ้าไม่ทราบให้ใส่ "-")
 - category: เลือก 1 จากรายการ {json.dumps(PROJECT_CATEGORIES, ensure_ascii=False)}
-- impact: bullet เดียว ภาษาไทย และ "ยาวพอ" (3-5 ประโยค) อธิบายผลกระทบต่อโครงการ/ประเทศเชิงปฏิบัติ
+- impact: bullet เดียว ภาษาไทย 3–4 ประโยค อธิบายผลกระทบเชิงปฏิบัติ
 
 ข้อห้าม:
 - ห้ามเดาข้อมูลนอก title/summary
@@ -412,7 +434,8 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
 ข่าวชุดนี้:
 {json.dumps(payload, ensure_ascii=False)}
 """
-        text = call_groq_with_retries(prompt, temperature=0.3, max_tokens=1400)
+        # ✅ ลด token: ลด max_tokens
+        text = call_groq_with_retries(prompt, temperature=0.28, max_tokens=800)
         data = _extract_json_object(text)
 
         if not (isinstance(data, dict) and isinstance(data.get("items"), list)):
@@ -424,10 +447,11 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
         for idx in range(len(chunk)):
             it = by_id.get(idx, {"pass": False})
             results.append(it if isinstance(it, dict) else {"pass": False})
+
     return results
 
 # ============================================================================================================
-# Digest-mode LLM (ใหม่)
+# Digest-mode LLM
 # ============================================================================================================
 
 DIGEST_CATEGORIES = [
@@ -438,6 +462,7 @@ DIGEST_CATEGORIES = [
     "intl_lng",
     "intl_tech_other",
 ]
+
 BUCKET_LABELS = {
     "domestic_policy": "🔸ข่าวนโยบายพลังงาน",
     "domestic_lng": "🔸ข่าวธุรกิจก๊าซธรรมชาติและ LNG",
@@ -447,11 +472,20 @@ BUCKET_LABELS = {
     "intl_tech_other": "🔸ข่าวเทคโนโลยีพลังงาน และอื่นๆ",
 }
 
-def groq_batch_energy_digest(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
+def groq_batch_energy_digest(news_list: List[Dict[str, Any]], chunk_size: int = 12) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
+
     for i in range(0, len(news_list), chunk_size):
         chunk = news_list[i:i + chunk_size]
-        payload = [{"id": idx, "feed_country": (n.get("feed_country") or "").strip(), "title": n.get("title",""), "summary": n.get("summary","")} for idx, n in enumerate(chunk)]
+        payload = []
+        for idx, n in enumerate(chunk):
+            payload.append({
+                "id": idx,
+                "feed_country": (n.get("feed_country") or "").strip(),
+                # ✅ ลด token: clip input
+                "title": clip(n.get("title", ""), 160),
+                "summary": clip(n.get("summary", ""), 420),
+            })
 
         prompt = f"""
 คุณเป็นบรรณาธิการสรุปข่าวพลังงานรายวัน ภาษาไทย
@@ -473,10 +507,9 @@ def groq_batch_energy_digest(news_list: List[Dict[str, Any]], chunk_size: int = 
 - tech_other = เทคโนโลยีพลังงาน/AI/โซลาร์/แบต/ดาต้าเซนเตอร์ หรือข่าวพลังงานอื่นๆ
 
 ผลลัพธ์สำหรับข่าวที่เข้าเกณฑ์:
-- headline_th: หัวข้อไทย 1 บรรทัด (สั้น กระชับ แบบข่าว)
-- summary_th: 2–4 ประโยค แบบตัวอย่างด้านบน และต้องมีคำ/วลีจาก title/summary อย่างน้อย 1 จุด
-ข้อห้าม:
-- ห้ามเดาข้อมูลนอก title/summary
+- headline_th: หัวข้อไทย 1 บรรทัด
+- summary_th: 2–4 ประโยค โทนรายงานข่าวแบบตัวอย่าง
+ข้อห้าม: ห้ามเดาข้อมูลนอก title/summary
 
 ตอบเป็น JSON เท่านั้น:
 {{"items":[{{"id":0,"is_energy":true,"bucket":"domestic_policy","headline_th":"...","summary_th":"..."}}]}}
@@ -484,7 +517,8 @@ def groq_batch_energy_digest(news_list: List[Dict[str, Any]], chunk_size: int = 
 ข่าวชุดนี้:
 {json.dumps(payload, ensure_ascii=False)}
 """
-        text = call_groq_with_retries(prompt, temperature=0.25, max_tokens=1500)
+        # ✅ ลด token: ลด max_tokens
+        text = call_groq_with_retries(prompt, temperature=0.22, max_tokens=850)
         data = _extract_json_object(text)
 
         if not (isinstance(data, dict) and isinstance(data.get("items"), list)):
@@ -496,9 +530,10 @@ def groq_batch_energy_digest(news_list: List[Dict[str, Any]], chunk_size: int = 
         for idx in range(len(chunk)):
             it = by_id.get(idx, {"is_energy": False})
             if isinstance(it, dict) and it.get("is_energy"):
-                it["headline_th"] = enforce_thai((it.get("headline_th") or "").strip())
-                it["summary_th"] = enforce_thai((it.get("summary_th") or "").strip())
+                it["headline_th"] = enforce_thai(it.get("headline_th", ""))
+                it["summary_th"] = enforce_thai(it.get("summary_th", ""))
             results.append(it if isinstance(it, dict) else {"is_energy": False})
+
     return results
 
 # ============================================================================================================
@@ -521,15 +556,15 @@ def _render_section(items: List[Dict[str, Any]], with_summary: bool) -> str:
         return "-"
     lines = []
     for i, n in enumerate(items, 1):
-        head = (n.get("headline_th") or n.get("title") or "").strip()
-        summ = (n.get("summary_th") or "").strip()
+        head = clean_ws(n.get("headline_th") or n.get("title") or "")
+        summ = clean_ws(n.get("summary_th") or "")
         link = (n.get("final_url") or n.get("link") or "").strip()
         if with_summary:
-            lines.append(f"{i}.{summ if summ else head}")   # no space after dot
+            lines.append(f"{i}.{summ if summ else head}")     # no space after dot
             if link:
                 lines.append(link)
         else:
-            lines.append(f"{i}. {head if head else (n.get('title') or '')}")  # space after dot
+            lines.append(f"{i}. {head}")                      # space after dot
     return "\n".join(lines)
 
 def build_energy_digest_text(news_items: List[Dict[str, Any]], report_dt: datetime, with_summary: bool) -> str:
@@ -581,6 +616,7 @@ def send_to_line(messages: List[Dict[str, Any]]) -> None:
     if DRY_RUN:
         print("[DRY_RUN] messages:", json.dumps(messages, ensure_ascii=False)[:900], "...")
         return
+
     headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}
     if LINE_TARGET == "user":
         if not LINE_USER_ID:
@@ -596,7 +632,7 @@ def send_to_line(messages: List[Dict[str, Any]]) -> None:
         raise RuntimeError(f"LINE API error {r.status_code}: {r.text}")
 
 # ============================================================================================================
-# Flex builder (project mode)
+# Flex (Project Impact)
 # ============================================================================================================
 
 def create_flex(news: Dict[str, Any]) -> Dict[str, Any]:
@@ -607,6 +643,7 @@ def create_flex(news: Dict[str, Any]) -> Dict[str, Any]:
     project = (news.get("project") or "-").strip()
     category = (news.get("category") or "-").strip()
     link = (news.get("final_url") or news.get("link") or "").strip()
+
     score = float(news.get("source_score") or 0.0)
     src_txt = f"ความน่าเชื่อถือ: {score:.2f}" if SHOW_SOURCE_RATING else ""
 
@@ -621,7 +658,7 @@ def create_flex(news: Dict[str, Any]) -> Dict[str, Any]:
     body.append({"type": "separator", "margin": "md"})
     body.append({"type": "text", "text": impact, "wrap": True, "size": "sm"})
 
-    flex = {
+    return {
         "type": "flex",
         "altText": title or "ข่าว",
         "contents": {
@@ -648,18 +685,19 @@ def create_flex(news: Dict[str, Any]) -> Dict[str, Any]:
             },
         },
     }
-    return flex
 
 # ============================================================================================================
 # Optional keyword gate
 # ============================================================================================================
 
-KEYWORDS = ["oil","crude","gas","lng","opec","power","electricity","sanction","pipeline","refinery","diesel","gasoline","brent","wti","dubai",
-            "ค่าไฟ","น้ำมัน","ก๊าซ","LNG","พลังงาน","โรงไฟฟ้า","คว่ำบาตร"]
+KEYWORDS = [
+    "oil","crude","gas","lng","opec","power","electricity","sanction","pipeline","refinery","diesel","gasoline","brent","wti","dubai",
+    "ค่าไฟ","น้ำมัน","ก๊าซ","lng","พลังงาน","โรงไฟฟ้า","คว่ำบาตร"
+]
 
 def keyword_hit(n: Dict[str, Any]) -> bool:
     t = ((n.get("title") or "") + " " + (n.get("summary") or "")).lower()
-    return any(kw.lower() in t for kw in KEYWORDS)
+    return any(kw in t for kw in KEYWORDS)
 
 # ============================================================================================================
 # Prepare items
@@ -682,7 +720,7 @@ def prepare_items(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 # ============================================================================================================
-# Project mode runner
+# Runners
 # ============================================================================================================
 
 def run_project_mode(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -712,10 +750,6 @@ def run_project_mode(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any
     msgs = [create_flex(n) for n in passed]
     links = [x.get("link") for x in passed if x.get("link")]
     return (msgs, links)
-
-# ============================================================================================================
-# Digest mode runner
-# ============================================================================================================
 
 def run_digest_mode(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
     digest_tags = groq_batch_energy_digest(selected, chunk_size=LLM_BATCH_SIZE)
