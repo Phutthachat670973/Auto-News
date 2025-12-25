@@ -1,11 +1,9 @@
 # news.py
 # ============================================================================================================
 # Energy News Bot (Groq) — ไทย + ต่างประเทศ "แนว PDP/Regulator/SMR/LNG-FID/Financing/Security/Geo"
-# FIX: ให้จำนวนข่าวกลับมาเยอะขึ้น (ระดับหลักร้อย) ด้วย
-#   1) Multi-query feeds (แตก query หลายฟีดแทน 1 ฟีด)
-#   2) Time window ยืดหยุ่น: ล่าสุด WINDOW_HOURS (default 24 ชม.)
-#   3) Log ต่อฟีด เพื่อ debug ว่าฟีดไหนดึงได้น้อย
-#   4) LLM-first คัดข่าว + หมวด + ดึง projects/partners + ผลกระทบ 1 bullet ไทย
+# FIX (LINE 400):
+#   - LINE carousel จำกัด 12 bubble ต่อ 1 flex message -> แตกส่งเป็นหลาย flex message
+#   - LINE action.uri ยาวได้ไม่เกิน 1000 -> ทำ safe_action_uri() ตัด query/fragment + fallback
 # ============================================================================================================
 
 import os
@@ -50,12 +48,10 @@ def _as_limit(env_name: str, default: str = "0"):
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "6"))
 LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
 
-# จำนวนข่าวที่ “อนุญาตให้ส่งเข้า LLM” (0=ไม่จำกัด) — ถ้ากลัวกินโควต้าให้ตั้งสัก 200
-MAX_LLM_ITEMS = _as_limit("MAX_LLM_ITEMS", "220")
-# จำนวนที่ส่งขึ้น LINE (0=ไม่จำกัด แต่ LINE carousel ควรไม่เยอะ)
-MAX_SEND_ITEMS = _as_limit("MAX_SEND_ITEMS", "20")
+MAX_LLM_ITEMS = _as_limit("MAX_LLM_ITEMS", "220")   # แนะนำ 180-260
+MAX_SEND_ITEMS = _as_limit("MAX_SEND_ITEMS", "24")  # จะถูกแบ่งเป็นหลาย flex (12 ต่อ message)
 
-RUN_DEADLINE_MIN = int(os.getenv("RUN_DEADLINE_MIN", "0"))  # 0 = no deadline
+RUN_DEADLINE_MIN = int(os.getenv("RUN_DEADLINE_MIN", "0"))
 RSS_TIMEOUT_SEC = int(os.getenv("RSS_TIMEOUT_SEC", "18"))
 ARTICLE_TIMEOUT_SEC = int(os.getenv("ARTICLE_TIMEOUT_SEC", "12"))
 
@@ -69,13 +65,9 @@ DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ["1", "true", "yes", 
 SHOW_SOURCE_RATING = os.getenv("SHOW_SOURCE_RATING", "true").strip().lower() in ["1", "true", "yes", "y"]
 MIN_SOURCE_SCORE = int(os.getenv("MIN_SOURCE_SCORE", "0"))
 
-# จำนวน entries ที่อ่านต่อ RSS feed
 MAX_ENTRIES_PER_FEED = int(os.getenv("MAX_ENTRIES_PER_FEED", "120"))
-
-# Time window: ล่าสุดกี่ชั่วโมง (แก้ปัญหา “รันบ่ายแล้วได้ข่าวน้อย”)
 WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "24"))
 
-# fallback hero
 DEFAULT_HERO_URL = os.getenv(
     "DEFAULT_HERO_URL",
     "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
@@ -88,7 +80,7 @@ S.headers.update({"User-Agent": "Mozilla/5.0"})
 GROQ_CALLS = 0
 
 # ============================================================================================================
-# FEEDS (แตกหลาย query เพื่อให้ปริมาณกลับมาเยอะ)
+# FEEDS (multi-query)
 # ============================================================================================================
 
 def google_news_rss(q: str, hl="en", gl="US", ceid="US:en"):
@@ -104,20 +96,18 @@ TH_QUERIES = [
 
 EN_QUERIES = [
     '(energy policy OR regulator OR power tariff OR "direct PPA" OR "power market reform")',
-    '(SMR OR "small modular reactor" OR nuclear restart OR nuclear policy OR "reactor" )',
+    '(SMR OR "small modular reactor" OR nuclear restart OR nuclear policy OR "reactor")',
     '(LNG project OR FID OR export terminal OR liquefaction OR regas OR "floating LNG" OR "gas development")',
     '(structured financing OR project financing OR EPC OR "equipment orders" OR Baker Hughes OR Honeywell OR "Solar Turbines")',
     '(sanctions OR national security OR crude flows OR LNG flows OR shipping OR geopolitics OR "offshore wind halted")',
 ]
 
 NEWS_FEEDS = []
-
 for q in TH_QUERIES:
     NEWS_FEEDS.append(("GoogleNewsTH", "domestic", google_news_rss(q, hl="th", gl="TH", ceid="TH:th")))
 for q in EN_QUERIES:
     NEWS_FEEDS.append(("GoogleNewsEN", "international", google_news_rss(q, hl="en", gl="US", ceid="US:en")))
 
-# legacy feeds (optional)
 NEWS_FEEDS.extend([
     ("Oilprice", "international", "https://oilprice.com/rss/main"),
     ("Economist", "international", "https://www.economist.com/latest/rss.xml"),
@@ -165,7 +155,7 @@ def save_sent_links(links):
             f.write(x + "\n")
 
 # ============================================================================================================
-# Resolve Google News -> publisher (กัน tracking/asset)
+# Resolve Google News -> publisher + safe uri (LINE limit)
 # ============================================================================================================
 
 def _get_domain(u: str) -> str:
@@ -271,12 +261,35 @@ def resolve_final_url(url: str) -> str:
         except Exception:
             pass
         return final
-
     except Exception:
         return url
 
+def _strip_query_fragment(u: str) -> str:
+    try:
+        p = urlparse(u)
+        return urlunparse((p.scheme, p.netloc, p.path, "", "", ""))
+    except Exception:
+        return u
+
+def safe_action_uri(u: str) -> str:
+    """
+    LINE uri length limit <= 1000
+    - normalize: ตัด utm
+    - ถ้ายังยาว: ตัด query/fragment
+    - ถ้ายังยาว: fallback
+    """
+    if not u:
+        return "https://news.google.com/"
+    u = _normalize_link(u)
+    if len(u) <= 1000:
+        return u
+    u2 = _strip_query_fragment(u)
+    if len(u2) <= 1000:
+        return u2
+    return "https://news.google.com/"
+
 # ============================================================================================================
-# Credibility scoring (เบา ๆ)
+# Credibility
 # ============================================================================================================
 
 def _is_https(u: str) -> bool:
@@ -291,7 +304,6 @@ HIGH_TRUST_DOMAINS = {
     "theguardian.com", "aljazeera.com", "nhk.or.jp", "nikkei.com",
     "spglobal.com", "iea.org", "opec.org", "worldbank.org", "imf.org", "un.org",
 }
-
 ENERGY_TRADE_DOMAINS = {"oilprice.com", "rigzone.com", "argusmedia.com", "energyintel.com"}
 LOW_TRUST_HINTS = ["click", "viral", "rumor", "shocking", "unbelievable", "exposed", "หวย", "ทำนาย", "ดวง", "แจก", "เครดิตฟรี"]
 
@@ -346,7 +358,7 @@ def assess_source_credibility(original_url: str, final_url: str, title: str) -> 
     return {"domain": domain, "final_url": fu, "score": score, "rating": rating, "rating_th": rating_th, "signals": signals}
 
 # ============================================================================================================
-# Feed parsing + image fetch
+# Feed parsing + image
 # ============================================================================================================
 
 def parse_feed_with_timeout(url: str):
@@ -484,7 +496,6 @@ def has_meaningful_impact(bullets) -> bool:
     t = txt.lower().replace(" ", "")
     if any(x.replace(" ", "") in t for x in bad):
         return False
-    # ลด threshold ให้ผ่านง่ายขึ้นนิดหน่อย (กัน 0 ข่าวผ่าน)
     return len(txt.strip()) >= 50
 
 def validate_evidence_in_text(title: str, summary: str, evidence_list: list) -> bool:
@@ -499,7 +510,7 @@ def validate_evidence_in_text(title: str, summary: str, evidence_list: list) -> 
     return ok >= 1
 
 CROSS_TOPIC_GUARD_TERMS = ["cambodia", "กัมพูชา", "casino", "คาสิโน", "bridge", "สะพาน"]
-def guard_cross_topic(title: str, summary: str, bullets: list[str]) -> bool:
+def guard_cross_topic(title: str, summary: str, bullets: List[str]) -> bool:
     text = f"{title or ''} {summary or ''}".lower()
     for b in bullets[:1]:
         bl = (b or "").lower()
@@ -597,26 +608,19 @@ bullet เดิม:
     text = call_groq_with_retries(prompt, temperature=0.55)
     data = _extract_json_object(text)
     if isinstance(data, dict) and isinstance(data.get("impact_bullets"), list):
-        out = diversify_bullets(clean_bullets(data["impact_bullets"])[:1])
-        return out
+        return diversify_bullets(clean_bullets(data["impact_bullets"])[:1])
     return diversify_bullets(clean_bullets(bullets))[:1]
 
 # ============================================================================================================
-# LLM selection (ไทย-only) — หมวด/ประเทศ/projects/partners + bullet
+# LLM selection (ไทย-only)
 # ============================================================================================================
 
 def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     for i in range(0, len(news_list), chunk_size):
         chunk = news_list[i:i + chunk_size]
-        payload = []
-        for idx, n in enumerate(chunk):
-            payload.append({
-                "id": idx,
-                "feed_section": (n.get("feed_section") or "").strip(),  # domestic / international
-                "title": n.get("title", ""),
-                "summary": n.get("summary", ""),
-            })
+        payload = [{"id": idx, "feed_section": (n.get("feed_section") or "").strip(), "title": n.get("title",""), "summary": n.get("summary","")}
+                   for idx, n in enumerate(chunk)]
 
         prompt = f"""
 คุณเป็นผู้ช่วยคัดเลือกข่าว “พลังงานเชิงนโยบาย/โครงสร้างตลาด/โครงการลงทุน/ความเสี่ยง” เพื่อส่งสรุปให้ผู้บริหาร
@@ -640,7 +644,7 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
 - projects ให้ดึง “ชื่อโครงการ/สินทรัพย์/แผน/มาตรการ” ที่ถูกกล่าวถึง (เช่น PDP, Direct PPA, SMR 600MW, LNG export terminal, Hail and Ghasha) ถ้ามี
 - partners ให้ดึง “บริษัท/องค์กร/ผู้เกี่ยวข้อง” ที่ถูกกล่าวถึง (เช่น EGCO, GPSC, ADNOC, Baker Hughes) ถ้ามี
 - country: ประเทศหลักของข่าว (ถ้าเป็นข่าวไทยให้เป็น Thailand)
-- section: domestic ถ้าเป็นข่าวไทย/บริบทไทย, international ถ้าเป็นต่างประเทศ (ถ้าไม่แน่ใจ ใช้ feed_section เป็นค่าเริ่มต้น)
+- section: domestic ถ้าเป็นข่าวไทย/บริบทไทย, international ถ้าเป็นต่างประเทศ
 
 ตอบเป็น JSON เท่านั้น:
 {{
@@ -668,25 +672,18 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
         data = _extract_json_object(text)
 
         if not (isinstance(data, dict) and isinstance(data.get("items"), list)):
-            for _ in chunk:
-                results.append({"is_relevant": False})
+            results.extend([{"is_relevant": False} for _ in chunk])
             continue
 
-        by_id = {}
-        for it in data["items"]:
-            if isinstance(it, dict) and "id" in it:
-                by_id[it.get("id")] = it
-
-        for idx, _n in enumerate(chunk):
+        by_id = {it.get("id"): it for it in data["items"] if isinstance(it, dict) and "id" in it}
+        for idx in range(len(chunk)):
             t = by_id.get(idx, {"is_relevant": False})
-            if not isinstance(t, dict):
-                t = {"is_relevant": False}
-            results.append(t)
+            results.append(t if isinstance(t, dict) else {"is_relevant": False})
 
     return results
 
 # ============================================================================================================
-# Fetch window: last WINDOW_HOURS (Bangkok)
+# Fetch window: last WINDOW_HOURS
 # ============================================================================================================
 
 def fetch_news_window():
@@ -725,7 +722,7 @@ def fetch_news_window():
 
                 out.append({
                     "site": site,
-                    "feed_section": feed_section,  # domestic / international
+                    "feed_section": feed_section,
                     "title": title,
                     "summary": summary,
                     "link": link,
@@ -737,7 +734,6 @@ def fetch_news_window():
 
         except Exception as ex:
             print(f"[WARN] feed failed: {site}/{feed_section} -> {type(ex).__name__}: {ex}")
-            continue
 
     uniq, seen = [], set()
     for n in out:
@@ -750,7 +746,7 @@ def fetch_news_window():
     return uniq
 
 # ============================================================================================================
-# FLEX (ไทย + bullet เดียว + fallback รูปเสมอ) + projects/partners
+# Flex Messages (แตกเป็นหลาย flex, 12 bubble ต่อ message) + safe uri
 # ============================================================================================================
 
 def _shorten(items, take=4):
@@ -762,98 +758,105 @@ def _shorten(items, take=4):
         return ", ".join(items)
     return ", ".join(items[:take]) + f" +{len(items)-take}"
 
-def create_flex(news_items):
+def _section_th(s: str) -> str:
+    s = (s or "").strip().lower()
+    return "ข่าวในประเทศ" if s == "domestic" else "ข่าวต่างประเทศ"
+
+def _cat_th(c: str) -> str:
+    c = (c or "").strip().lower()
+    mp = {
+        "policy_regulatory": "นโยบาย/กำกับดูแล",
+        "security": "ความมั่นคง/ความปลอดภัย",
+        "gas_lng": "ก๊าซธรรมชาติ/ LNG",
+        "tech_transition": "เทคโนโลยีพลังงาน",
+        "macro_geo": "ภูมิรัฐศาสตร์/มหภาค",
+        "other": "อื่นๆ",
+    }
+    return mp.get(c, "อื่นๆ")
+
+def create_flex_messages(news_items: List[Dict[str, Any]], chunk_size: int = 12):
     now_txt = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
-    bubbles = []
+    messages = []
 
-    def _section_th(s: str) -> str:
-        s = (s or "").strip().lower()
-        return "ข่าวในประเทศ" if s == "domestic" else "ข่าวต่างประเทศ"
+    for start in range(0, len(news_items), chunk_size):
+        batch = news_items[start:start + chunk_size]
+        bubbles = []
 
-    def _cat_th(c: str) -> str:
-        c = (c or "").strip().lower()
-        mp = {
-            "policy_regulatory": "นโยบาย/กำกับดูแล",
-            "security": "ความมั่นคง/ความปลอดภัย",
-            "gas_lng": "ก๊าซธรรมชาติ/ LNG",
-            "tech_transition": "เทคโนโลยีพลังงาน",
-            "macro_geo": "ภูมิรัฐศาสตร์/มหภาค",
-            "other": "อื่นๆ",
-        }
-        return mp.get(c, "อื่นๆ")
+        for n in batch:
+            bullets = clean_bullets(n.get("impact_bullets") or [])[:1]
+            section = (n.get("section") or n.get("feed_section") or "international").strip().lower()
+            country = (n.get("country") or "ไม่ระบุ").strip()
+            cat = _cat_th(n.get("topic_category") or "other")
+            projects = n.get("projects") or []
+            partners = n.get("partners") or []
 
-    for n in news_items:
-        bullets = clean_bullets(n.get("impact_bullets") or [])[:1]
-        section = (n.get("section") or n.get("feed_section") or "international").strip().lower()
-        country = (n.get("country") or "ไม่ระบุ").strip()
-        cat = _cat_th(n.get("topic_category") or "other")
+            raw_link = n.get("final_url") or n.get("link") or "https://news.google.com/"
+            link = safe_action_uri(raw_link)
 
-        projects = n.get("projects") or []
-        partners = n.get("partners") or []
+            img = n.get("image") or DEFAULT_HERO_URL
+            if not _is_good_image_url(img):
+                img = DEFAULT_HERO_URL
 
-        link = n.get("final_url") or n.get("link") or "https://news.google.com/"
-        img = n.get("image") or DEFAULT_HERO_URL
-        if not _is_good_image_url(img):
-            img = DEFAULT_HERO_URL
+            cred_txt = ""
+            if SHOW_SOURCE_RATING:
+                rating_th = (n.get("source_rating_th") or "").strip()
+                domain = (n.get("source_domain") or "").strip()
+                score = n.get("source_score")
+                if rating_th:
+                    cred_txt = f"ความน่าเชื่อถือ: {rating_th} (score {score}) · {domain}"
 
-        cred_txt = ""
-        if SHOW_SOURCE_RATING:
-            rating_th = (n.get("source_rating_th") or "").strip()
-            domain = (n.get("source_domain") or "").strip()
-            score = n.get("source_score")
-            if rating_th:
-                cred_txt = f"ความน่าเชื่อถือ: {rating_th} (score {score}) · {domain}"
+            contents = [
+                {"type": "text", "text": (n.get("title", "")[:140]), "wrap": True, "weight": "bold", "size": "lg"},
+                {
+                    "type": "box",
+                    "layout": "baseline",
+                    "spacing": "md",
+                    "contents": [
+                        {"type": "text", "text": n.get("published").strftime("%d/%m/%Y %H:%M"), "size": "sm", "color": "#666666", "flex": 0},
+                        {"type": "text", "text": f"{_section_th(section)} | {country} | {cat}", "size": "sm", "color": "#1E90FF", "wrap": True},
+                    ],
+                },
+            ]
 
-        contents = [
-            {"type": "text", "text": (n.get("title", "")[:140]), "wrap": True, "weight": "bold", "size": "lg"},
-            {
-                "type": "box",
-                "layout": "baseline",
-                "spacing": "md",
-                "contents": [
-                    {"type": "text", "text": n.get("published").strftime("%d/%m/%Y %H:%M"), "size": "sm", "color": "#666666", "flex": 0},
-                    {"type": "text", "text": f"{_section_th(section)} | {country} | {cat}", "size": "sm", "color": "#1E90FF", "wrap": True},
-                ],
-            },
-        ]
+            if projects:
+                contents.append({"type": "text", "text": f"ประเด็น/โครงการ/สินทรัพย์: {_shorten(projects, 4)}", "size": "sm", "color": "#666666", "wrap": True, "margin": "sm"})
+            if partners:
+                contents.append({"type": "text", "text": f"ผู้เกี่ยวข้อง: {_shorten(partners, 6)}", "size": "sm", "color": "#666666", "wrap": True, "margin": "xs"})
+            if cred_txt:
+                contents.append({"type": "text", "text": cred_txt, "size": "xs", "color": "#666666", "wrap": True, "margin": "sm"})
 
-        if projects:
-            contents.append({"type": "text", "text": f"ประเด็น/โครงการ/สินทรัพย์: {_shorten(projects, 4)}", "size": "sm", "color": "#666666", "wrap": True, "margin": "sm"})
-        if partners:
-            contents.append({"type": "text", "text": f"ผู้เกี่ยวข้อง: {_shorten(partners, 6)}", "size": "sm", "color": "#666666", "wrap": True, "margin": "xs"})
-        if cred_txt:
-            contents.append({"type": "text", "text": cred_txt, "size": "xs", "color": "#666666", "wrap": True, "margin": "sm"})
+            contents.append({"type": "text", "text": "ผลกระทบ", "size": "lg", "weight": "bold", "color": "#000000", "margin": "lg"})
 
-        contents.append({"type": "text", "text": "ผลกระทบ", "size": "lg", "weight": "bold", "color": "#000000", "margin": "lg"})
+            if bullets:
+                contents.append({"type": "text", "text": f"• {bullets[0]}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"})
+            else:
+                contents.append({"type": "text", "text": "• (ไม่มีข้อความผลกระทบ)", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"})
 
-        if bullets:
-            contents.append({"type": "text", "text": f"• {bullets[0]}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"})
-        else:
-            contents.append({"type": "text", "text": "• (ไม่มีข้อความผลกระทบ)", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"})
+            bubbles.append({
+                "type": "bubble",
+                "size": "mega",
+                "hero": {"type": "image", "url": img, "size": "full", "aspectRatio": "16:9", "aspectMode": "cover"},
+                "body": {"type": "box", "layout": "vertical", "contents": contents},
+                "footer": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {"type": "button", "style": "primary", "color": "#1DB446",
+                         "action": {"type": "uri", "label": "อ่านต่อ", "uri": link}}
+                    ],
+                },
+            })
 
-        bubbles.append({
-            "type": "bubble",
-            "size": "mega",
-            "hero": {"type": "image", "url": img, "size": "full", "aspectRatio": "16:9", "aspectMode": "cover"},
-            "body": {"type": "box", "layout": "vertical", "contents": contents},
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "contents": [
-                    {"type": "button", "style": "primary", "color": "#1DB446",
-                     "action": {"type": "uri", "label": "อ่านต่อ", "uri": link}}
-                ],
-            },
+        messages.append({
+            "type": "flex",
+            "altText": f"สรุปข่าวพลังงาน {now_txt} ({start+1}-{start+len(batch)})",
+            "contents": {"type": "carousel", "contents": bubbles},
         })
 
-    return [{
-        "type": "flex",
-        "altText": f"สรุปข่าวพลังงาน {now_txt}",
-        "contents": {"type": "carousel", "contents": bubbles},
-    }]
+    return messages
 
 # ============================================================================================================
-# LINE send
+# LINE send (ส่งทีละ flex message)
 # ============================================================================================================
 
 def send_to_line(messages):
@@ -869,10 +872,10 @@ def send_to_line(messages):
             print("[DRY_RUN] ไม่ส่งจริง")
             continue
 
-        r = S.post(url, headers=headers, json=payload, timeout=15)
+        r = S.post(url, headers=headers, json=payload, timeout=20)
         print(f"Send {i}: {r.status_code}")
         if r.status_code >= 300:
-            print("Response:", r.text[:1200])
+            print("Response:", r.text[:1600])
             break
 
 # ============================================================================================================
@@ -893,7 +896,7 @@ def main():
 
     sent = load_sent_links()
 
-    # ---------- ตัดซ้ำ URL + ตัดที่ส่งแล้ว ----------
+    # ตัดซ้ำ URL + ตัดที่ส่งแล้ว
     selected = []
     seen = set()
     for n in all_news:
@@ -901,11 +904,7 @@ def main():
             print("ถึง deadline ระหว่าง pre-filter (หยุด)")
             break
         k = _normalize_link(n["link"])
-        if not k:
-            continue
-        if k in sent:
-            continue
-        if k in seen:
+        if not k or k in sent or k in seen:
             continue
         seen.add(k)
         selected.append(n)
@@ -922,7 +921,7 @@ def main():
         print("ไม่มีข่าวให้ประเมิน")
         return
 
-    # ---------- Resolve final URL + credibility ----------
+    # resolve url + credibility
     for n in selected:
         if deadline and time.time() > deadline:
             print("ถึง deadline ระหว่าง resolve url (หยุด)")
@@ -949,7 +948,7 @@ def main():
             print("ไม่เหลือข่าวหลังกรองความน่าเชื่อถือ")
             return
 
-    # ---------- LLM selection ----------
+    # LLM
     try:
         tags = groq_batch_tag_and_filter(selected, chunk_size=LLM_BATCH_SIZE)
     except Exception as e:
@@ -986,7 +985,6 @@ def main():
         if not bullets:
             continue
 
-        # กันอังกฤษหลุด / generic -> rewrite ไทย
         if is_mostly_english(bullets[0]) or (ENABLE_IMPACT_REWRITE and looks_generic_or_short_one(bullets)):
             bullets = rewrite_impact_bullet_one_thai(n, bullets)
 
@@ -1023,21 +1021,22 @@ def main():
         print("ไม่มีข่าวที่ผ่านเงื่อนไขวันนี้")
         return
 
-    # ---------- Images ----------
+    # images
     for n in final:
         if deadline and time.time() > deadline:
             print("ถึง deadline ระหว่างหา image (หยุด)")
             break
-
         img = fetch_article_image(n.get("final_url") or n.get("link", ""))
         n["image"] = img if _is_good_image_url(img or "") else DEFAULT_HERO_URL
-        time.sleep(0.08)
+        time.sleep(0.06)
 
     final.sort(key=lambda x: x["published"], reverse=True)
-    send_cap = len(final) if MAX_SEND_ITEMS is None else min(MAX_SEND_ITEMS, len(final))
 
-    msgs = create_flex(final[:send_cap])
-    send_to_line(msgs)
+    send_cap = len(final) if MAX_SEND_ITEMS is None else min(MAX_SEND_ITEMS, len(final))
+    to_send = final[:send_cap]
+
+    flex_messages = create_flex_messages(to_send, chunk_size=12)
+    send_to_line(flex_messages)
 
     save_sent_links([n.get("final_url") or n.get("link") for n in final])
     print("เสร็จสิ้น (Groq calls:", GROQ_CALLS, ")")
