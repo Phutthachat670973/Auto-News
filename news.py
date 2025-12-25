@@ -1,20 +1,10 @@
-# news.py  (FIX 413 Payload Too Large)
-# ============================================================================================================
-# ✅ ส่งออก LINE "Project Impact" อย่างเดียว
-# ✅ Google News RSS แหล่งเดียว
-# ✅ Daily Focus ใช้เป็น prompt context (ไม่ส่งออก)
-# ✅ แก้ 429 ด้วย retry/backoff
-# ✅ แก้ 413 ด้วย:
-#    - จำกัดขนาด prompt (MAX_PROMPT_CHARS)
-#    - adaptive batching: ถ้า payload ใหญ่ -> split ครึ่งอัตโนมัติ
-# ============================================================================================================
-
 from __future__ import annotations
 
 import os
 import re
 import json
 import time
+import random
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
@@ -24,53 +14,71 @@ import pytz
 import requests
 from dateutil import parser as dateutil_parser
 
-# =========================================
-# ENV
-# =========================================
+# ============================================================
+# ENV / CONFIG
+# ============================================================
 
 USER_AGENT = os.getenv("USER_AGENT", "Mozilla/5.0 (NewsBot/1.0)").strip()
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("ไม่พบ LINE_CHANNEL_ACCESS_TOKEN")
 if not GROQ_API_KEY:
     raise RuntimeError("ไม่พบ GROQ_API_KEY")
 
-SELECT_LIMIT = int(os.getenv("SELECT_LIMIT", "60"))
+# Model name: รองรับทั้ง GROQ_MODEL_NAME (ตาม yml) และ GROQ_MODEL (เผื่อไว้)
+GROQ_MODEL = (os.getenv("GROQ_MODEL_NAME") or os.getenv("GROQ_MODEL") or "llama-3.1-8b-instant").strip()
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+OUTPUT_MODE = os.getenv("OUTPUT_MODE", "project_only").strip().lower()  # both | project_only | digest_only
+ADD_SECTION_HEADERS = os.getenv("ADD_SECTION_HEADERS", "true").strip().lower() == "true"
+
+SELECT_LIMIT = int(os.getenv("SELECT_LIMIT", "25"))
+LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
 PROJECT_SEND_LIMIT = int(os.getenv("PROJECT_SEND_LIMIT", "10"))
+DIGEST_MAX_PER_SECTION = int(os.getenv("DIGEST_MAX_PER_SECTION", "8"))
+
+MIN_SOURCE_SCORE = float(os.getenv("MIN_SOURCE_SCORE", "0"))
+SHOW_SOURCE_RATING = os.getenv("SHOW_SOURCE_RATING", "true").strip().lower() == "true"
+USE_KEYWORD_GATE = os.getenv("USE_KEYWORD_GATE", "false").strip().lower() == "true"
+ENABLE_IMPACT_REWRITE = os.getenv("ENABLE_IMPACT_REWRITE", "true").strip().lower() == "true"
+
+DEFAULT_HERO_URL = os.getenv("DEFAULT_HERO_URL", "").strip() or "https://i.imgur.com/4M34hi2.png"
 
 TRACK_DIR = os.getenv("TRACK_DIR", "sent_links").strip()
-SHOW_SOURCE_RATING = os.getenv("SHOW_SOURCE_RATING", "true").strip().lower() == "true"
-MIN_SOURCE_SCORE = float(os.getenv("MIN_SOURCE_SCORE", "0.40"))
-USE_KEYWORD_GATE = os.getenv("USE_KEYWORD_GATE", "false").strip().lower() == "true"
-ADD_SECTION_HEADERS = os.getenv("ADD_SECTION_HEADERS", "true").strip().lower() == "true"
 DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() == "true"
 
-DEFAULT_HERO_URL = os.getenv("DEFAULT_HERO_URL", "https://i.imgur.com/4M34hi2.png").strip()
+# Retry/Rate limit control (ตาม yml)
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "7"))
+SLEEP_MIN = float(os.getenv("SLEEP_MIN", "0.4"))
+SLEEP_MAX = float(os.getenv("SLEEP_MAX", "0.9"))
 
-FOCUS_BUILD_LIMIT = int(os.getenv("FOCUS_BUILD_LIMIT", "8"))
-LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
-LLM_SLEEP = float(os.getenv("LLM_SLEEP", "0.35"))
-
-# ✅ จำกัดขนาด payload แบบง่าย (กัน 413)
+# กัน 413 payload too large (ตั้งเป็น "จำนวนตัวอักษร" ง่าย ๆ)
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "18000"))
+
+# Daily Focus (ใช้เป็น context ช่วยคัดข่าวโครงการ)
+FOCUS_BUILD_LIMIT = int(os.getenv("FOCUS_BUILD_LIMIT", "8"))
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 
-# =========================================
-# Google News RSS
-# =========================================
+
+# ============================================================
+# Google News RSS (แหล่งเดียว)
+# ============================================================
 
 GOOGLE_NEWS_QUERY = os.getenv("GOOGLE_NEWS_QUERY", "").strip()
 GOOGLE_NEWS_HL = os.getenv("GOOGLE_NEWS_HL", "th").strip()
 GOOGLE_NEWS_GL = os.getenv("GOOGLE_NEWS_GL", "TH").strip()
 GOOGLE_NEWS_CEID = os.getenv("GOOGLE_NEWS_CEID", "TH:th").strip()
 
+
 def build_google_news_rss(query: str) -> str:
     from urllib.parse import quote_plus
     q = quote_plus(query or "")
     return f"https://news.google.com/rss/search?q={q}&hl={GOOGLE_NEWS_HL}&gl={GOOGLE_NEWS_GL}&ceid={GOOGLE_NEWS_CEID}"
+
 
 RSS_FEEDS: List[Dict[str, str]] = [
     {
@@ -81,19 +89,23 @@ RSS_FEEDS: List[Dict[str, str]] = [
     }
 ]
 
-# =========================================
+
+# ============================================================
 # Helpers
-# =========================================
+# ============================================================
 
 def clean_ws(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip())
+
 
 def clip(s: str, n: int) -> str:
     s = clean_ws(s)
     return s if len(s) <= n else s[:n] + "…"
 
+
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
+
 
 def normalize_url(url: str) -> str:
     try:
@@ -107,6 +119,7 @@ def normalize_url(url: str) -> str:
     except Exception:
         return (url or "").strip()
 
+
 def load_sent_links() -> set:
     ensure_dir(TRACK_DIR)
     fp = os.path.join(TRACK_DIR, "sent_links.txt")
@@ -118,6 +131,7 @@ def load_sent_links() -> set:
     except Exception:
         return set()
 
+
 def save_sent_links(links: List[str]) -> None:
     ensure_dir(TRACK_DIR)
     fp = os.path.join(TRACK_DIR, "sent_links.txt")
@@ -126,6 +140,7 @@ def save_sent_links(links: List[str]) -> None:
     with open(fp, "w", encoding="utf-8") as f:
         for x in sorted(new):
             f.write(x + "\n")
+
 
 def dedupe_news(items: List[Dict[str, Any]], sent: set) -> List[Dict[str, Any]]:
     out = []
@@ -140,6 +155,7 @@ def dedupe_news(items: List[Dict[str, Any]], sent: set) -> List[Dict[str, Any]]:
         out.append(it)
     return out
 
+
 def parse_datetime(s: Optional[str]) -> Optional[datetime]:
     if not s:
         return None
@@ -151,12 +167,14 @@ def parse_datetime(s: Optional[str]) -> Optional[datetime]:
     except Exception:
         return None
 
-# =========================================
+
+# ============================================================
 # HTTP / final URL / OG image
-# =========================================
+# ============================================================
 
 def http_get(url: str, timeout: int = 15) -> requests.Response:
     return requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+
 
 def resolve_final_url(url: str) -> str:
     try:
@@ -174,6 +192,7 @@ def resolve_final_url(url: str) -> str:
     except Exception:
         return normalize_url(url)
 
+
 def extract_og_image(url: str) -> Optional[str]:
     try:
         r = http_get(url, timeout=15)
@@ -188,9 +207,10 @@ def extract_og_image(url: str) -> Optional[str]:
     except Exception:
         return None
 
-# =========================================
+
+# ============================================================
 # Source score (heuristic)
-# =========================================
+# ============================================================
 
 HIGH_TRUST = {
     "reuters.com", "apnews.com", "bbc.com", "ft.com", "bloomberg.com",
@@ -222,9 +242,10 @@ def source_score(url: str) -> float:
         return 0.80
     return 0.45
 
-# =========================================
+
+# ============================================================
 # Optional keyword gate
-# =========================================
+# ============================================================
 
 KEYWORDS = [
     "oil","gas","lng","energy","opec","refinery","crude",
@@ -236,9 +257,10 @@ def keyword_hit(n: Dict[str, Any]) -> bool:
     blob = (n.get("title","") + " " + n.get("summary","")).lower()
     return any(k in blob for k in KEYWORDS)
 
-# =========================================
-# RSS
-# =========================================
+
+# ============================================================
+# RSS loading
+# ============================================================
 
 def fetch_feed(feed: Dict[str, str]) -> List[Dict[str, Any]]:
     d = feedparser.parse(feed["url"])
@@ -278,18 +300,16 @@ def load_news() -> List[Dict[str, Any]]:
     all_items.sort(key=lambda x: x.get("published") or datetime.min.replace(tzinfo=bangkok_tz), reverse=True)
     return all_items
 
-# =========================================
-# LLM (Groq) - Retry/Backoff
-# =========================================
 
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+# ============================================================
+# Groq LLM: retry/backoff + sleep window
+# ============================================================
 
-def groq_chat(prompt: str, temperature: float = 0.25, max_retries: int = 7) -> str:
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",
-    }
+def _sleep_jitter():
+    time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
+
+def groq_chat(prompt: str, temperature: float = 0.25) -> str:
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": GROQ_MODEL,
         "messages": [
@@ -300,37 +320,34 @@ def groq_chat(prompt: str, temperature: float = 0.25, max_retries: int = 7) -> s
     }
 
     backoff = 2.0
-    for attempt in range(max_retries):
+    for attempt in range(MAX_RETRIES):
         r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=60)
 
-        # 429: rate limit
         if r.status_code == 429:
             retry_after = r.headers.get("retry-after")
             try:
                 wait_s = float(retry_after) if retry_after else backoff
             except Exception:
                 wait_s = backoff
-            print(f"[429] rate limited -> sleep {wait_s:.1f}s (attempt {attempt+1}/{max_retries})")
+            print(f"[429] rate limited -> sleep {wait_s:.1f}s (attempt {attempt+1}/{MAX_RETRIES})")
             time.sleep(wait_s)
             backoff = min(backoff * 1.8, 35.0)
             continue
 
-        # 5xx: server
+        if r.status_code == 413:
+            raise requests.HTTPError("413 Payload Too Large", response=r)
+
         if r.status_code >= 500:
             print(f"[{r.status_code}] server error -> sleep {backoff:.1f}s")
             time.sleep(backoff)
             backoff = min(backoff * 1.8, 35.0)
             continue
 
-        # 413: payload too large -> โยนให้ caller จัดการ split
-        if r.status_code == 413:
-            raise requests.HTTPError("413 Payload Too Large", response=r)
-
         r.raise_for_status()
         data = r.json()
         return (data["choices"][0]["message"]["content"] or "").strip()
 
-    raise RuntimeError("Groq: retry แล้วแต่ยังไม่สำเร็จ (อาจติด rate limit ต่อเนื่อง)")
+    raise RuntimeError("Groq: retry แล้วแต่ยังไม่สำเร็จ")
 
 def parse_json_loose(s: str) -> Optional[Any]:
     try:
@@ -341,9 +358,10 @@ def parse_json_loose(s: str) -> Optional[Any]:
     except Exception:
         return None
 
-# =========================================
-# Daily Focus
-# =========================================
+
+# ============================================================
+# Daily Focus (ใช้เป็น prompt context ไม่ส่งออก)
+# ============================================================
 
 DAILY_FOCUS_PROMPT = """
 คุณจะได้รับรายการข่าวหลายชิ้น (title + summary) ให้สรุปเป็น "Daily Focus" เพื่อใช้เป็นบริบทช่วยคัดข่าวโครงการ
@@ -365,22 +383,22 @@ def build_daily_focus(items: List[Dict[str, Any]]) -> str:
     sample = items[:max(1, FOCUS_BUILD_LIMIT)]
     lines = []
     for i, n in enumerate(sample, 1):
-        # ลดความยาวเพื่อไม่ให้ focus prompt ยาวเกิน
-        lines.append(f"[{i}] {clip(n.get('title',''), 160)} | {clip(n.get('summary',''), 220)}")
+        lines.append(f"[{i}] {clip(n.get('title',''), 150)} | {clip(n.get('summary',''), 210)}")
     items_text = "\n".join(lines).strip()
 
     prompt = DAILY_FOCUS_PROMPT.format(items_text=items_text)
     if len(prompt) > MAX_PROMPT_CHARS:
         prompt = prompt[:MAX_PROMPT_CHARS]
 
+    _sleep_jitter()
     raw = groq_chat(prompt, temperature=0.2)
     raw_lines = [l.strip() for l in raw.splitlines() if l.strip()]
-    raw_lines = raw_lines[:8]
-    return "\n".join(raw_lines).strip()
+    return "\n".join(raw_lines[:8]).strip()
 
-# =========================================
-# Project Impact (Batch) + ✅ Adaptive split กัน 413
-# =========================================
+
+# ============================================================
+# Project Impact batch (กัน 413 ด้วย adaptive split)
+# ============================================================
 
 PROJECT_BATCH_PROMPT_TMPL = """
 คุณจะได้รับ "Daily Focus" และรายการข่าวหลายชิ้น ให้ตอบเป็น JSON array เท่านั้น (ห้ามมีข้อความอื่น)
@@ -406,10 +424,9 @@ Daily Focus:
 def _format_items_for_batch(items: List[Dict[str, Any]]) -> str:
     lines = []
     for i, n in enumerate(items, 1):
-        # ✅ ลด summary ต่อข่าวลงมาก เพื่อลด payload
         lines.append(
             f"({i}) TITLE: {clip(n.get('title',''), 180)}\n"
-            f"SUMMARY: {clip(n.get('summary',''), 260)}\n"
+            f"SUMMARY: {clip(n.get('summary',''), 240)}\n"
             f"URL: {n.get('final_url') or n.get('link') or ''}\n"
         )
     return "\n".join(lines).strip()
@@ -419,17 +436,14 @@ def _make_project_batch_prompt(items: List[Dict[str, Any]], daily_focus: str) ->
         daily_focus=daily_focus or "• ไม่มีข้อมูลแนวโน้มของวัน",
         items_text=_format_items_for_batch(items),
     )
-    # ✅ กัน prompt ยาวเกิน
     if len(prompt) > MAX_PROMPT_CHARS:
-        # ถ้ายาวเกินจริง ๆ ให้ “บีบ” items_text โดยตัดท้าย
-        head = PROJECT_BATCH_PROMPT_TMPL.format(
+        # ตัด items_text ให้พอดี
+        base = PROJECT_BATCH_PROMPT_TMPL.format(
             daily_focus=daily_focus or "• ไม่มีข้อมูลแนวโน้มของวัน",
-            items_text="<<TRUNCATED>>",
+            items_text="",
         )
-        # พื้นที่ที่เหลือสำหรับ items_text
-        budget = max(2000, MAX_PROMPT_CHARS - len(head))
-        items_text = _format_items_for_batch(items)
-        items_text = items_text[:budget]
+        budget = max(2000, MAX_PROMPT_CHARS - len(base) - 50)
+        items_text = _format_items_for_batch(items)[:budget]
         prompt = PROJECT_BATCH_PROMPT_TMPL.format(
             daily_focus=daily_focus or "• ไม่มีข้อมูลแนวโน้มของวัน",
             items_text=items_text,
@@ -439,78 +453,95 @@ def _make_project_batch_prompt(items: List[Dict[str, Any]], daily_focus: str) ->
 
 def groq_tag_project_batch(items: List[Dict[str, Any]], daily_focus: str) -> List[Dict[str, Any]]:
     prompt = _make_project_batch_prompt(items, daily_focus)
+    _sleep_jitter()
     raw = groq_chat(prompt, temperature=0.25)
     js = parse_json_loose(raw)
-    if isinstance(js, list):
-        return [x for x in js if isinstance(x, dict)]
-    return []
+    return [x for x in js if isinstance(x, dict)] if isinstance(js, list) else []
 
-def groq_tag_project_batch_safe(items: List[Dict[str, Any]], daily_focus: str) -> List[Dict[str, Any]]:
+def groq_tag_project_batch_safe(items: List[Dict[str, Any]], daily_focus: str) -> List[List[Dict[str, Any]]]:
     """
-    ✅ ป้องกัน 413:
-    - ลองส่งทั้งก้อนก่อน
-    - ถ้า 413 -> split ครึ่ง แล้วเรียกซ้ำ
+    คืนเป็น list ของผลลัพธ์เป็นก้อน ๆ (รองรับ split)
+    - ถ้าไม่ split -> [tags]
+    - ถ้า split -> [left_tags, right_tags]
     """
     if not items:
-        return []
+        return [[]]
     try:
-        return groq_tag_project_batch(items, daily_focus)
+        tags = groq_tag_project_batch(items, daily_focus)
+        return [tags]
     except requests.HTTPError as e:
         resp = getattr(e, "response", None)
         code = getattr(resp, "status_code", None)
         if code != 413 and "413" not in str(e):
             raise
         if len(items) == 1:
-            # ก้อนเดียวก็ยังใหญ่ -> บังคับตัด summary ให้สั้นสุด
+            # ข่าวเดียวก็ยังใหญ่ -> บีบ summary สุด ๆ
             one = dict(items[0])
             one["summary"] = clip(one.get("summary", ""), 120)
-            return groq_tag_project_batch([one], daily_focus)
+            tags = groq_tag_project_batch([one], daily_focus)
+            return [tags]
         mid = len(items) // 2
         print(f"[413] payload too large -> split {len(items)} into {mid}+{len(items)-mid}")
         left = groq_tag_project_batch_safe(items[:mid], daily_focus)
         right = groq_tag_project_batch_safe(items[mid:], daily_focus)
-        # ต้องรักษา idx ภายในแต่ละก้อนใหม่ -> จะ map ในชั้นบน
-        return (left, right)  # return tuple เพื่อให้ caller map แยกก้อน
+        return left + right
 
 def groq_batch_tag_and_filter(items: List[Dict[str, Any]], daily_focus: str, batch_size: int) -> List[Dict[str, Any]]:
     """
-    คืน tags ตามลำดับ items
-    - รองรับ split จาก 413 โดย caller จะ remap idx ของแต่ละ sub-batch ให้ถูก
+    คืน tags ตามลำดับ items (pass=false ถ้าตีความไม่ได้)
     """
     out: List[Dict[str, Any]] = []
-    for start in range(0, len(items), batch_size):
+    start = 0
+    while start < len(items):
         chunk = items[start:start+batch_size]
+        res_chunks = groq_tag_project_batch_safe(chunk, daily_focus)
 
-        res = groq_tag_project_batch_safe(chunk, daily_focus=daily_focus)
+        # res_chunks เป็น list ของ tags หลายก้อน (จาก split) แต่ idx จะเริ่ม 1 ภายในก้อนนั้น
+        # เราต้อง map ทีละก้อนให้ครบตาม sub-chunk
+        cursor = 0
+        for tags in res_chunks:
+            # เดา sub_len จากจำนวน tag ที่ได้ ถ้าได้ 0 ให้ใช้ 1 อย่างน้อย
+            sub_len = max(1, min(len(chunk) - cursor, max(len(tags), 1)))
 
-        # ถ้าโดน split จะได้ tuple (left, right)
-        chunks_results: List[List[Dict[str, Any]]] = []
-        if isinstance(res, tuple) and len(res) == 2:
-            chunks_results = [res[0], res[1]]
-            sub_chunks = [chunk[:len(chunk)//2], chunk[len(chunk)//2:]]
-        else:
-            chunks_results = [res]
-            sub_chunks = [chunk]
+            sub_chunk = chunk[cursor:cursor+sub_len]
+            cursor += sub_len
 
-        # map ต่อ sub-chunk
-        for sub_chunk, tags in zip(sub_chunks, chunks_results):
             idx_map: Dict[int, Dict[str, Any]] = {}
-            for t in (tags or []):
+            for t in tags:
                 try:
                     idx_map[int(t.get("idx"))] = t
                 except Exception:
                     continue
-            # เติมให้ครบ
+
             for i in range(1, len(sub_chunk) + 1):
                 out.append(idx_map.get(i, {"idx": i, "pass": False}))
 
-        time.sleep(LLM_SLEEP)
+        start += len(chunk)
 
     return out
 
-# =========================================
-# LINE sender
-# =========================================
+
+# ============================================================
+# Digest mode (หัวข้ออีกชุด -> ใช้เป็น prompt ช่วยคัดโครงการได้ก็ได้
+# แต่ในเวอร์ชันนี้: Digest ใช้แสดง “หมวดข่าวรวม” เฉย ๆ ถ้า OUTPUT_MODE=both
+# ============================================================
+
+def simple_categorize(n: Dict[str, Any]) -> str:
+    text = (n.get("title","") + " " + n.get("summary","")).lower()
+    if any(k in text for k in ["oil","crude","opec","brent","wti"]):
+        return "Oil"
+    if any(k in text for k in ["gas","lng","pipeline"]):
+        return "Gas/LNG"
+    if any(k in text for k in ["sanction","war","geopolitic","tariff"]):
+        return "Geopolitics"
+    if any(k in text for k in ["rate","inflation","bond","dollar","fed"]):
+        return "Macro/Finance"
+    return "Other"
+
+
+# ============================================================
+# LINE
+# ============================================================
 
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/broadcast"
 
@@ -554,8 +585,7 @@ def create_flex(news: Dict[str, Any]) -> Dict[str, Any]:
         "hero": {"type": "image", "url": hero, "size": "full", "aspectMode": "cover", "aspectRatio": "20:13"},
         "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": body},
         "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
-            {"type": "button", "style": "primary",
-             "action": {"type": "uri", "label": "อ่านข่าว", "uri": link or "https://news.google.com"}}
+            {"type": "button", "style": "primary", "action": {"type": "uri", "label": "อ่านข่าว", "uri": link or "https://news.google.com"}}
         ]},
     }
     return {"type": "flex", "altText": title or "Project Impact", "contents": bubble}
@@ -586,9 +616,10 @@ def send_to_line(messages: List[Dict[str, Any]]) -> None:
 
     print(f"ส่งสำเร็จ: {sent} messages")
 
-# =========================================
+
+# ============================================================
 # Prepare items
-# =========================================
+# ============================================================
 
 def prepare_items(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = []
@@ -606,9 +637,38 @@ def prepare_items(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         out.append(n2)
     return out
 
-# =========================================
-# Runner
-# =========================================
+
+# ============================================================
+# Project mode
+# ============================================================
+
+PROJECT_BATCH_REWRITE_PROMPT = """
+คุณจะได้รับ bullet ผลกระทบ 1 ข้อ ให้ปรับภาษาให้เนียนขึ้น กระชับขึ้น แต่ยังคงความหมายเดิม
+- ตอบเป็นข้อความล้วน
+- ต้องขึ้นต้นด้วย "• "
+
+ข้อความ:
+{impact}
+
+ผลลัพธ์:
+"""
+
+def rewrite_impact_if_enabled(text: str) -> str:
+    t = clean_ws(text)
+    if not ENABLE_IMPACT_REWRITE or not t:
+        return t
+    try:
+        prompt = PROJECT_BATCH_REWRITE_PROMPT.format(impact=t[:800])
+        if len(prompt) > MAX_PROMPT_CHARS:
+            prompt = prompt[:MAX_PROMPT_CHARS]
+        _sleep_jitter()
+        out = groq_chat(prompt, temperature=0.2)
+        out = clean_ws(out)
+        if not out.startswith("•"):
+            out = "• " + out.lstrip("• ").strip()
+        return out
+    except Exception:
+        return t
 
 def run_project_mode_only(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
     if USE_KEYWORD_GATE:
@@ -623,7 +683,7 @@ def run_project_mode_only(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str
 
     tags = groq_batch_tag_and_filter(selected, daily_focus=daily_focus, batch_size=LLM_BATCH_SIZE)
 
-    passed = []
+    passed: List[Dict[str, Any]] = []
     for n, t in zip(selected, tags):
         if not isinstance(t, dict) or not t.get("pass"):
             continue
@@ -631,7 +691,10 @@ def run_project_mode_only(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str
         n2["country"] = (t.get("country") or n.get("feed_country") or "Global").strip()
         n2["project"] = (t.get("project") or "-").strip()
         n2["category"] = (t.get("category") or "Other").strip()
-        n2["impact"] = clean_ws((t.get("impact") or "").strip())
+        impact = clean_ws((t.get("impact") or "").strip())
+        if impact and not impact.startswith("•"):
+            impact = "• " + impact
+        n2["impact"] = rewrite_impact_if_enabled(impact)
         passed.append(n2)
 
     passed.sort(key=lambda x: x.get("published") or datetime.min.replace(tzinfo=bangkok_tz), reverse=True)
@@ -644,9 +707,37 @@ def run_project_mode_only(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str
     links = [x.get("final_url") or x.get("link") for x in passed if (x.get("final_url") or x.get("link"))]
     return (msgs, links)
 
-# =========================================
+
+# ============================================================
+# Digest mode (text summary) - ถ้า OUTPUT_MODE=both/digest_only
+# ============================================================
+
+def run_digest_mode(selected: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    if not selected:
+        return (create_text_messages("ไม่พบข่าวสำหรับ Digest"), [])
+
+    buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for n in selected:
+        cat = simple_categorize(n)
+        buckets.setdefault(cat, []).append(n)
+
+    msgs: List[Dict[str, Any]] = []
+    links: List[str] = []
+
+    for cat, items in buckets.items():
+        items = items[:DIGEST_MAX_PER_SECTION]
+        lines = [f"📰 {cat}"]
+        for it in items:
+            lines.append(f"- {clip(it.get('title',''), 120)}")
+            links.append(it.get("final_url") or it.get("link") or "")
+        msgs += create_text_messages("\n".join(lines))
+
+    return (msgs, links)
+
+
+# ============================================================
 # Main
-# =========================================
+# ============================================================
 
 def main() -> None:
     print("ดึงข่าว...")
@@ -663,15 +754,23 @@ def main() -> None:
     all_msgs: List[Dict[str, Any]] = []
     all_links: List[str] = []
 
-    if ADD_SECTION_HEADERS:
-        all_msgs += create_text_messages("📌 สรุปข่าวผลกระทบต่อโครงการ (Project Impact)")
+    if OUTPUT_MODE in ("both", "project_only"):
+        if ADD_SECTION_HEADERS and OUTPUT_MODE == "both":
+            all_msgs += create_text_messages("📌 Project Impact")
+        msgs, links = run_project_mode_only(selected)
+        all_msgs += msgs
+        all_links += links
 
-    msgs, links = run_project_mode_only(selected)
-    all_msgs += msgs
-    all_links += links
+    if OUTPUT_MODE in ("both", "digest_only"):
+        if ADD_SECTION_HEADERS and OUTPUT_MODE == "both":
+            all_msgs += create_text_messages("🧾 Digest")
+        msgs, links = run_digest_mode(selected)
+        all_msgs += msgs
+        all_links += links
 
     send_to_line(all_msgs)
     save_sent_links(all_links)
+
 
 if __name__ == "__main__":
     main()
