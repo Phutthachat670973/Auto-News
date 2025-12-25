@@ -1,10 +1,10 @@
 # news.py
 # ============================================================================================================
-# PTTEP News Bot (Groq) — LLM-first selection (no keyword gate) + ไทยล้วน + 1 bullet
-# Fix:
-# - รูปหาย: ป้องกัน final_url หลุดไปเป็น tracking/asset (google-analytics / googleusercontent / gstatic ฯลฯ)
-# - resolve Google News ให้ดึง publisher URL แบบปลอดภัย (prefer canonical/url= และอ่านเฉพาะ href)
-# - ภาษาผลกระทบ: บังคับภาษาไทยเท่านั้น + ถ้าอังกฤษหลุด จะ rewrite ให้เป็นไทย
+# Energy News Bot (Groq) — “ข่าวแนว PDP/Regulator/SMR/LNG-FID/Financing/Security/Geo” ไทย+ต่างประเทศ
+# - ใช้ Google News RSS 2 ชุด: ไทย (domestic) + ต่างประเทศ (international)
+# - LLM-first คัดข่าว + จัดหมวด + ดึง "ประเทศ/ผู้เกี่ยวข้อง/โครงการหรือสินทรัพย์ที่ถูกกล่าวถึง"
+# - สรุปผลกระทบเป็นไทย 1 bullet (25–45 คำ) และมี evidence จาก title/summary
+# - Fix รูปหาย: resolve Google News ไป publisher URL แบบปลอดภัย + fallback hero เสมอ
 # ============================================================================================================
 
 import os
@@ -49,9 +49,10 @@ def _as_limit(env_name: str, default: str = "0"):
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "6"))
 LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
 
-MAX_PER_COUNTRY = _as_limit("MAX_PER_COUNTRY", "0")
-MAX_GLOBAL_ITEMS = _as_limit("MAX_GLOBAL_ITEMS", "0")
-MAX_LLM_ITEMS = _as_limit("MAX_LLM_ITEMS", "0")
+MAX_ITEMS_DOMESTIC = _as_limit("MAX_ITEMS_DOMESTIC", "0")
+MAX_ITEMS_INTERNATIONAL = _as_limit("MAX_ITEMS_INTERNATIONAL", "0")
+MAX_LLM_ITEMS = _as_limit("MAX_LLM_ITEMS", "0")          # cap รวมก่อนเข้า LLM (0=ไม่จำกัด)
+MAX_SEND_ITEMS = _as_limit("MAX_SEND_ITEMS", "10")       # จำนวน bubble ที่ส่ง LINE
 
 RUN_DEADLINE_MIN = int(os.getenv("RUN_DEADLINE_MIN", "0"))  # 0 = no deadline
 RSS_TIMEOUT_SEC = int(os.getenv("RSS_TIMEOUT_SEC", "15"))
@@ -67,15 +68,13 @@ DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ["1", "true", "yes", 
 SHOW_SOURCE_RATING = os.getenv("SHOW_SOURCE_RATING", "true").strip().lower() in ["1", "true", "yes", "y"]
 MIN_SOURCE_SCORE = int(os.getenv("MIN_SOURCE_SCORE", "0"))
 
-USE_KEYWORD_GATE = os.getenv("USE_KEYWORD_GATE", "false").strip().lower() in ["1", "true", "yes", "y"]
-MAX_ENTRIES_PER_FEED = int(os.getenv("MAX_ENTRIES_PER_FEED", "80"))
+MAX_ENTRIES_PER_FEED = int(os.getenv("MAX_ENTRIES_PER_FEED", "120"))
 
 # fallback hero ที่ “ควรขึ้นแน่ๆ”
 DEFAULT_HERO_URL = os.getenv(
     "DEFAULT_HERO_URL",
     "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
 )
-DEFAULT_ICON_URL = os.getenv("DEFAULT_ICON_URL", DEFAULT_HERO_URL)
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 S = requests.Session()
@@ -84,94 +83,39 @@ S.headers.update({"User-Agent": "Mozilla/5.0"})
 GROQ_CALLS = 0
 
 # ============================================================================================================
-# COUNTRIES / PROJECTS
-# ============================================================================================================
-
-COUNTRY_QUERY = {
-    "Thailand": "Thailand OR ไทย OR ประเทศไทย OR Bangkok",
-    "Myanmar": "Myanmar OR Burma OR เมียนมา OR พม่า",
-    "Vietnam": "Vietnam OR เวียดนาม",
-    "Malaysia": "Malaysia OR มาเลเซีย",
-    "Indonesia": "Indonesia OR อินโดนีเซีย",
-    "UAE": "UAE OR \"United Arab Emirates\" OR Abu Dhabi OR Dubai OR สหรัฐอาหรับเอมิเรตส์",
-    "Oman": "Oman OR โอมาน",
-    "Algeria": "Algeria OR แอลจีเรีย",
-    "Mozambique": "Mozambique OR โมซัมบิก OR Rovuma",
-    "Australia": "Australia OR ออสเตรเลีย",
-    "Brazil": "Brazil OR บราซิล",
-    "Mexico": "Mexico OR เม็กซิโก",
-}
-PROJECT_COUNTRIES = sorted(list(COUNTRY_QUERY.keys()))
-
-# NOTE: ปรับรายการโครงการให้ตรงกับของคุณได้เลย
-PROJECTS_BY_COUNTRY = {
-    "Thailand": ["G1/61 (Erawan)", "G2/61 (Bongkot)", "Arthit", "S1", "Contract 4", "B8/32", "9A", "Sinphuhorm", "MTJDA A-18"],
-    "Myanmar": ["Zawtika", "Yadana", "Yetagun"],
-    "Vietnam": ["Block B & 48/95", "Block 52/97", "16-1 (Te Giac Trang)"],
-    "Malaysia": ["SK309", "SK311", "SK410B", "MTJDA A-18"],
-    "Indonesia": ["South Sageri", "South Mandar", "Malunda"],
-    "UAE": ["Ghasha Concession", "Abu Dhabi Offshore"],
-    "Oman": ["Block 12"],
-    "Algeria": ["Bir Seba", "Hassi Bir Rekaiz (HBR)", "Touat"],
-    "Mozambique": ["Area 1 (Rovuma LNG)"],
-    "Australia": ["Montara", "Timor Sea assets"],
-    "Brazil": ["BM-ES-23", "BM-ES-24"],
-    "Mexico": ["Mexico Block 12"],
-}
-
-def projects_for_country(country: str) -> List[str]:
-    return PROJECTS_BY_COUNTRY.get(country, [])
-
-# ============================================================================================================
-# RSS
+# FEEDS (แนวเดียวกับที่คุณยกตัวอย่าง)
 # ============================================================================================================
 
 def google_news_rss(q: str, hl="en", gl="US", ceid="US:en"):
     return f"https://news.google.com/rss/search?q={quote_plus(q)}&hl={hl}&gl={gl}&ceid={ceid}"
 
-LEGACY_FEEDS = [
-    ("Oilprice", "GLOBAL", "https://oilprice.com/rss/main"),
-    ("Economist", "GLOBAL", "https://www.economist.com/latest/rss.xml"),
-    ("YahooFinance", "GLOBAL", "https://finance.yahoo.com/news/rssindex"),
+# ปรับ/เติม keyword ได้ใน ENV ถ้าอยาก custom
+TH_STYLE_QUERY = os.getenv("TH_STYLE_QUERY", "").strip() or """
+(แผน PDP OR PDP ใหม่ OR ค่าไฟ OR โครงสร้างค่าไฟ OR กกพ OR "Direct PPA" OR PPA OR
+กฟผ OR SMR OR โรงไฟฟ้านิวเคลียร์ OR นิวเคลียร์ OR Net Zero OR Carbon Neutral OR
+Data Center ไฟฟ้า OR ดีมานด์ไฟ OR
+LNG OR ก๊าซธรรมชาติ OR ท่อส่งก๊าซ OR ท่าเรือ OR โครงสร้างพื้นฐานพลังงาน OR
+แท่นขุดเจาะ OR ความปลอดภัยทรัพย์สินพลังงาน OR โดรน OR
+คว่ำบาตร OR ค่าเงิน OR มาตรการรัฐ OR ภาษีพลังงาน)
+"""
+
+WORLD_STYLE_QUERY = os.getenv("WORLD_STYLE_QUERY", "").strip() or """
+(energy policy OR power tariff OR regulator OR direct PPA OR
+SMR OR small modular reactor OR nuclear restart OR
+LNG project OR FID OR liquefaction OR export terminal OR import terminal OR
+structured financing OR project financing OR EPC contract OR equipment orders OR
+offshore wind halted OR national security OR sanctions OR crude flows OR LNG flows OR
+OPEC policy OR gas development OR pipeline)
+"""
+
+NEWS_FEEDS = [
+    ("GoogleNewsTH", "domestic", google_news_rss(TH_STYLE_QUERY, hl="th", gl="TH", ceid="TH:th")),
+    ("GoogleNewsEN", "international", google_news_rss(WORLD_STYLE_QUERY, hl="en", gl="US", ceid="US:en")),
+    # จะเก็บ legacy global feed ไว้ก็ได้ (มักได้ข่าว LNG/energy)
+    ("Oilprice", "international", "https://oilprice.com/rss/main"),
+    ("Economist", "international", "https://www.economist.com/latest/rss.xml"),
+    ("YahooFinance", "international", "https://finance.yahoo.com/news/rssindex"),
 ]
-
-NEWS_FEEDS = []
-for c in PROJECT_COUNTRIES:
-    NEWS_FEEDS.append(("GoogleNews", c, google_news_rss(COUNTRY_QUERY[c])))
-NEWS_FEEDS.extend(LEGACY_FEEDS)
-
-# ============================================================================================================
-# Optional keyword gate (DEFAULT OFF) + always-block non-projecty
-# ============================================================================================================
-
-TOPIC_KEYWORDS = [
-    "oil","gas","lng","crude","petroleum","upstream","offshore","rig","drilling","pipeline",
-    "refinery","psc","concession","opec","energy","power","electricity",
-    "น้ำมัน","ก๊าซ","ปิโตรเลียม","สำรวจ","ผลิต","แท่นขุด","ท่อส่ง","สัมปทาน","psc",
-    "policy","regulation","regulatory","license","permit","tax","royalty","sanction",
-    "รัฐบาล","นโยบาย","กฎระเบียบ","ใบอนุญาต","ภาษี","ค่าภาคหลวง","คว่ำบาตร",
-    "election","coup","junta","border","conflict","clashes","attack",
-    "เลือกตั้ง","รัฐประหาร","ชายแดน","ความขัดแย้ง","ปะทะ","โจมตี",
-    "port","shipping","customs","logistics","strike","blockade",
-    "ท่าเรือ","ขนส่ง","ศุลกากร","โลจิสติกส์","นัดหยุดงาน","ปิดล้อม",
-    "fx","currency","capital control","downgrade","rate hike","inflation","central bank",
-    "ค่าเงิน","อัตราแลกเปลี่ยน","ควบคุมเงินทุน","ลดอันดับเครดิต","ขึ้นดอกเบี้ย","เงินเฟ้อ","ธนาคารกลาง",
-    "flood","storm","typhoon","earthquake","landslide","drought","insurance",
-    "น้ำท่วม","พายุ","ไต้ฝุ่น","แผ่นดินไหว","ดินถล่ม","ภัยแล้ง","ประกัน",
-]
-
-NON_PROJECTY_KEYWORDS = [
-    "celebrity","fashion","sports","festival","gossip","pet","pets","dog","cat","award","prize",
-    "ดารา","บันเทิง","กีฬา","แฟชั่น","เทศกาล","ซุบซิบ","สัตว์เลี้ยง","หมา","แมว","รางวัล",
-]
-
-def passes_topic_gate(title: str, summary: str) -> bool:
-    t = f"{title or ''} {summary or ''}".lower()
-    if any(k in t for k in NON_PROJECTY_KEYWORDS):
-        return False
-    if not USE_KEYWORD_GATE:
-        return True
-    return any(k in t for k in TOPIC_KEYWORDS)
 
 # ============================================================================================================
 # URL normalize + sent_links
@@ -186,7 +130,7 @@ def _normalize_link(url: str) -> str:
         q = dict(parse_qsl(p.query, keep_blank_values=True))
         for k in list(q.keys()):
             lk = k.lower()
-            if lk.startswith("utm_") or lk in ["fbclid","gclid","mc_cid","mc_eid"]:
+            if lk.startswith("utm_") or lk in ["fbclid", "gclid", "mc_cid", "mc_eid"]:
                 q.pop(k, None)
         query = urlencode(sorted(q.items()))
         return urlunparse((scheme, netloc, path, "", query, ""))
@@ -227,7 +171,7 @@ def _get_domain(u: str) -> str:
     except Exception:
         return ""
 
-IMAGE_EXTS = (".jpg",".jpeg",".png",".gif",".webp",".svg",".ico")
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico")
 
 DISALLOWED_HOSTS = {
     "lh3.googleusercontent.com",
@@ -247,7 +191,7 @@ TRACKER_HOSTS = {
 }
 
 def _is_good_publisher_url(u: str) -> bool:
-    if not u or not u.startswith(("http://","https://")):
+    if not u or not u.startswith(("http://", "https://")):
         return False
     host = _get_domain(u)
     if not host:
@@ -265,7 +209,7 @@ def resolve_final_url(url: str) -> str:
     """
     เป้าหมาย: ได้ publisher URL จริง
     - ห้ามหลุดเป็น tracking/asset (google-analytics / googleusercontent / gstatic)
-    - ถ้าแกะไม่ได้จริงๆ ให้คืน url เดิม (ไม่สุ่มหยิบ url จาก html)
+    - ถ้าแกะไม่ได้จริงๆ ให้คืน url เดิม
     """
     if not url:
         return url
@@ -275,57 +219,66 @@ def resolve_final_url(url: str) -> str:
         final = r.url or url
         host = _get_domain(final)
 
-        # ถ้า redirect ไป tracking/asset -> ทิ้ง กลับไปใช้ต้นทาง
         if host in TRACKER_HOSTS or any(host.endswith(x) for x in TRACKER_HOSTS):
-            try: r.close()
-            except: pass
+            try:
+                r.close()
+            except Exception:
+                pass
             return url
 
-        # กรณีเป็น Google News
         if host == "news.google.com":
             html = r.text or ""
 
-            # 1) canonical
+            # canonical
             m = re.search(r'rel=["\']canonical["\']\s+href=["\']([^"\']+)["\']', html, re.I)
             if m:
                 cand = m.group(1).strip()
                 if _is_good_publisher_url(cand):
-                    try: r.close()
-                    except: pass
+                    try:
+                        r.close()
+                    except Exception:
+                        pass
                     return cand
 
-            # 2) url=encoded publisher
+            # url=
             m = re.search(r"(?:\?|&|amp;)url=(https?%3A%2F%2F[^&\"']+)", html, re.I)
             if m:
                 cand = unquote(m.group(1))
                 if _is_good_publisher_url(cand):
-                    try: r.close()
-                    except: pass
+                    try:
+                        r.close()
+                    except Exception:
+                        pass
                     return cand
 
-            # 3) อ่านเฉพาะ href (กันหยิบ src/pixel/tracker)
+            # first good https href
             hrefs = re.findall(r'href=["\'](https?://[^"\']+)["\']', html, flags=re.I)
             for cand in hrefs[:200]:
                 cand = cand.strip()
                 if _is_good_publisher_url(cand):
-                    try: r.close()
-                    except: pass
+                    try:
+                        r.close()
+                    except Exception:
+                        pass
                     return cand
 
-            # แกะไม่ได้จริงๆ -> ให้คืนเป็น news.google.com (อย่างน้อยไม่หลุดไป tracking)
-            try: r.close()
-            except: pass
+            try:
+                r.close()
+            except Exception:
+                pass
             return final
 
-        try: r.close()
-        except: pass
+        try:
+            r.close()
+        except Exception:
+            pass
         return final
 
     except Exception:
         return url
 
 # ============================================================================================================
-# Credibility scoring
+# Credibility scoring (เบา ๆ)
 # ============================================================================================================
 
 def _is_https(u: str) -> bool:
@@ -335,17 +288,17 @@ def _is_https(u: str) -> bool:
         return False
 
 HIGH_TRUST_DOMAINS = {
-    "reuters.com","bloomberg.com","wsj.com","ft.com","economist.com",
-    "apnews.com","bbc.co.uk","bbc.com","nytimes.com","washingtonpost.com",
-    "theguardian.com","aljazeera.com","nhk.or.jp","nikkei.com",
-    "spglobal.com","iea.org","opec.org","worldbank.org","imf.org","who.int","un.org",
+    "reuters.com", "bloomberg.com", "wsj.com", "ft.com", "economist.com",
+    "apnews.com", "bbc.co.uk", "bbc.com", "nytimes.com", "washingtonpost.com",
+    "theguardian.com", "aljazeera.com", "nhk.or.jp", "nikkei.com",
+    "spglobal.com", "iea.org", "opec.org", "worldbank.org", "imf.org", "un.org",
 }
 
 ENERGY_TRADE_DOMAINS = {
     "oilprice.com", "rigzone.com", "argusmedia.com", "energyintel.com",
 }
 
-LOW_TRUST_HINTS = ["click","viral","rumor","shocking","unbelievable","exposed","หวย","ทำนาย","ดวง","แจก","เครดิตฟรี"]
+LOW_TRUST_HINTS = ["click", "viral", "rumor", "shocking", "unbelievable", "exposed", "หวย", "ทำนาย", "ดวง", "แจก", "เครดิตฟรี"]
 
 def assess_source_credibility(original_url: str, final_url: str, title: str) -> Dict[str, Any]:
     score = 0
@@ -353,11 +306,10 @@ def assess_source_credibility(original_url: str, final_url: str, title: str) -> 
     fu = final_url or original_url
     domain = _get_domain(fu)
 
-    # ถ้าเป็น tracker ให้กดต่ำทันที
     if domain in TRACKER_HOSTS or any(domain.endswith(x) for x in TRACKER_HOSTS):
         return {
             "domain": domain,
-            "final_url": original_url,  # fallback
+            "final_url": original_url,
             "score": 0,
             "rating": "low",
             "rating_th": "ต่ำ",
@@ -433,17 +385,14 @@ def _is_good_image_url(u: str) -> bool:
         return False
     if host in TRACKER_HOSTS or any(host.endswith(x) for x in TRACKER_HOSTS):
         return False
-    # LINE ส่วนใหญ่รับได้แม้ไม่มีนามสกุล แต่กันโคตรแปลกๆไว้
     if len(u) > 1200:
         return False
     return True
 
 def fetch_article_image(url: str):
-    """Parse og:image/twitter:image from publisher page (ถ้าเป็น Google News/ไม่ใช่ publisher ก็จะไม่ค่อยได้)"""
     try:
-        if not url or not url.startswith(("http://","https://")):
+        if not url or not url.startswith(("http://", "https://")):
             return None
-        # ถ้า url เป็น google news มักไม่ให้ og:image ที่ usable -> ไม่ฝืน
         if _get_domain(url) == "news.google.com":
             return None
 
@@ -552,7 +501,7 @@ def has_meaningful_impact(bullets) -> bool:
     if len(bullets) < 1:
         return False
     txt = " ".join(bullets)
-    bad = ["ยังไม่พบผลกระทบ","ไม่พบผลกระทบ","ไม่ระบุผลกระทบ","ไม่เกี่ยวข้อง","ข้อมูลไม่เพียงพอ"]
+    bad = ["ยังไม่พบผลกระทบ", "ไม่พบผลกระทบ", "ไม่ระบุผลกระทบ", "ไม่เกี่ยวข้อง", "ข้อมูลไม่เพียงพอ"]
     t = txt.lower().replace(" ", "")
     if any(x.replace(" ", "") in t for x in bad):
         return False
@@ -569,7 +518,7 @@ def validate_evidence_in_text(title: str, summary: str, evidence_list: list) -> 
             ok += 1
     return ok >= 1
 
-CROSS_TOPIC_GUARD_TERMS = ["cambodia","กัมพูชา","casino","คาสิโน","bridge","สะพาน"]
+CROSS_TOPIC_GUARD_TERMS = ["cambodia", "กัมพูชา", "casino", "คาสิโน", "bridge", "สะพาน"]
 def guard_cross_topic(title: str, summary: str, bullets: list[str]) -> bool:
     text = f"{title or ''} {summary or ''}".lower()
     for b in bullets[:1]:
@@ -587,7 +536,6 @@ def english_ratio(text: str) -> float:
     return (ascii_letters / max(1, letters))
 
 def is_mostly_english(text: str) -> bool:
-    # ถ้าเป็นอังกฤษเยอะ -> ถือว่าไม่ผ่าน
     return english_ratio(text) >= 0.55
 
 # ============================================================================================================
@@ -633,7 +581,7 @@ def call_groq_with_retries(prompt: str, temperature: float = 0.35) -> str:
     raise last
 
 GENERIC_PATTERNS = ["อาจกระทบต้นทุน", "อาจกระทบกฎระเบียบ", "อาจกระทบตารางงาน", "อาจส่งผลกระทบ", "อาจกระทบต่อโครงการ"]
-SPECIFIC_HINTS = ["ใบอนุญาต","ภาษี","psc","สัมปทาน","ประกัน","ผู้รับเหมา","แรงงาน","ท่าเรือ","ขนส่ง","ศุลกากร","ค่าเงิน","คว่ำบาตร","นัดหยุดงาน","ความไม่สงบ","ความปลอดภัย"]
+SPECIFIC_HINTS = ["ใบอนุญาต", "ภาษี", "psc", "สัมปทาน", "ประกัน", "ผู้รับเหมา", "แรงงาน", "ท่าเรือ", "ขนส่ง", "ศุลกากร", "ค่าเงิน", "คว่ำบาตร", "นัดหยุดงาน", "ความไม่สงบ", "ความปลอดภัย", "Direct PPA", "PDP", "SMR", "LNG", "FID"]
 def looks_generic_or_short_one(bullets) -> bool:
     if not bullets or not isinstance(bullets, list):
         return True
@@ -644,19 +592,18 @@ def looks_generic_or_short_one(bullets) -> bool:
     too_short = len(joined) < 70
     return (generic_hit and not specific_hit) or too_short
 
-def rewrite_impact_bullet_one_thai(news, country, bullets):
+def rewrite_impact_bullet_one_thai(news, bullets):
     prompt = f"""
-คุณคือ Analyst ของ PTTEP
-ช่วยเขียน "ผลกระทบต่อโครงการ" ให้เหลือ 1 bullet เท่านั้น (1–2 ประโยค) โดยต้องเฉพาะเจาะจงและโยงกับข่าวจริง
+คุณคือ Analyst ด้านพลังงาน
+ช่วยเขียน "ผลกระทบ" ให้เหลือ 1 bullet เท่านั้น (1–2 ประโยค) โดยต้องเฉพาะเจาะจงและโยงกับข่าวจริง
 
 ข้อกำหนด:
 - เขียนเป็นภาษาไทยเท่านั้น ห้ามใช้ภาษาอังกฤษ
-- ต้องอธิบายเส้นทางผลกระทบ: ประเด็นข่าว -> กลไก -> กระทบโครงการยังไง
+- ต้องอธิบายเส้นทางผลกระทบ: ประเด็นข่าว -> กลไก -> ผลกระทบต่อการลงทุน/โครงการ/ความเสี่ยง
 - ต้องมีคำ/วลีจาก title/summary อย่างน้อย 1 จุด (ห้ามเดา)
 - ห้ามปนบริบท: ห้ามพูดถึงประเทศ/เหตุการณ์/คำสำคัญที่ไม่อยู่ในหัวข้อ/สรุป
 - ความยาวประมาณ 25–45 คำ
 
-ประเทศ: {country}
 หัวข้อ: {news.get("title","")}
 สรุป: {news.get("summary","")}
 
@@ -674,7 +621,7 @@ bullet เดิม:
     return diversify_bullets(clean_bullets(bullets))[:1]
 
 # ============================================================================================================
-# LLM selection (Thai-only) — strict reject non-project news
+# LLM selection (ไทย-only) — ดึง หมวด/ประเทศ/ผู้เกี่ยวข้อง/โครงการหรือสินทรัพย์ + bullet
 # ============================================================================================================
 
 def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
@@ -685,50 +632,52 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
         for idx, n in enumerate(chunk):
             payload.append({
                 "id": idx,
-                "feed_country": (n.get("feed_country") or "").strip(),
+                "feed_section": (n.get("feed_section") or "").strip(),  # domestic / international
                 "title": n.get("title", ""),
                 "summary": n.get("summary", ""),
             })
 
         prompt = f"""
-คุณเป็นผู้ช่วยคัดกรองข่าวเพื่อประเมิน “ผลกระทบต่อโครงการ PTTEP ในประเทศนั้นๆ”
-(ให้คัดโดย LLM เป็นหลัก ไม่พึ่ง keyword)
+คุณเป็นผู้ช่วยคัดเลือกข่าว “พลังงานเชิงนโยบาย/โครงสร้างตลาด/โครงการลงทุน/ความเสี่ยง” เพื่อส่งสรุปให้ผู้บริหาร
 
-คำตอบทั้งหมดต้องเป็นภาษาไทยเท่านั้น ห้ามมีภาษาอังกฤษ
+คัดเฉพาะข่าวที่เข้ากลุ่มนี้:
+1) นโยบาย/กำกับดูแลพลังงาน-ไฟฟ้า (PDP, tariff, regulator, Direct PPA)
+2) โครงการลงทุนพลังงาน/โครงสร้างพื้นฐาน (LNG project/FID, terminal, pipeline, financing, EPC, supply chain)
+3) ความมั่นคง/ความปลอดภัยสินทรัพย์พลังงาน (แท่นขุด/ท่อ/ท่าเรือ/โดรน/ความไม่สงบ)
+4) เทคโนโลยีพลังงานเปลี่ยนผ่าน (SMR/นิวเคลียร์/CCUS/ไฮโดรเจน/AI-energy)
+5) ภูมิรัฐศาสตร์-การค้า-คว่ำบาตรที่กระทบพลังงาน (crude/LNG flows)
 
-ให้ถือว่า “เกี่ยวข้องกับโครงการ” ก็ต่อเมื่อเข้าเงื่อนไขอย่างใดอย่างหนึ่ง:
-A) พลังงาน/สำรวจผลิต/E&P/Upstream/PSC/สัมปทาน/กฎระเบียบพลังงาน หรือโครงสร้างพื้นฐานพลังงาน (ท่อ/ท่าเรือ/ไฟฟ้า)
-B) การเมือง/ความมั่นคง ที่กระทบความปลอดภัย/การเข้าถึงไซต์/การทำงานของรัฐ/ใบอนุญาต
-C) การเงินมหภาคระดับประเทศที่กระทบภาคพลังงาน (ค่าเงิน, ควบคุมเงินทุน, คว่ำบาตร, เครดิตประเทศ, ภาษี/กฎลงทุนที่กระทบพลังงาน)
-D) ภัยพิบัติที่กระทบโครงสร้างพื้นฐาน/โลจิสติกส์/ความปลอดภัยพื้นที่ปฏิบัติการ
-E) คู่สัญญา/ผู้รับเหมา/ประกัน/โลจิสติกส์ ที่กระทบสัญญา/การจัดหา/การขนส่ง
+ตัดทิ้งทันทีถ้าเป็น:
+- lifestyle/บันเทิง/กีฬา/ไวรัล
+- ข่าวเชิงโฆษณาไร้สาระ ไม่มีผลต่อกติกา/การลงทุน/ความเสี่ยง
+- ข่าว “ราคา” แบบวันต่อวัน ที่ไม่มีประเด็นโครงสร้าง/นโยบาย/โครงการ/ความเสี่ยง
 
-ให้ “ไม่เกี่ยวข้อง” ทันที ถ้าเป็น:
-- lifestyle/consumer (เช่น สัตว์เลี้ยง, รางวัล, กีฬา, บันเทิง, gossip)
-- ข่าวเฉพาะบุคคล/ครอบครัวที่ไม่ใช่ระดับประเทศ/ภาคพลังงาน
-- award/prize ที่ไม่โยงกับกฎระเบียบ/การอนุมัติ/การลงทุนพลังงาน
-
-กติกาเข้ม:
-1) evidence ต้องเป็นวลีที่คัดมาจาก title/summary ของข่าวนั้นเท่านั้น (ห้ามแต่งเพิ่ม)
-2) impact_bullets ต้องมี "1 bullet เท่านั้น" (1–2 ประโยค, 25–45 คำ) และต้องโยงกับ evidence
-3) ใน bullet ต้องมีคำ/วลีจาก title/summary อย่างน้อย 1 จุด (ห้ามเดา)
-4) ห้ามปนบริบท: ห้ามพูดถึงเหตุการณ์/ประเทศ/คำสำคัญที่ไม่อยู่ใน title/summary
-5) ถ้าไม่มั่นใจ → is_relevant=false
+กติกาผลลัพธ์:
+- เขียนภาษาไทยเท่านั้น
+- evidence ต้องเป็น “วลีที่คัดมาจาก title/summary” เท่านั้น (ห้ามแต่งเพิ่ม)
+- impact_bullets ต้องมี 1 bullet (1–2 ประโยค, 25–45 คำ) และต้องโยง: ประเด็นข่าว -> กลไก -> ผลกระทบ
+- projects ให้ดึง “ชื่อโครงการ/สินทรัพย์/แผน/มาตรการ” ที่ถูกกล่าวถึง (เช่น PDP, Direct PPA, SMR 600MW, LNG export terminal, Hail and Ghasha) ถ้ามี
+- partners ให้ดึง “บริษัท/องค์กร/ผู้เกี่ยวข้อง” ที่ถูกกล่าวถึง (เช่น EGCO, GPSC, ADNOC, Baker Hughes) ถ้ามี
+- country: ประเทศหลักของข่าว (ถ้าเป็นข่าวไทยให้เป็น Thailand)
+- section: domestic ถ้าเป็นข่าวไทย/บริบทไทย, international ถ้าเป็นต่างประเทศ (ถ้าไม่แน่ใจ ใช้ feed_section เป็นค่าเริ่มต้น)
 
 ตอบเป็น JSON เท่านั้น:
 {{
-  "items": [
-    {{
-      "id": 0,
-      "is_relevant": true/false,
-      "country": "Thailand",
-      "topic_category": "energy|policy_regulatory|security|macro_finance|disaster_infra|logistics|contractor_counterparty|other",
-      "impact_bullets": ["..."],
-      "impact_level": "low|medium|high|unknown",
-      "evidence": ["...","..."],
-      "why_relevant": "..."
-    }}
-  ]
+ "items":[
+  {{
+   "id":0,
+   "is_relevant": true/false,
+   "section":"domestic|international",
+   "country":"Thailand|...",
+   "topic_category":"policy_regulatory|security|gas_lng|tech_transition|macro_geo|other",
+   "projects":["...","..."],
+   "partners":["...","..."],
+   "impact_bullets":["..."],
+   "impact_level":"low|medium|high|unknown",
+   "evidence":["...","..."],
+   "why_relevant":"..."
+  }}
+ ]
 }}
 
 ข่าวชุดนี้:
@@ -765,7 +714,7 @@ def fetch_news_window():
     end = now_local.replace(hour=6, minute=0, second=0, microsecond=0)
 
     out = []
-    for site, feed_country, url in NEWS_FEEDS:
+    for site, feed_section, url in NEWS_FEEDS:
         try:
             feed = parse_feed_with_timeout(url)
             entries = list(feed.entries or [])[:MAX_ENTRIES_PER_FEED]
@@ -793,16 +742,17 @@ def fetch_news_window():
 
                 out.append({
                     "site": site,
-                    "feed_country": feed_country,
+                    "feed_section": feed_section,  # domestic / international
                     "title": title,
                     "summary": summary,
                     "link": link,
                     "published": dt_local,
                 })
         except Exception as ex:
-            print(f"[WARN] feed failed: {site}/{feed_country} -> {type(ex).__name__}: {ex}")
+            print(f"[WARN] feed failed: {site}/{feed_section} -> {type(ex).__name__}: {ex}")
             continue
 
+    # unique by link
     uniq, seen = [], set()
     for n in out:
         k = _normalize_link(n["link"])
@@ -814,13 +764,14 @@ def fetch_news_window():
     return uniq
 
 # ============================================================================================================
-# FLEX (ไทย + bullet เดียว + fallback รูปเสมอ)
+# FLEX (ไทย + bullet เดียว + fallback รูปเสมอ) + projects/partners
 # ============================================================================================================
 
 def _shorten(items, take=4):
     items = items or []
+    items = [str(x).strip() for x in items if str(x).strip()]
     if not items:
-        return "ALL"
+        return "-"
     if len(items) <= take:
         return ", ".join(items)
     return ", ".join(items[:take]) + f" +{len(items)-take}"
@@ -829,11 +780,30 @@ def create_flex(news_items):
     now_txt = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
     bubbles = []
 
+    def _section_th(s: str) -> str:
+        s = (s or "").strip().lower()
+        return "ข่าวในประเทศ" if s == "domestic" else "ข่าวต่างประเทศ"
+
+    def _cat_th(c: str) -> str:
+        c = (c or "").strip().lower()
+        mp = {
+            "policy_regulatory": "นโยบาย/กำกับดูแล",
+            "security": "ความมั่นคง/ความปลอดภัย",
+            "gas_lng": "ก๊าซธรรมชาติ/ LNG",
+            "tech_transition": "เทคโนโลยีพลังงาน",
+            "macro_geo": "ภูมิรัฐศาสตร์/มหภาค",
+            "other": "อื่นๆ",
+        }
+        return mp.get(c, "อื่นๆ")
+
     for n in news_items:
         bullets = clean_bullets(n.get("impact_bullets") or [])[:1]
+        section = (n.get("section") or n.get("feed_section") or "international").strip().lower()
         country = (n.get("country") or "ไม่ระบุ").strip()
-        projects = n.get("projects") or ["ALL"]
-        proj_txt = _shorten(projects, take=4)
+        cat = _cat_th(n.get("topic_category") or "other")
+
+        projects = n.get("projects") or []
+        partners = n.get("partners") or []
 
         link = n.get("final_url") or n.get("link") or "https://news.google.com/"
         img = n.get("image") or DEFAULT_HERO_URL
@@ -849,23 +819,26 @@ def create_flex(news_items):
                 cred_txt = f"ความน่าเชื่อถือ: {rating_th} (score {score}) · {domain}"
 
         contents = [
-            {"type": "text", "text": (n.get("title","")[:140]), "wrap": True, "weight": "bold", "size": "lg"},
+            {"type": "text", "text": (n.get("title", "")[:140]), "wrap": True, "weight": "bold", "size": "lg"},
             {
                 "type": "box",
                 "layout": "baseline",
                 "spacing": "md",
                 "contents": [
                     {"type": "text", "text": n.get("published").strftime("%d/%m/%Y %H:%M"), "size": "sm", "color": "#666666", "flex": 0},
-                    {"type": "text", "text": f"{country} | {n.get('site','')}", "size": "sm", "color": "#1E90FF", "wrap": True},
+                    {"type": "text", "text": f"{_section_th(section)} | {country} | {cat}", "size": "sm", "color": "#1E90FF", "wrap": True},
                 ],
             },
-            {"type": "text", "text": f"โครงการที่เกี่ยวข้อง: {proj_txt}", "size": "sm", "color": "#666666", "wrap": True, "margin": "sm"},
         ]
 
+        if projects:
+            contents.append({"type": "text", "text": f"ประเด็น/โครงการ/สินทรัพย์: {_shorten(projects, 4)}", "size": "sm", "color": "#666666", "wrap": True, "margin": "sm"})
+        if partners:
+            contents.append({"type": "text", "text": f"ผู้เกี่ยวข้อง: {_shorten(partners, 6)}", "size": "sm", "color": "#666666", "wrap": True, "margin": "xs"})
         if cred_txt:
             contents.append({"type": "text", "text": cred_txt, "size": "xs", "color": "#666666", "wrap": True, "margin": "sm"})
 
-        contents.append({"type": "text", "text": "ผลกระทบต่อโครงการ", "size": "lg", "weight": "bold", "color": "#000000", "margin": "lg"})
+        contents.append({"type": "text", "text": "ผลกระทบ", "size": "lg", "weight": "bold", "color": "#000000", "margin": "lg"})
 
         if bullets:
             contents.append({"type": "text", "text": f"• {bullets[0]}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"})
@@ -889,7 +862,7 @@ def create_flex(news_items):
 
     return [{
         "type": "flex",
-        "altText": f"ข่าว PTTEP (Domestic) {now_txt}",
+        "altText": f"สรุปข่าวพลังงาน {now_txt}",
         "contents": {"type": "carousel", "contents": bubbles},
     }]
 
@@ -933,10 +906,9 @@ def main():
         return
 
     sent = load_sent_links()
-    per_country_count = {c: 0 for c in PROJECT_COUNTRIES}
-    candidates, global_candidates = [], []
 
-    # ---------- Pre-filter (เบา ๆ) ----------
+    # ---------- Pre-filter (ตัดซ้ำ/ตัดที่ส่งแล้ว + จำกัดแยก domestic/international) ----------
+    domestic, international = [], []
     for n in all_news:
         if deadline and time.time() > deadline:
             print("ถึง deadline ระหว่าง pre-filter (หยุด)")
@@ -945,26 +917,19 @@ def main():
         if _normalize_link(n["link"]) in sent:
             continue
 
-        title, summary = n.get("title",""), n.get("summary","")
-        feed_country = (n.get("feed_country") or "").strip()
-
-        if not passes_topic_gate(title, summary):
-            continue
-
-        if feed_country in PROJECT_COUNTRIES:
-            if MAX_PER_COUNTRY is not None and per_country_count[feed_country] >= MAX_PER_COUNTRY:
-                continue
-            per_country_count[feed_country] += 1
-            candidates.append(n)
+        sec = (n.get("feed_section") or "international").strip().lower()
+        if sec == "domestic":
+            domestic.append(n)
         else:
-            global_candidates.append(n)
+            international.append(n)
 
-    if MAX_GLOBAL_ITEMS is not None:
-        global_candidates = global_candidates[:MAX_GLOBAL_ITEMS]
+    if MAX_ITEMS_DOMESTIC is not None:
+        domestic = domestic[:MAX_ITEMS_DOMESTIC]
+    if MAX_ITEMS_INTERNATIONAL is not None:
+        international = international[:MAX_ITEMS_INTERNATIONAL]
 
-    selected = (candidates + global_candidates)
+    selected = domestic + international
     selected.sort(key=lambda x: x["published"], reverse=True)
-
     selected = dedupe_near_titles(selected, threshold=0.88)
     print("จำนวนข่าวหลังตัดซ้ำใกล้เคียง:", len(selected))
 
@@ -1025,11 +990,6 @@ def main():
         if not isinstance(tag, dict) or not tag.get("is_relevant"):
             continue
 
-        feed_country = (n.get("feed_country") or "").strip()
-        country = (tag.get("country") or "").strip()
-        if country != feed_country:
-            continue
-
         topic_category = (tag.get("topic_category") or "").strip().lower()
         if topic_category == "other":
             continue
@@ -1050,11 +1010,11 @@ def main():
 
         # กันอังกฤษหลุด
         if is_mostly_english(bullets[0]):
-            bullets = rewrite_impact_bullet_one_thai(n, country, bullets)
+            bullets = rewrite_impact_bullet_one_thai(n, bullets)
 
         # ถ้ายัง generic/สั้น -> rewrite ไทย
         if ENABLE_IMPACT_REWRITE and (looks_generic_or_short_one(bullets) or is_mostly_english(bullets[0])):
-            bullets = rewrite_impact_bullet_one_thai(n, country, bullets)
+            bullets = rewrite_impact_bullet_one_thai(n, bullets)
 
         bullets = diversify_bullets(clean_bullets(bullets)[:1])
         if not bullets:
@@ -1069,12 +1029,22 @@ def main():
         if not has_meaningful_impact(bullets):
             continue
 
-        projects = projects_for_country(country)
-        if not projects:
-            projects = ["ALL"]
+        # enrich fields from LLM
+        n["section"] = (tag.get("section") or n.get("feed_section") or "international").strip().lower()
+        n["country"] = (tag.get("country") or ("Thailand" if n["section"] == "domestic" else "Unknown")).strip()
 
-        n["country"] = country
-        n["projects"] = projects[:12]
+        projects = tag.get("projects") or []
+        partners = tag.get("partners") or []
+        if not isinstance(projects, list):
+            projects = [str(projects)]
+        if not isinstance(partners, list):
+            partners = [str(partners)]
+        projects = [str(x).strip() for x in projects if str(x).strip()][:8]
+        partners = [str(x).strip() for x in partners if str(x).strip()][:10]
+
+        n["topic_category"] = topic_category
+        n["projects"] = projects
+        n["partners"] = partners
         n["impact_bullets"] = bullets[:1]
         n["impact_level"] = (tag.get("impact_level") or "unknown")
         n["evidence"] = evidence
@@ -1093,8 +1063,7 @@ def main():
             print("ถึง deadline ระหว่างหา image (หยุด)")
             break
 
-        # ใช้ publisher url ถ้าหาได้, ไม่งั้นใช้ default
-        img = fetch_article_image(n.get("final_url") or n.get("link",""))
+        img = fetch_article_image(n.get("final_url") or n.get("link", ""))
         if _is_good_image_url(img or ""):
             n["image"] = img
         else:
@@ -1102,7 +1071,9 @@ def main():
 
         time.sleep(0.10)
 
-    msgs = create_flex(final[:10])
+    final.sort(key=lambda x: x["published"], reverse=True)
+    send_cap = len(final) if MAX_SEND_ITEMS is None else min(MAX_SEND_ITEMS, len(final))
+    msgs = create_flex(final[:send_cap])
     send_to_line(msgs)
 
     save_sent_links([n.get("final_url") or n.get("link") for n in final])
