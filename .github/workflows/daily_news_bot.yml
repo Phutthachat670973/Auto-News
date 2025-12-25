@@ -39,36 +39,34 @@ jobs:
           # ====== Model ======
           GROQ_MODEL_NAME: llama-3.1-8b-instant
 
-          # ====== Output mode ======
-          OUTPUT_MODE: "both"              # both | project_only | digest_only
-          ADD_SECTION_HEADERS: "true"      # แทรกหัวข้อคั่นก่อนแต่ละชุด
+          # ====== Google News query (แหล่งเดียว) ======
+          GOOGLE_NEWS_QUERY: 'energy OR LNG OR oil OR "electricity tariff" OR nuclear OR sanctions OR geopolitics'
+          GOOGLE_NEWS_HL: "th"
+          GOOGLE_NEWS_GL: "TH"
+          GOOGLE_NEWS_CEID: "TH:th"
 
-          # ====== Anti-429 / Throughput (สำคัญสุด) ======
-          SELECT_LIMIT: "25"               # ลดจำนวนข่าวเข้า LLM (แนะนำ 20-35)
-          LLM_BATCH_SIZE: "25"             # เพิ่ม batch เพื่อลดจำนวนครั้งที่เรียก
-          MAX_RETRIES: "10"                # retry ให้พอรอ rate limit
-          SLEEP_MIN: "6"                   # ยิงช้าลง
+          # ====== Volume ======
+          SELECT_LIMIT: "30"
+          SEND_LIMIT: "10"
+
+          # ====== Anti-429 / 413 ======
+          MAX_RETRIES: "10"
+          SLEEP_MIN: "6"
           SLEEP_MAX: "10"
+          THEME_BATCH_SIZE: "8"
+          SUMMARY_CLIP: "220"
+          MAX_PROMPT_CHARS: "18000"
 
-          # ====== Project mode controls ======
-          PROJECT_SEND_LIMIT: "10"         # จำกัดจำนวนข่าวฝั่งโครงการ
-          MIN_SOURCE_SCORE: "0"            # คัดทิ้งแหล่งคะแนนต่ำ (เช่น 0.6)
-          SHOW_SOURCE_RATING: "true"       # แสดงคะแนนความน่าเชื่อถือใน Flex
-          USE_KEYWORD_GATE: "false"        # true = ต้องติด keyword ก่อนถึงเข้า LLM
-          ENABLE_IMPACT_REWRITE: "true"
-
-          # ====== Digest mode controls ======
-          DIGEST_MAX_PER_SECTION: "8"      # จำกัดจำนวนข่าวต่อหมวดใน digest
-
-          # ====== Misc / Network ======
+          # ====== Misc ======
           USER_AGENT: "Mozilla/5.0 (NewsBot)"
-          DEFAULT_HERO_URL: ""             # ใส่ URL รูป fallback ถ้าต้องการ
+          DEFAULT_HERO_URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
 
           # ====== Tracking ======
           TRACK_DIR: "sent_links"
 
           # ====== Run mode ======
           DRY_RUN: "false"
+
         run: |
           python -u news.py
 
