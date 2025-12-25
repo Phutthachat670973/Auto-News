@@ -1,618 +1,1112 @@
-from __future__ import annotations
+# news.py
+# ============================================================================================================
+# PTTEP News Bot (Groq) — LLM-first selection (no keyword gate) + ไทยล้วน + 1 bullet
+# Fix:
+# - รูปหาย: ป้องกัน final_url หลุดไปเป็น tracking/asset (google-analytics / googleusercontent / gstatic ฯลฯ)
+# - resolve Google News ให้ดึง publisher URL แบบปลอดภัย (prefer canonical/url= และอ่านเฉพาะ href)
+# - ภาษาผลกระทบ: บังคับภาษาไทยเท่านั้น + ถ้าอังกฤษหลุด จะ rewrite ให้เป็นไทย
+# ============================================================================================================
 
 import os
 import re
 import json
 import time
 import random
-from typing import Any, Dict, List, Optional
-from datetime import datetime
-from urllib.parse import quote_plus, urlparse, urlunparse, parse_qsl, urlencode
+from datetime import datetime, timedelta
+from typing import List, Dict, Any
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, quote_plus, unquote
+from difflib import SequenceMatcher
 
-import pytz
-import requests
 import feedparser
+import requests
+from dateutil import parser as dateutil_parser
+import pytz
+from groq import Groq
 
-# =============================================================================
-# ENV / CONFIG
-# =============================================================================
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+# ============================================================================================================
+# ENV
+# ============================================================================================================
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL_NAME", "llama-3.1-8b-instant").strip()
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 
-if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise RuntimeError("Missing LINE_CHANNEL_ACCESS_TOKEN")
 if not GROQ_API_KEY:
-    raise RuntimeError("Missing GROQ_API_KEY")
+    raise RuntimeError("ไม่พบ GROQ_API_KEY")
+if not LINE_CHANNEL_ACCESS_TOKEN:
+    raise RuntimeError("ไม่พบ LINE_CHANNEL_ACCESS_TOKEN")
 
-USER_AGENT = os.getenv("USER_AGENT", "Mozilla/5.0 (NewsBot/1.0)").strip()
-DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() == "true"
+GROQ_MODEL_NAME = os.getenv("GROQ_MODEL_NAME", "llama-3.1-8b-instant").strip() or "llama-3.1-8b-instant"
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-# Google News (source เดียว)
-GOOGLE_NEWS_QUERY = os.getenv(
-    "GOOGLE_NEWS_QUERY",
-    'energy OR LNG OR oil OR "electricity tariff" OR nuclear OR OPEC OR sanctions OR geopolitics'
-).strip()
-GOOGLE_NEWS_HL = os.getenv("GOOGLE_NEWS_HL", "en").strip()
-GOOGLE_NEWS_GL = os.getenv("GOOGLE_NEWS_GL", "US").strip()
-GOOGLE_NEWS_CEID = os.getenv("GOOGLE_NEWS_CEID", "US:en").strip()
+def _as_limit(env_name: str, default: str = "0"):
+    """<=0 => None (unlimited)"""
+    try:
+        v = int(os.getenv(env_name, default))
+        return None if v <= 0 else v
+    except Exception:
+        return None
 
-# จำนวนข่าว
-SELECT_LIMIT = int(os.getenv("SELECT_LIMIT", "25"))     # ดึงจาก RSS
-SEND_LIMIT = int(os.getenv("SEND_LIMIT", "10"))         # LINE carousel สูงสุด 10
-SEND_LIMIT = min(max(SEND_LIMIT, 1), 10)
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "6"))
+LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
 
-# LLM batching / clipping กัน 413
-LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "3"))   # แนะนำ 3
-SUMMARY_CLIP = int(os.getenv("SUMMARY_CLIP", "150"))     # ลดโอกาส prompt ใหญ่
-MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "17000"))
+MAX_PER_COUNTRY = _as_limit("MAX_PER_COUNTRY", "0")
+MAX_GLOBAL_ITEMS = _as_limit("MAX_GLOBAL_ITEMS", "0")
+MAX_LLM_ITEMS = _as_limit("MAX_LLM_ITEMS", "0")
 
-# กัน 429
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "10"))
-SLEEP_MIN = float(os.getenv("SLEEP_MIN", "12"))
-SLEEP_MAX = float(os.getenv("SLEEP_MAX", "18"))
+RUN_DEADLINE_MIN = int(os.getenv("RUN_DEADLINE_MIN", "0"))  # 0 = no deadline
+RSS_TIMEOUT_SEC = int(os.getenv("RSS_TIMEOUT_SEC", "15"))
+ARTICLE_TIMEOUT_SEC = int(os.getenv("ARTICLE_TIMEOUT_SEC", "12"))
 
-# เงื่อนไข (2-stage)
-SCORE_STRICT = int(os.getenv("SCORE_STRICT", "70"))     # Stage A: Theme สูง ส่งได้เลย
-SCORE_RELAXED = int(os.getenv("SCORE_RELAXED", "50"))   # Stage B: Theme ปานกลาง + ต้องมี entity
-REQUIRE_ENTITY_ALWAYS = os.getenv("REQUIRE_ENTITY_ALWAYS", "false").strip().lower() == "true"
+SLEEP_MIN = float(os.getenv("SLEEP_MIN", "0.2" if os.getenv("GITHUB_ACTIONS") else "0.6"))
+SLEEP_MAX = float(os.getenv("SLEEP_MAX", "0.6" if os.getenv("GITHUB_ACTIONS") else "1.2"))
+SLEEP_BETWEEN_CALLS = (max(0.0, SLEEP_MIN), max(SLEEP_MIN, SLEEP_MAX))
 
-# seed + lists
-SEED_NEWS_FILE = os.getenv("SEED_NEWS_FILE", "seed_news.txt").strip()
-PROJECT_LIST_FILE = os.getenv("PROJECT_LIST_FILE", "project_list.txt").strip()
-PARTNER_LIST_FILE = os.getenv("PARTNER_LIST_FILE", "partner_list.txt").strip()
+ENABLE_IMPACT_REWRITE = os.getenv("ENABLE_IMPACT_REWRITE", "true").strip().lower() in ["1", "true", "yes", "y"]
+DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ["1", "true", "yes", "y"]
 
-# tracking
-TRACK_DIR = os.getenv("TRACK_DIR", "sent_links").strip()
+SHOW_SOURCE_RATING = os.getenv("SHOW_SOURCE_RATING", "true").strip().lower() in ["1", "true", "yes", "y"]
+MIN_SOURCE_SCORE = int(os.getenv("MIN_SOURCE_SCORE", "0"))
 
-# Flex
-DEFAULT_HERO_URL = os.getenv("DEFAULT_HERO_URL", "").strip() or "https://i.imgur.com/4M34hi2.png"
-LINE_BROADCAST = "https://api.line.me/v2/bot/message/broadcast"
+USE_KEYWORD_GATE = os.getenv("USE_KEYWORD_GATE", "false").strip().lower() in ["1", "true", "yes", "y"]
+MAX_ENTRIES_PER_FEED = int(os.getenv("MAX_ENTRIES_PER_FEED", "80"))
+
+# fallback hero ที่ “ควรขึ้นแน่ๆ”
+DEFAULT_HERO_URL = os.getenv(
+    "DEFAULT_HERO_URL",
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
+)
+DEFAULT_ICON_URL = os.getenv("DEFAULT_ICON_URL", DEFAULT_HERO_URL)
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
-
 S = requests.Session()
-S.headers.update({"User-Agent": USER_AGENT})
+S.headers.update({"User-Agent": "Mozilla/5.0"})
 
+GROQ_CALLS = 0
 
-# =============================================================================
-# UTIL
-# =============================================================================
-def _sleep_jitter():
-    time.sleep(random.uniform(SLEEP_MIN, SLEEP_MAX))
+# ============================================================================================================
+# COUNTRIES / PROJECTS
+# ============================================================================================================
 
-def clean_ws(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip())
+COUNTRY_QUERY = {
+    "Thailand": "Thailand OR ไทย OR ประเทศไทย OR Bangkok",
+    "Myanmar": "Myanmar OR Burma OR เมียนมา OR พม่า",
+    "Vietnam": "Vietnam OR เวียดนาม",
+    "Malaysia": "Malaysia OR มาเลเซีย",
+    "Indonesia": "Indonesia OR อินโดนีเซีย",
+    "UAE": "UAE OR \"United Arab Emirates\" OR Abu Dhabi OR Dubai OR สหรัฐอาหรับเอมิเรตส์",
+    "Oman": "Oman OR โอมาน",
+    "Algeria": "Algeria OR แอลจีเรีย",
+    "Mozambique": "Mozambique OR โมซัมบิก OR Rovuma",
+    "Australia": "Australia OR ออสเตรเลีย",
+    "Brazil": "Brazil OR บราซิล",
+    "Mexico": "Mexico OR เม็กซิโก",
+}
+PROJECT_COUNTRIES = sorted(list(COUNTRY_QUERY.keys()))
 
-def clip(s: str, n: int) -> str:
-    s = clean_ws(s)
-    return s if len(s) <= n else s[:n] + "…"
+# NOTE: ปรับรายการโครงการให้ตรงกับของคุณได้เลย
+PROJECTS_BY_COUNTRY = {
+    "Thailand": ["G1/61 (Erawan)", "G2/61 (Bongkot)", "Arthit", "S1", "Contract 4", "B8/32", "9A", "Sinphuhorm", "MTJDA A-18"],
+    "Myanmar": ["Zawtika", "Yadana", "Yetagun"],
+    "Vietnam": ["Block B & 48/95", "Block 52/97", "16-1 (Te Giac Trang)"],
+    "Malaysia": ["SK309", "SK311", "SK410B", "MTJDA A-18"],
+    "Indonesia": ["South Sageri", "South Mandar", "Malunda"],
+    "UAE": ["Ghasha Concession", "Abu Dhabi Offshore"],
+    "Oman": ["Block 12"],
+    "Algeria": ["Bir Seba", "Hassi Bir Rekaiz (HBR)", "Touat"],
+    "Mozambique": ["Area 1 (Rovuma LNG)"],
+    "Australia": ["Montara", "Timor Sea assets"],
+    "Brazil": ["BM-ES-23", "BM-ES-24"],
+    "Mexico": ["Mexico Block 12"],
+}
 
-def ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
+def projects_for_country(country: str) -> List[str]:
+    return PROJECTS_BY_COUNTRY.get(country, [])
 
-def normalize_url(url: str) -> str:
+# ============================================================================================================
+# RSS
+# ============================================================================================================
+
+def google_news_rss(q: str, hl="en", gl="US", ceid="US:en"):
+    return f"https://news.google.com/rss/search?q={quote_plus(q)}&hl={hl}&gl={gl}&ceid={ceid}"
+
+LEGACY_FEEDS = [
+    ("Oilprice", "GLOBAL", "https://oilprice.com/rss/main"),
+    ("Economist", "GLOBAL", "https://www.economist.com/latest/rss.xml"),
+    ("YahooFinance", "GLOBAL", "https://finance.yahoo.com/news/rssindex"),
+]
+
+NEWS_FEEDS = []
+for c in PROJECT_COUNTRIES:
+    NEWS_FEEDS.append(("GoogleNews", c, google_news_rss(COUNTRY_QUERY[c])))
+NEWS_FEEDS.extend(LEGACY_FEEDS)
+
+# ============================================================================================================
+# Optional keyword gate (DEFAULT OFF) + always-block non-projecty
+# ============================================================================================================
+
+TOPIC_KEYWORDS = [
+    "oil","gas","lng","crude","petroleum","upstream","offshore","rig","drilling","pipeline",
+    "refinery","psc","concession","opec","energy","power","electricity",
+    "น้ำมัน","ก๊าซ","ปิโตรเลียม","สำรวจ","ผลิต","แท่นขุด","ท่อส่ง","สัมปทาน","psc",
+    "policy","regulation","regulatory","license","permit","tax","royalty","sanction",
+    "รัฐบาล","นโยบาย","กฎระเบียบ","ใบอนุญาต","ภาษี","ค่าภาคหลวง","คว่ำบาตร",
+    "election","coup","junta","border","conflict","clashes","attack",
+    "เลือกตั้ง","รัฐประหาร","ชายแดน","ความขัดแย้ง","ปะทะ","โจมตี",
+    "port","shipping","customs","logistics","strike","blockade",
+    "ท่าเรือ","ขนส่ง","ศุลกากร","โลจิสติกส์","นัดหยุดงาน","ปิดล้อม",
+    "fx","currency","capital control","downgrade","rate hike","inflation","central bank",
+    "ค่าเงิน","อัตราแลกเปลี่ยน","ควบคุมเงินทุน","ลดอันดับเครดิต","ขึ้นดอกเบี้ย","เงินเฟ้อ","ธนาคารกลาง",
+    "flood","storm","typhoon","earthquake","landslide","drought","insurance",
+    "น้ำท่วม","พายุ","ไต้ฝุ่น","แผ่นดินไหว","ดินถล่ม","ภัยแล้ง","ประกัน",
+]
+
+NON_PROJECTY_KEYWORDS = [
+    "celebrity","fashion","sports","festival","gossip","pet","pets","dog","cat","award","prize",
+    "ดารา","บันเทิง","กีฬา","แฟชั่น","เทศกาล","ซุบซิบ","สัตว์เลี้ยง","หมา","แมว","รางวัล",
+]
+
+def passes_topic_gate(title: str, summary: str) -> bool:
+    t = f"{title or ''} {summary or ''}".lower()
+    if any(k in t for k in NON_PROJECTY_KEYWORDS):
+        return False
+    if not USE_KEYWORD_GATE:
+        return True
+    return any(k in t for k in TOPIC_KEYWORDS)
+
+# ============================================================================================================
+# URL normalize + sent_links
+# ============================================================================================================
+
+def _normalize_link(url: str) -> str:
     try:
-        u = (url or "").strip()
-        if not u:
-            return u
-        p = urlparse(u)
-        q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
-             if k.lower() not in ("utm_source","utm_medium","utm_campaign","utm_term","utm_content",
-                                  "fbclid","gclid","mc_cid","mc_eid")]
-        return urlunparse(p._replace(query=urlencode(q), fragment=""))
+        p = urlparse(url)
+        scheme = (p.scheme or "https").lower()
+        netloc = (p.netloc or "").lower()
+        path = p.path or ""
+        q = dict(parse_qsl(p.query, keep_blank_values=True))
+        for k in list(q.keys()):
+            lk = k.lower()
+            if lk.startswith("utm_") or lk in ["fbclid","gclid","mc_cid","mc_eid"]:
+                q.pop(k, None)
+        query = urlencode(sorted(q.items()))
+        return urlunparse((scheme, netloc, path, "", query, ""))
     except Exception:
-        return (url or "").strip()
+        return url or ""
 
-def read_text_file(path: str) -> str:
-    if not os.path.exists(path):
-        return ""
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read().strip()
+def get_sent_links_file():
+    d = datetime.now(bangkok_tz).strftime("%Y-%m-%d")
+    os.makedirs("sent_links", exist_ok=True)
+    return os.path.join("sent_links", f"sent_links_{d}.txt")
 
-def load_list_file(path: str) -> List[str]:
-    if not os.path.exists(path):
-        return []
-    out: List[str] = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            t = line.strip()
-            if t and not t.startswith("#"):
-                out.append(t)
-    seen = set()
-    uniq = []
-    for x in out:
-        k = x.lower()
-        if k not in seen:
-            seen.add(k)
-            uniq.append(x)
-    return uniq
-
-def load_sent_links() -> set:
-    ensure_dir(TRACK_DIR)
-    fp = os.path.join(TRACK_DIR, "sent_links.txt")
+def load_sent_links():
+    fp = get_sent_links_file()
     if not os.path.exists(fp):
         return set()
-    try:
-        with open(fp, "r", encoding="utf-8") as f:
-            return set([x.strip() for x in f if x.strip()])
-    except Exception:
-        return set()
+    with open(fp, "r", encoding="utf-8") as f:
+        return set(x.strip() for x in f if x.strip())
 
-def save_sent_links(links: List[str]) -> None:
-    ensure_dir(TRACK_DIR)
-    fp = os.path.join(TRACK_DIR, "sent_links.txt")
-    old = load_sent_links()
-    new = old.union(set([normalize_url(x) for x in links if x]))
+def save_sent_links(links):
+    fp = get_sent_links_file()
+    existing = load_sent_links()
+    existing.update(_normalize_link(x) for x in links if x)
     with open(fp, "w", encoding="utf-8") as f:
-        for x in sorted(new):
+        for x in sorted(existing):
             f.write(x + "\n")
 
+# ============================================================================================================
+# Resolve Google News -> publisher (กัน tracking/asset)
+# ============================================================================================================
 
-# =============================================================================
-# JSON PARSER (สำคัญมาก: แก้ score 0 / impact ว่าง)
-# =============================================================================
-def parse_json_robust(s: str) -> Optional[Any]:
-    if not s:
-        return None
-    t = s.strip()
-
-    # ตัด code fence
-    t = re.sub(r"^```(?:json)?", "", t).strip()
-    t = re.sub(r"```$", "", t).strip()
-
-    # 1) parse ตรง ๆ
+def _get_domain(u: str) -> str:
     try:
-        return json.loads(t)
+        p = urlparse(u)
+        host = (p.netloc or "").lower().split(":")[0]
+        if host.startswith("www."):
+            host = host[4:]
+        return host
     except Exception:
-        pass
+        return ""
 
-    # 2) ดึง JSON array ก้อนแรก
-    m = re.search(r"\[[\s\S]*\]", t)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except Exception:
-            pass
+IMAGE_EXTS = (".jpg",".jpeg",".png",".gif",".webp",".svg",".ico")
 
-    # 3) ดึง JSON object ก้อนแรก
-    m = re.search(r"\{[\s\S]*\}", t)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except Exception:
-            pass
-
-    return None
-
-
-# =============================================================================
-# PROJECT / PARTNER
-# =============================================================================
-PROJECT_NAMES = load_list_file(PROJECT_LIST_FILE)
-PARTNER_NAMES = load_list_file(PARTNER_LIST_FILE)
-
-PARTNER_ALIASES = {
-    "exxon": "ExxonMobil",
-    "total": "TotalEnergies",
-    "adnoc gas": "ADNOC",
-    "petronas carigali": "Petronas",
-    "oxy": "Occidental",
-    "mubadala energy": "Mubadala Energy",
-    "harbour": "Harbour Energy",
-    "shell plc": "Shell",
-    "bp plc": "bp",
+DISALLOWED_HOSTS = {
+    "lh3.googleusercontent.com",
+    "googleusercontent.com",
+    "gstatic.com",
+    "accounts.google.com",
+    "support.google.com",
 }
 
-def find_hits(text: str, names: List[str], aliases: Optional[Dict[str, str]] = None) -> List[str]:
-    t = (text or "").lower()
-    hits = set()
-    for n in names:
-        if n.lower() in t:
-            hits.add(n)
-    if aliases:
-        for k, v in aliases.items():
-            if k in t:
-                hits.add(v)
-    return sorted(hits, key=lambda x: x.lower())
+TRACKER_HOSTS = {
+    "google-analytics.com",
+    "www.google-analytics.com",
+    "googletagmanager.com",
+    "doubleclick.net",
+    "stats.g.doubleclick.net",
+    "t.co",
+}
 
+def _is_good_publisher_url(u: str) -> bool:
+    if not u or not u.startswith(("http://","https://")):
+        return False
+    host = _get_domain(u)
+    if not host:
+        return False
+    if host in DISALLOWED_HOSTS or any(host.endswith(x) for x in DISALLOWED_HOSTS):
+        return False
+    if host in TRACKER_HOSTS or any(host.endswith(x) for x in TRACKER_HOSTS):
+        return False
+    path = (urlparse(u).path or "").lower()
+    if any(path.endswith(ext) for ext in IMAGE_EXTS):
+        return False
+    return True
 
-# =============================================================================
-# GROQ LLM
-# =============================================================================
-def groq_chat(prompt: str, temperature: float = 0.25) -> str:
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [
-            {"role": "system", "content": "คุณคือผู้ช่วยคัดกรองข่าวพลังงานอย่างแม่นยำ ห้ามเดานอกข้อมูลที่ให้"},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": temperature,
+def resolve_final_url(url: str) -> str:
+    """
+    เป้าหมาย: ได้ publisher URL จริง
+    - ห้ามหลุดเป็น tracking/asset (google-analytics / googleusercontent / gstatic)
+    - ถ้าแกะไม่ได้จริงๆ ให้คืน url เดิม (ไม่สุ่มหยิบ url จาก html)
+    """
+    if not url:
+        return url
+
+    try:
+        r = S.get(url, timeout=min(ARTICLE_TIMEOUT_SEC, 10), allow_redirects=True)
+        final = r.url or url
+        host = _get_domain(final)
+
+        # ถ้า redirect ไป tracking/asset -> ทิ้ง กลับไปใช้ต้นทาง
+        if host in TRACKER_HOSTS or any(host.endswith(x) for x in TRACKER_HOSTS):
+            try: r.close()
+            except: pass
+            return url
+
+        # กรณีเป็น Google News
+        if host == "news.google.com":
+            html = r.text or ""
+
+            # 1) canonical
+            m = re.search(r'rel=["\']canonical["\']\s+href=["\']([^"\']+)["\']', html, re.I)
+            if m:
+                cand = m.group(1).strip()
+                if _is_good_publisher_url(cand):
+                    try: r.close()
+                    except: pass
+                    return cand
+
+            # 2) url=encoded publisher
+            m = re.search(r"(?:\?|&|amp;)url=(https?%3A%2F%2F[^&\"']+)", html, re.I)
+            if m:
+                cand = unquote(m.group(1))
+                if _is_good_publisher_url(cand):
+                    try: r.close()
+                    except: pass
+                    return cand
+
+            # 3) อ่านเฉพาะ href (กันหยิบ src/pixel/tracker)
+            hrefs = re.findall(r'href=["\'](https?://[^"\']+)["\']', html, flags=re.I)
+            for cand in hrefs[:200]:
+                cand = cand.strip()
+                if _is_good_publisher_url(cand):
+                    try: r.close()
+                    except: pass
+                    return cand
+
+            # แกะไม่ได้จริงๆ -> ให้คืนเป็น news.google.com (อย่างน้อยไม่หลุดไป tracking)
+            try: r.close()
+            except: pass
+            return final
+
+        try: r.close()
+        except: pass
+        return final
+
+    except Exception:
+        return url
+
+# ============================================================================================================
+# Credibility scoring
+# ============================================================================================================
+
+def _is_https(u: str) -> bool:
+    try:
+        return (urlparse(u).scheme or "").lower() == "https"
+    except Exception:
+        return False
+
+HIGH_TRUST_DOMAINS = {
+    "reuters.com","bloomberg.com","wsj.com","ft.com","economist.com",
+    "apnews.com","bbc.co.uk","bbc.com","nytimes.com","washingtonpost.com",
+    "theguardian.com","aljazeera.com","nhk.or.jp","nikkei.com",
+    "spglobal.com","iea.org","opec.org","worldbank.org","imf.org","who.int","un.org",
+}
+
+ENERGY_TRADE_DOMAINS = {
+    "oilprice.com", "rigzone.com", "argusmedia.com", "energyintel.com",
+}
+
+LOW_TRUST_HINTS = ["click","viral","rumor","shocking","unbelievable","exposed","หวย","ทำนาย","ดวง","แจก","เครดิตฟรี"]
+
+def assess_source_credibility(original_url: str, final_url: str, title: str) -> Dict[str, Any]:
+    score = 0
+    signals = []
+    fu = final_url or original_url
+    domain = _get_domain(fu)
+
+    # ถ้าเป็น tracker ให้กดต่ำทันที
+    if domain in TRACKER_HOSTS or any(domain.endswith(x) for x in TRACKER_HOSTS):
+        return {
+            "domain": domain,
+            "final_url": original_url,  # fallback
+            "score": 0,
+            "rating": "low",
+            "rating_th": "ต่ำ",
+            "signals": ["tracker-url"],
+        }
+
+    if _is_https(fu):
+        score += 1
+        signals.append("https")
+
+    if domain.endswith(".gov") or domain.endswith(".edu"):
+        score += 2
+        signals.append("gov/edu")
+
+    def _is_high_trust(d: str) -> bool:
+        if d in HIGH_TRUST_DOMAINS:
+            return True
+        return any(d.endswith(hd) for hd in HIGH_TRUST_DOMAINS)
+
+    if domain and _is_high_trust(domain):
+        score += 3
+        signals.append("major-domain")
+
+    if domain and (domain in ENERGY_TRADE_DOMAINS or any(domain.endswith(x) for x in ENERGY_TRADE_DOMAINS)):
+        score += 2
+        signals.append("energy-trade-press")
+
+    if domain == "news.google.com":
+        score += 2
+        signals.append("google-news-aggregator")
+
+    t = (title or "").lower()
+    if any(h in t for h in LOW_TRUST_HINTS):
+        score -= 2
+        signals.append("clickbait-terms-in-title")
+
+    if domain.count("-") >= 3:
+        score -= 1
+        signals.append("many-hyphens-domain")
+
+    if score >= 5:
+        rating, rating_th = "high", "สูง"
+    elif score >= 3:
+        rating, rating_th = "medium", "กลาง"
+    else:
+        rating, rating_th = "low", "ต่ำ"
+
+    return {
+        "domain": domain,
+        "final_url": fu,
+        "score": score,
+        "rating": rating,
+        "rating_th": rating_th,
+        "signals": signals,
     }
 
-    backoff = 2.0
-    for attempt in range(MAX_RETRIES):
-        r = S.post(GROQ_URL, headers=headers, json=payload, timeout=60)
+# ============================================================================================================
+# Feed parsing + image fetch
+# ============================================================================================================
 
-        if r.status_code == 429:
-            ra = r.headers.get("retry-after")
-            try:
-                wait = float(ra) if ra else backoff
-            except Exception:
-                wait = backoff
-            print(f"[429] rate limited -> sleep {wait:.1f}s (attempt {attempt+1}/{MAX_RETRIES})")
-            time.sleep(wait)
-            backoff = min(backoff * 1.8, 35.0)
+def parse_feed_with_timeout(url: str):
+    r = S.get(url, timeout=RSS_TIMEOUT_SEC, allow_redirects=True)
+    r.raise_for_status()
+    return feedparser.parse(r.text)
+
+def _is_good_image_url(u: str) -> bool:
+    if not u or not isinstance(u, str):
+        return False
+    if not u.startswith("https://"):
+        return False
+    host = _get_domain(u)
+    if host in DISALLOWED_HOSTS or any(host.endswith(x) for x in DISALLOWED_HOSTS):
+        return False
+    if host in TRACKER_HOSTS or any(host.endswith(x) for x in TRACKER_HOSTS):
+        return False
+    # LINE ส่วนใหญ่รับได้แม้ไม่มีนามสกุล แต่กันโคตรแปลกๆไว้
+    if len(u) > 1200:
+        return False
+    return True
+
+def fetch_article_image(url: str):
+    """Parse og:image/twitter:image from publisher page (ถ้าเป็น Google News/ไม่ใช่ publisher ก็จะไม่ค่อยได้)"""
+    try:
+        if not url or not url.startswith(("http://","https://")):
+            return None
+        # ถ้า url เป็น google news มักไม่ให้ og:image ที่ usable -> ไม่ฝืน
+        if _get_domain(url) == "news.google.com":
+            return None
+
+        r = S.get(url, timeout=ARTICLE_TIMEOUT_SEC, allow_redirects=True)
+        if r.status_code >= 300:
+            return None
+        html = r.text or ""
+
+        m = re.search(r'property=["\']og:image["\']\s+content=["\']([^"\']+)["\']', html, re.I)
+        if m:
+            u = m.group(1).strip()
+            if _is_good_image_url(u):
+                return u
+
+        m = re.search(r'name=["\']twitter:image["\']\s+content=["\']([^"\']+)["\']', html, re.I)
+        if m:
+            u = m.group(1).strip()
+            if _is_good_image_url(u):
+                return u
+
+        return None
+    except Exception:
+        return None
+
+# ============================================================================================================
+# Dedupe near-duplicate titles
+# ============================================================================================================
+
+def normalize_title(t: str) -> str:
+    t = (t or "").lower()
+    t = re.sub(r"[\W_]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+def dedupe_near_titles(items: list, threshold: float = 0.88) -> list:
+    kept = []
+    seen_titles = []
+    for n in items:
+        nt = normalize_title(n.get("title", ""))
+        if not nt:
             continue
+        dup = False
+        for st in seen_titles:
+            if SequenceMatcher(None, nt, st).ratio() >= threshold:
+                dup = True
+                break
+        if not dup:
+            kept.append(n)
+            seen_titles.append(nt)
+    return kept
 
-        if r.status_code == 413:
-            raise requests.HTTPError("413 Payload Too Large", response=r)
+# ============================================================================================================
+# JSON extractor + bullet helpers
+# ============================================================================================================
 
-        if r.status_code >= 500:
-            print(f"[{r.status_code}] server error -> sleep {backoff:.1f}s")
-            time.sleep(backoff)
-            backoff = min(backoff * 1.8, 35.0)
+def _extract_json_object(raw: str):
+    if not raw:
+        return None
+    s = raw.strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```(json)?", "", s, flags=re.I).strip()
+        s = re.sub(r"```$", "", s).strip()
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    first = s.find("{")
+    last = s.rfind("}")
+    if first != -1 and last != -1 and last > first:
+        candidate = s[first:last + 1]
+        candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+        try:
+            return json.loads(candidate)
+        except Exception:
+            return None
+    return None
+
+def clean_bullets(bullets):
+    if not isinstance(bullets, list):
+        bullets = [str(bullets)]
+    out = []
+    for b in bullets:
+        s = str(b).strip()
+        if not s or s == "•":
             continue
-
-        r.raise_for_status()
-        return (r.json()["choices"][0]["message"]["content"] or "").strip()
-
-    raise RuntimeError("Groq failed after retries")
-
-
-# =============================================================================
-# GOOGLE NEWS RSS
-# =============================================================================
-def google_news_rss(query: str) -> str:
-    q = quote_plus(query)
-    return f"https://news.google.com/rss/search?q={q}&hl={GOOGLE_NEWS_HL}&gl={GOOGLE_NEWS_GL}&ceid={GOOGLE_NEWS_CEID}"
-
-def fetch_google_news(limit: int) -> List[Dict[str, Any]]:
-    url = google_news_rss(GOOGLE_NEWS_QUERY)
-    d = feedparser.parse(url)
-    out: List[Dict[str, Any]] = []
-    for e in d.entries[:max(1, limit)]:
-        out.append({
-            "title": clip(e.get("title", ""), 240),
-            "summary": clip(e.get("summary", "") or e.get("description", ""), 900),
-            "link": normalize_url(e.get("link", "")),
-            "source": "GoogleNews"
-        })
+        out.append(s)
     return out
 
+def diversify_bullets(bullets):
+    if not bullets:
+        return bullets
+    seen = set()
+    out = []
+    for b in bullets:
+        k = re.sub(r"\s+", " ", (b or "").strip().lower())
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append((b or "").strip())
+    return out
 
-# =============================================================================
-# PROMPTS
-# =============================================================================
-THEME_PROMPT = """
-คุณจะได้รับ “ข่าวตัวอย่าง” เพื่อกำหนดแนวทางคัดข่าว
-ให้สรุปเป็น Theme/Scope แบบใช้คัดข่าวได้จริง และต้องครอบคลุมข่าวพลังงานสากล
+def has_meaningful_impact(bullets) -> bool:
+    if not bullets or not isinstance(bullets, list):
+        return False
+    bullets = [str(x).strip() for x in bullets if str(x).strip()]
+    if len(bullets) < 1:
+        return False
+    txt = " ".join(bullets)
+    bad = ["ยังไม่พบผลกระทบ","ไม่พบผลกระทบ","ไม่ระบุผลกระทบ","ไม่เกี่ยวข้อง","ข้อมูลไม่เพียงพอ"]
+    t = txt.lower().replace(" ", "")
+    if any(x.replace(" ", "") in t for x in bad):
+        return False
+    return len(txt.strip()) >= 70
+
+def validate_evidence_in_text(title: str, summary: str, evidence_list: list) -> bool:
+    text = f"{title or ''} {summary or ''}".lower()
+    if not evidence_list:
+        return False
+    ok = 0
+    for ev in evidence_list[:2]:
+        ev = str(ev).strip().lower()
+        if len(ev) >= 4 and ev in text:
+            ok += 1
+    return ok >= 1
+
+CROSS_TOPIC_GUARD_TERMS = ["cambodia","กัมพูชา","casino","คาสิโน","bridge","สะพาน"]
+def guard_cross_topic(title: str, summary: str, bullets: list[str]) -> bool:
+    text = f"{title or ''} {summary or ''}".lower()
+    for b in bullets[:1]:
+        bl = (b or "").lower()
+        for term in CROSS_TOPIC_GUARD_TERMS:
+            if term in bl and term not in text:
+                return False
+    return True
+
+def english_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    letters = sum(1 for c in text if c.isalpha())
+    ascii_letters = sum(1 for c in text if ('A' <= c <= 'Z') or ('a' <= c <= 'z'))
+    return (ascii_letters / max(1, letters))
+
+def is_mostly_english(text: str) -> bool:
+    # ถ้าเป็นอังกฤษเยอะ -> ถือว่าไม่ผ่าน
+    return english_ratio(text) >= 0.55
+
+# ============================================================================================================
+# GROQ calls + rewrite bullet (Thai only)
+# ============================================================================================================
+
+def _is_429(e: Exception) -> bool:
+    s = str(e).lower()
+    return ("429" in s) or ("too many requests" in s) or ("rate limit" in s)
+
+def call_groq(prompt: str, temperature: float = 0.35) -> str:
+    global GROQ_CALLS
+    time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
+    resp = groq_client.chat.completions.create(
+        model=GROQ_MODEL_NAME,
+        messages=[
+            {"role": "system", "content": "ตอบเป็น JSON เท่านั้น ห้ามมี markdown ห้ามมีข้อความอื่น"},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=float(temperature),
+    )
+    GROQ_CALLS += 1
+    return (resp.choices[0].message.content or "").strip()
+
+def call_groq_with_retries(prompt: str, temperature: float = 0.35) -> str:
+    last = None
+    for i in range(1, MAX_RETRIES + 1):
+        try:
+            return call_groq(prompt, temperature=temperature)
+        except Exception as e:
+            last = e
+            if _is_429(e) and i < MAX_RETRIES:
+                sleep_s = min(25.0, (1.8 ** i) + random.uniform(0.5, 1.5))
+                print(f"[Groq] 429 -> retry {i}/{MAX_RETRIES} in {sleep_s:.1f}s")
+                time.sleep(sleep_s)
+                continue
+            if i < MAX_RETRIES:
+                sleep_s = min(12.0, (1.5 ** i) + random.uniform(0.3, 1.0))
+                print(f"[Groq] error -> retry {i}/{MAX_RETRIES} in {sleep_s:.1f}s: {type(e).__name__}: {e}")
+                time.sleep(sleep_s)
+                continue
+            raise
+    raise last
+
+GENERIC_PATTERNS = ["อาจกระทบต้นทุน", "อาจกระทบกฎระเบียบ", "อาจกระทบตารางงาน", "อาจส่งผลกระทบ", "อาจกระทบต่อโครงการ"]
+SPECIFIC_HINTS = ["ใบอนุญาต","ภาษี","psc","สัมปทาน","ประกัน","ผู้รับเหมา","แรงงาน","ท่าเรือ","ขนส่ง","ศุลกากร","ค่าเงิน","คว่ำบาตร","นัดหยุดงาน","ความไม่สงบ","ความปลอดภัย"]
+def looks_generic_or_short_one(bullets) -> bool:
+    if not bullets or not isinstance(bullets, list):
+        return True
+    bullets = [str(x).strip() for x in bullets if str(x).strip()]
+    joined = " ".join(bullets).lower()
+    generic_hit = any(p.replace(" ", "") in joined.replace(" ", "") for p in GENERIC_PATTERNS)
+    specific_hit = any(k.lower() in joined for k in SPECIFIC_HINTS)
+    too_short = len(joined) < 70
+    return (generic_hit and not specific_hit) or too_short
+
+def rewrite_impact_bullet_one_thai(news, country, bullets):
+    prompt = f"""
+คุณคือ Analyst ของ PTTEP
+ช่วยเขียน "ผลกระทบต่อโครงการ" ให้เหลือ 1 bullet เท่านั้น (1–2 ประโยค) โดยต้องเฉพาะเจาะจงและโยงกับข่าวจริง
 
 ข้อกำหนด:
-- ตอบเป็น bullet 7–10 ข้อ (ขึ้นต้นด้วย "• ")
-- ต้องมีอย่างน้อย 1 bullet ที่มีคำเหล่านี้ (อย่างน้อย 3 คำ): oil, crude, Brent, WTI, OPEC, sanctions, refinery
-- ต้องมีอย่างน้อย 1 bullet ที่มีคำ: LNG, natural gas, gas
-- ห้ามผูกประเทศใดประเทศหนึ่ง (ใช้ได้กับทุกประเทศ)
-- ห้ามเล่าเป็นข่าวรายชิ้น ให้สรุปเป็น “เกณฑ์/แนวทางคัด”
+- เขียนเป็นภาษาไทยเท่านั้น ห้ามใช้ภาษาอังกฤษ
+- ต้องอธิบายเส้นทางผลกระทบ: ประเด็นข่าว -> กลไก -> กระทบโครงการยังไง
+- ต้องมีคำ/วลีจาก title/summary อย่างน้อย 1 จุด (ห้ามเดา)
+- ห้ามปนบริบท: ห้ามพูดถึงประเทศ/เหตุการณ์/คำสำคัญที่ไม่อยู่ในหัวข้อ/สรุป
+- ความยาวประมาณ 25–45 คำ
 
-ข่าวตัวอย่าง:
-<<<SEED>>>
+ประเทศ: {country}
+หัวข้อ: {news.get("title","")}
+สรุป: {news.get("summary","")}
 
-Theme/Scope:
+bullet เดิม:
+{json.dumps(bullets, ensure_ascii=False)}
+
+ตอบเป็น JSON เท่านั้น:
+{{"impact_bullets": ["..."]}}
 """
+    text = call_groq_with_retries(prompt, temperature=0.55)
+    data = _extract_json_object(text)
+    if isinstance(data, dict) and isinstance(data.get("impact_bullets"), list):
+        out = diversify_bullets(clean_bullets(data["impact_bullets"])[:1])
+        return out
+    return diversify_bullets(clean_bullets(bullets))[:1]
 
-SCORE_PROMPT = """
-ฉันมี Theme/Scope และมีรายการข่าวจาก Google News
-ให้คุณให้คะแนนว่าแต่ละข่าว “เข้ากับ Theme/Scope แค่ไหน”
+# ============================================================================================================
+# LLM selection (Thai-only) — strict reject non-project news
+# ============================================================================================================
 
-ผลลัพธ์ต้องเป็น JSON array เท่านั้น แต่ละรายการ:
-{
-  "idx": <ลำดับข่าวเริ่ม 1>,
-  "score": 0-100,
-  "country": "<ประเทศหลักที่ข่าวกล่าวถึง หรือ '-' ถ้าไม่ชัด>",
-  "category": "Energy|Politics|Finance|SupplyChain|Other",
-  "impact": "• ...",
-  "url": "<link>"
-}
+def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    for i in range(0, len(news_list), chunk_size):
+        chunk = news_list[i:i + chunk_size]
+        payload = []
+        for idx, n in enumerate(chunk):
+            payload.append({
+                "id": idx,
+                "feed_country": (n.get("feed_country") or "").strip(),
+                "title": n.get("title", ""),
+                "summary": n.get("summary", ""),
+            })
 
-impact (รูปแบบมาตรฐาน):
-- bullet เดียวขึ้นต้น "• "
-- 3 ประโยค:
-  1) เหตุการณ์/มาตรการจากข่าว (ยึด title/summary)
-  2) ผลต่อ ต้นทุนพลังงาน/ความเสี่ยง/ทิศทางนโยบาย/ความเชื่อมั่น (ห้ามเดา)
-  3) สิ่งที่ควรติดตามต่อ (price/policy/regulation/timeline)
+        prompt = f"""
+คุณเป็นผู้ช่วยคัดกรองข่าวเพื่อประเมิน “ผลกระทบต่อโครงการ PTTEP ในประเทศนั้นๆ”
+(ให้คัดโดย LLM เป็นหลัก ไม่พึ่ง keyword)
 
-Theme/Scope:
-<<<THEME>>>
+คำตอบทั้งหมดต้องเป็นภาษาไทยเท่านั้น ห้ามมีภาษาอังกฤษ
 
-News Items (JSON):
-<<<ITEMS>>>
+ให้ถือว่า “เกี่ยวข้องกับโครงการ” ก็ต่อเมื่อเข้าเงื่อนไขอย่างใดอย่างหนึ่ง:
+A) พลังงาน/สำรวจผลิต/E&P/Upstream/PSC/สัมปทาน/กฎระเบียบพลังงาน หรือโครงสร้างพื้นฐานพลังงาน (ท่อ/ท่าเรือ/ไฟฟ้า)
+B) การเมือง/ความมั่นคง ที่กระทบความปลอดภัย/การเข้าถึงไซต์/การทำงานของรัฐ/ใบอนุญาต
+C) การเงินมหภาคระดับประเทศที่กระทบภาคพลังงาน (ค่าเงิน, ควบคุมเงินทุน, คว่ำบาตร, เครดิตประเทศ, ภาษี/กฎลงทุนที่กระทบพลังงาน)
+D) ภัยพิบัติที่กระทบโครงสร้างพื้นฐาน/โลจิสติกส์/ความปลอดภัยพื้นที่ปฏิบัติการ
+E) คู่สัญญา/ผู้รับเหมา/ประกัน/โลจิสติกส์ ที่กระทบสัญญา/การจัดหา/การขนส่ง
+
+ให้ “ไม่เกี่ยวข้อง” ทันที ถ้าเป็น:
+- lifestyle/consumer (เช่น สัตว์เลี้ยง, รางวัล, กีฬา, บันเทิง, gossip)
+- ข่าวเฉพาะบุคคล/ครอบครัวที่ไม่ใช่ระดับประเทศ/ภาคพลังงาน
+- award/prize ที่ไม่โยงกับกฎระเบียบ/การอนุมัติ/การลงทุนพลังงาน
+
+กติกาเข้ม:
+1) evidence ต้องเป็นวลีที่คัดมาจาก title/summary ของข่าวนั้นเท่านั้น (ห้ามแต่งเพิ่ม)
+2) impact_bullets ต้องมี "1 bullet เท่านั้น" (1–2 ประโยค, 25–45 คำ) และต้องโยงกับ evidence
+3) ใน bullet ต้องมีคำ/วลีจาก title/summary อย่างน้อย 1 จุด (ห้ามเดา)
+4) ห้ามปนบริบท: ห้ามพูดถึงเหตุการณ์/ประเทศ/คำสำคัญที่ไม่อยู่ใน title/summary
+5) ถ้าไม่มั่นใจ → is_relevant=false
+
+ตอบเป็น JSON เท่านั้น:
+{{
+  "items": [
+    {{
+      "id": 0,
+      "is_relevant": true/false,
+      "country": "Thailand",
+      "topic_category": "energy|policy_regulatory|security|macro_finance|disaster_infra|logistics|contractor_counterparty|other",
+      "impact_bullets": ["..."],
+      "impact_level": "low|medium|high|unknown",
+      "evidence": ["...","..."],
+      "why_relevant": "..."
+    }}
+  ]
+}}
+
+ข่าวชุดนี้:
+{json.dumps(payload, ensure_ascii=False)}
 """
+        text = call_groq_with_retries(prompt, temperature=0.35)
+        data = _extract_json_object(text)
 
+        if not (isinstance(data, dict) and isinstance(data.get("items"), list)):
+            for _ in chunk:
+                results.append({"is_relevant": False})
+            continue
 
-def build_theme(seed_text: str) -> str:
-    prompt = THEME_PROMPT.replace("<<<SEED>>>", seed_text)
-    prompt = prompt[:MAX_PROMPT_CHARS]
-    _sleep_jitter()
-    out = groq_chat(prompt, temperature=0.2)
-    lines = [l.strip() for l in out.splitlines() if l.strip()]
-    return "\n".join(lines[:12]).strip()
+        by_id = {}
+        for it in data["items"]:
+            if isinstance(it, dict) and "id" in it:
+                by_id[it.get("id")] = it
 
+        for idx, _n in enumerate(chunk):
+            t = by_id.get(idx, {"is_relevant": False})
+            if not isinstance(t, dict):
+                t = {"is_relevant": False}
+            results.append(t)
 
-# =============================================================================
-# 413-safe scoring (batch + split) + JSON retry
-# =============================================================================
-def _slim_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    slim = []
-    for it in items:
-        slim.append({
-            "title": clip(it.get("title", ""), 180),
-            "summary": clip(it.get("summary", ""), SUMMARY_CLIP),
-            "link": normalize_url(it.get("link", "")),
-        })
-    return slim
+    return results
 
+# ============================================================================================================
+# Window: 21:00 yesterday -> 06:00 today (Bangkok)
+# ============================================================================================================
 
-def _score_once(items: List[Dict[str, Any]], theme: str) -> List[Dict[str, Any]]:
-    items_json = json.dumps(_slim_items(items), ensure_ascii=False)
-    prompt = SCORE_PROMPT.replace("<<<THEME>>>", theme).replace("<<<ITEMS>>>", items_json)
-    prompt = prompt[:MAX_PROMPT_CHARS]
+def fetch_news_window():
+    now_local = datetime.now(bangkok_tz)
+    start = (now_local - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
+    end = now_local.replace(hour=6, minute=0, second=0, microsecond=0)
 
-    _sleep_jitter()
-    raw = groq_chat(prompt, temperature=0.25)
-    js = parse_json_robust(raw)
-    if isinstance(js, list):
-        return [x for x in js if isinstance(x, dict)]
+    out = []
+    for site, feed_country, url in NEWS_FEEDS:
+        try:
+            feed = parse_feed_with_timeout(url)
+            entries = list(feed.entries or [])[:MAX_ENTRIES_PER_FEED]
 
-    # ✅ Retry 1 ครั้ง: บังคับ JSON ล้วน + ห้ามมีข้อความอื่น
-    strict = (
-        "ตอบเป็น JSON array เท่านั้น ห้ามมีข้อความอื่น ห้ามใส่ ```.\n"
-        "รูปแบบต้องเป็น: "
-        "[{\"idx\":1,\"score\":80,\"country\":\"-\",\"category\":\"Energy\",\"impact\":\"• ...\",\"url\":\"...\"}]\n\n"
-        f"Theme:\n{theme}\n\n"
-        f"News Items (JSON):\n{items_json}"
-    )
-    strict = strict[:MAX_PROMPT_CHARS]
+            for e in entries:
+                pub = getattr(e, "published", None) or getattr(e, "updated", None)
+                if not pub:
+                    continue
 
-    _sleep_jitter()
-    raw2 = groq_chat(strict, temperature=0.2)
-    js2 = parse_json_robust(raw2)
-    if isinstance(js2, list):
-        return [x for x in js2 if isinstance(x, dict)]
+                dt = dateutil_parser.parse(pub)
+                if dt.tzinfo is None:
+                    dt = bangkok_tz.localize(dt)
+                dt_local = dt.astimezone(bangkok_tz)
 
-    return []
+                if not (start <= dt_local <= end):
+                    continue
 
+                link = _normalize_link(getattr(e, "link", "") or "")
+                if not link:
+                    continue
 
-def _score_safe(items: List[Dict[str, Any]], theme: str) -> List[Dict[str, Any]]:
-    if not items:
-        return []
-    try:
-        return _score_once(items, theme)
-    except requests.HTTPError as e:
-        resp = getattr(e, "response", None)
-        code = getattr(resp, "status_code", None)
-        if code != 413 and "413" not in str(e):
-            raise
+                title = (getattr(e, "title", "") or "").strip()
+                summary_raw = getattr(e, "summary", "") or ""
+                summary = re.sub(r"\s+", " ", re.sub("<.*?>", " ", summary_raw)).strip()
 
-        if len(items) == 1:
-            one = dict(items[0])
-            one["summary"] = clip(one.get("summary", ""), 120)
-            return _score_once([one], theme)
-
-        mid = len(items) // 2
-        print(f"[413] Payload too large -> split batch {len(items)} => {mid}+{len(items)-mid}")
-        return _score_safe(items[:mid], theme) + _score_safe(items[mid:], theme)
-
-
-def score_by_theme(items: List[Dict[str, Any]], theme: str) -> List[Dict[str, Any]]:
-    tags_all: List[Dict[str, Any]] = []
-    i = 0
-    while i < len(items):
-        batch = items[i:i + LLM_BATCH_SIZE]
-        tags = _score_safe(batch, theme)
-
-        # ✅ ถ้า LLM คืนไม่ครบ -> เติม default (กัน crash)
-        if len(tags) < len(batch):
-            for k in range(len(tags) + 1, len(batch) + 1):
-                tags.append({
-                    "idx": k,
-                    "score": 0,
-                    "country": "-",
-                    "category": "Other",
-                    "impact": "",
-                    "url": batch[k-1].get("link", "")
+                out.append({
+                    "site": site,
+                    "feed_country": feed_country,
+                    "title": title,
+                    "summary": summary,
+                    "link": link,
+                    "published": dt_local,
                 })
+        except Exception as ex:
+            print(f"[WARN] feed failed: {site}/{feed_country} -> {type(ex).__name__}: {ex}")
+            continue
 
-        tags_all.extend(tags[:len(batch)])
-        i += len(batch)
+    uniq, seen = [], set()
+    for n in out:
+        k = _normalize_link(n["link"])
+        if k and k not in seen:
+            seen.add(k)
+            uniq.append(n)
 
-    return tags_all
+    uniq.sort(key=lambda x: x["published"], reverse=True)
+    return uniq
 
+# ============================================================================================================
+# FLEX (ไทย + bullet เดียว + fallback รูปเสมอ)
+# ============================================================================================================
 
-# =============================================================================
-# LINE FLEX
-# =============================================================================
-def create_flex_carousel(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _shorten(items, take=4):
+    items = items or []
+    if not items:
+        return "ALL"
+    if len(items) <= take:
+        return ", ".join(items)
+    return ", ".join(items[:take]) + f" +{len(items)-take}"
+
+def create_flex(news_items):
     now_txt = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
     bubbles = []
 
-    for n in items[:10]:
-        title = (n.get("title") or "ข่าว").strip()[:140]
-        url = (n.get("url") or "https://news.google.com/").strip()
-        country = (n.get("country") or "-").strip()
-        impact = (n.get("impact") or "").strip()
-        score = int(n.get("score", 0) or 0)
-        proj_hits = n.get("project_hits") or []
-        partner_hits = n.get("partner_hits") or []
+    for n in news_items:
+        bullets = clean_bullets(n.get("impact_bullets") or [])[:1]
+        country = (n.get("country") or "ไม่ระบุ").strip()
+        projects = n.get("projects") or ["ALL"]
+        proj_txt = _shorten(projects, take=4)
 
-        if impact and not impact.startswith("•"):
-            impact = "• " + impact.lstrip("• ").strip()
+        link = n.get("final_url") or n.get("link") or "https://news.google.com/"
+        img = n.get("image") or DEFAULT_HERO_URL
+        if not _is_good_image_url(img):
+            img = DEFAULT_HERO_URL
 
-        body_contents = [
-            {"type": "text", "text": title, "wrap": True, "weight": "bold", "size": "lg"},
-            {"type": "text", "text": f"{country}  |  score {score}", "wrap": True, "size": "sm", "color": "#1E90FF", "margin": "sm"},
+        cred_txt = ""
+        if SHOW_SOURCE_RATING:
+            rating_th = (n.get("source_rating_th") or "").strip()
+            domain = (n.get("source_domain") or "").strip()
+            score = n.get("source_score")
+            if rating_th:
+                cred_txt = f"ความน่าเชื่อถือ: {rating_th} (score {score}) · {domain}"
+
+        contents = [
+            {"type": "text", "text": (n.get("title","")[:140]), "wrap": True, "weight": "bold", "size": "lg"},
+            {
+                "type": "box",
+                "layout": "baseline",
+                "spacing": "md",
+                "contents": [
+                    {"type": "text", "text": n.get("published").strftime("%d/%m/%Y %H:%M"), "size": "sm", "color": "#666666", "flex": 0},
+                    {"type": "text", "text": f"{country} | {n.get('site','')}", "size": "sm", "color": "#1E90FF", "wrap": True},
+                ],
+            },
+            {"type": "text", "text": f"โครงการที่เกี่ยวข้อง: {proj_txt}", "size": "sm", "color": "#666666", "wrap": True, "margin": "sm"},
         ]
 
-        if proj_hits:
-            body_contents.append({
-                "type": "text",
-                "text": "Project: " + ", ".join(proj_hits[:2]) + ("…" if len(proj_hits) > 2 else ""),
-                "wrap": True,
-                "size": "sm",
-                "color": "#666666",
-                "margin": "sm"
-            })
+        if cred_txt:
+            contents.append({"type": "text", "text": cred_txt, "size": "xs", "color": "#666666", "wrap": True, "margin": "sm"})
 
-        if partner_hits:
-            body_contents.append({
-                "type": "text",
-                "text": "Partner: " + ", ".join(partner_hits[:3]) + ("…" if len(partner_hits) > 3 else ""),
-                "wrap": True,
-                "size": "sm",
-                "color": "#666666",
-                "margin": "sm"
-            })
+        contents.append({"type": "text", "text": "ผลกระทบต่อโครงการ", "size": "lg", "weight": "bold", "color": "#000000", "margin": "lg"})
 
-        body_contents.extend([
-            {"type": "text", "text": "Impact", "size": "lg", "weight": "bold", "margin": "lg"},
-            {"type": "text", "text": impact or "• (ไม่มีข้อความ)", "wrap": True, "size": "md", "weight": "bold", "margin": "xs"},
-        ])
+        if bullets:
+            contents.append({"type": "text", "text": f"• {bullets[0]}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"})
+        else:
+            contents.append({"type": "text", "text": "• (ไม่มีข้อความผลกระทบ)", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"})
 
         bubbles.append({
             "type": "bubble",
             "size": "mega",
-            "hero": {"type": "image", "url": DEFAULT_HERO_URL, "size": "full", "aspectRatio": "16:9", "aspectMode": "cover"},
-            "body": {"type": "box", "layout": "vertical", "contents": body_contents},
-            "footer": {"type": "box", "layout": "vertical", "contents": [
-                {"type": "button", "style": "primary", "color": "#1DB446",
-                 "action": {"type": "uri", "label": "อ่านต่อ", "uri": url}}
-            ]}
+            "hero": {"type": "image", "url": img, "size": "full", "aspectRatio": "16:9", "aspectMode": "cover"},
+            "body": {"type": "box", "layout": "vertical", "contents": contents},
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "button", "style": "primary", "color": "#1DB446",
+                     "action": {"type": "uri", "label": "อ่านต่อ", "uri": link}}
+                ],
+            },
         })
 
     return [{
         "type": "flex",
-        "altText": f"Energy News Focus {now_txt}",
-        "contents": {"type": "carousel", "contents": bubbles}
+        "altText": f"ข่าว PTTEP (Domestic) {now_txt}",
+        "contents": {"type": "carousel", "contents": bubbles},
     }]
 
+# ============================================================================================================
+# LINE send
+# ============================================================================================================
 
-def send_to_line(messages: List[Dict[str, Any]]) -> None:
-    if DRY_RUN:
-        print("[DRY_RUN] sending", len(messages), "messages")
-        print(json.dumps(messages, ensure_ascii=False)[:2500])
-        return
+def send_to_line(messages):
+    url = "https://api.line.me/v2/bot/message/broadcast"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
 
-    headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}
-    r = S.post(LINE_BROADCAST, headers=headers, json={"messages": messages}, timeout=60)
-    if r.status_code >= 400:
-        print("[LINE ERROR]", r.status_code, r.text[:900])
-        r.raise_for_status()
+    for i, msg in enumerate(messages, 1):
+        payload = {"messages": [msg]}
+        print("=== LINE PAYLOAD(meta) ===")
+        print(json.dumps({"messages": [{"type": msg.get("type"), "altText": msg.get("altText")}]} , ensure_ascii=False))
 
+        if DRY_RUN:
+            print("[DRY_RUN] ไม่ส่งจริง")
+            continue
 
-# =============================================================================
+        r = S.post(url, headers=headers, json=payload, timeout=15)
+        print(f"Send {i}: {r.status_code}")
+        if r.status_code >= 300:
+            print("Response:", r.text[:1200])
+            break
+
+# ============================================================================================================
 # MAIN
-# =============================================================================
+# ============================================================================================================
+
 def main():
-    seed = read_text_file(SEED_NEWS_FILE)
-    if not seed:
-        raise RuntimeError("ไม่พบ seed_news.txt (ให้สร้างไฟล์ seed_news.txt)")
+    deadline = None
+    if RUN_DEADLINE_MIN > 0:
+        deadline = time.time() + RUN_DEADLINE_MIN * 60
 
-    if not PROJECT_NAMES:
-        print(f"⚠️ ไม่พบ {PROJECT_LIST_FILE} หรือไฟล์ว่าง (project_hits จะไม่ทำงาน)")
-    if not PARTNER_NAMES:
-        print(f"⚠️ ไม่พบ {PARTNER_LIST_FILE} หรือไฟล์ว่าง (partner_hits จะไม่ทำงาน)")
+    print("ดึงข่าว...")
+    all_news = fetch_news_window()
+    print("จำนวนข่าวดิบทั้งหมด:", len(all_news))
+    if not all_news:
+        print("ไม่พบข่าวในช่วงเวลา")
+        return
 
-    print("1) สร้าง Theme/Scope จากข่าวตัวอย่าง...")
-    theme = build_theme(seed)
-    print("\n[THEME]\n" + theme + "\n")
-
-    print("2) ดึงข่าวจาก Google News RSS...")
-    raw_items = fetch_google_news(SELECT_LIMIT)
-    print("GoogleNews items:", len(raw_items))
-
-    # กันส่งซ้ำ
     sent = load_sent_links()
-    candidates = []
-    for it in raw_items:
-        link = it.get("link", "")
-        if link and link in sent:
-            continue
-        candidates.append(it)
+    per_country_count = {c: 0 for c in PROJECT_COUNTRIES}
+    candidates, global_candidates = [], []
 
-    if not candidates:
-        print("ไม่มีข่าวใหม่")
-        return
+    # ---------- Pre-filter (เบา ๆ) ----------
+    for n in all_news:
+        if deadline and time.time() > deadline:
+            print("ถึง deadline ระหว่าง pre-filter (หยุด)")
+            break
 
-    print("3) ให้ LLM ให้คะแนนข่าวตาม Theme (batch กัน 413 + parse robust)...")
-    tags = score_by_theme(candidates, theme)
-
-    scored: List[Dict[str, Any]] = []
-    for it, tg in zip(candidates, tags):
-        if not isinstance(tg, dict):
+        if _normalize_link(n["link"]) in sent:
             continue
 
-        url = normalize_url(tg.get("url") or it.get("link") or "")
-        if not url:
+        title, summary = n.get("title",""), n.get("summary","")
+        feed_country = (n.get("feed_country") or "").strip()
+
+        if not passes_topic_gate(title, summary):
             continue
 
-        title = it.get("title", "")
-        summary = it.get("summary", "")
-        text = f"{title} {summary}"
-
-        project_hits = find_hits(text, PROJECT_NAMES, aliases=None)
-        partner_hits = find_hits(text, PARTNER_NAMES, aliases=PARTNER_ALIASES)
-        has_entity = bool(project_hits or partner_hits)
-
-        score = int(tg.get("score", 0) or 0)
-        country = (tg.get("country") or "-").strip()
-        impact = (tg.get("impact") or "").strip()
-
-        scored.append({
-            "title": title,
-            "url": url,
-            "country": country,
-            "impact": impact,
-            "score": score,
-            "project_hits": project_hits,
-            "partner_hits": partner_hits,
-            "has_entity": has_entity,
-        })
-
-    scored.sort(key=lambda x: x["score"], reverse=True)
-
-    # ✅ FINAL FILTER (กว้างขึ้น ไม่เงียบ)
-    if REQUIRE_ENTITY_ALWAYS:
-        passed = [x for x in scored if x["has_entity"] and x["score"] >= SCORE_RELAXED][:SEND_LIMIT]
-    else:
-        A = [x for x in scored if x["score"] >= SCORE_STRICT]                      # Theme สูง: ส่งได้
-        B = [x for x in scored if x["score"] >= SCORE_RELAXED and x["has_entity"]] # Theme กลาง + entity
-        passed = []
-        seen = set()
-        for x in (A + B):
-            if x["url"] in seen:
+        if feed_country in PROJECT_COUNTRIES:
+            if MAX_PER_COUNTRY is not None and per_country_count[feed_country] >= MAX_PER_COUNTRY:
                 continue
-            seen.add(x["url"])
-            passed.append(x)
-            if len(passed) >= SEND_LIMIT:
-                break
+            per_country_count[feed_country] += 1
+            candidates.append(n)
+        else:
+            global_candidates.append(n)
 
-        # fallback สุดท้าย กันกรณีคะแนนต่ำหมด
-        if not passed:
-            passed = scored[:min(SEND_LIMIT, 3)]
+    if MAX_GLOBAL_ITEMS is not None:
+        global_candidates = global_candidates[:MAX_GLOBAL_ITEMS]
 
-    if not passed:
-        print("ไม่มีข่าวที่เข้าเงื่อนไข")
+    selected = (candidates + global_candidates)
+    selected.sort(key=lambda x: x["published"], reverse=True)
+
+    selected = dedupe_near_titles(selected, threshold=0.88)
+    print("จำนวนข่าวหลังตัดซ้ำใกล้เคียง:", len(selected))
+
+    if MAX_LLM_ITEMS is not None:
+        selected = selected[:MAX_LLM_ITEMS]
+
+    print("จำนวนข่าวที่จะประเมินด้วย LLM:", len(selected))
+    if not selected:
+        print("ไม่มีข่าวให้ประเมิน")
         return
 
-    print(f"4) ส่ง Flex carousel ({len(passed)} ข่าว)...")
-    msgs = create_flex_carousel(passed)
+    # ---------- Resolve final URL + credibility ----------
+    for n in selected:
+        if deadline and time.time() > deadline:
+            print("ถึง deadline ระหว่าง resolve url (หยุด)")
+            break
+
+        original = n.get("link", "")
+        final_url = resolve_final_url(original)
+
+        # กัน final_url หลุดเป็น tracker
+        if _get_domain(final_url) in TRACKER_HOSTS or any(_get_domain(final_url).endswith(x) for x in TRACKER_HOSTS):
+            final_url = original
+
+        n["final_url"] = final_url
+
+        cred = assess_source_credibility(original, final_url, n.get("title", ""))
+        n["source_domain"] = cred["domain"]
+        n["source_score"] = cred["score"]
+        n["source_rating"] = cred["rating"]
+        n["source_rating_th"] = cred["rating_th"]
+        n["source_signals"] = cred["signals"]
+
+    if MIN_SOURCE_SCORE > 0:
+        before = len(selected)
+        selected = [n for n in selected if int(n.get("source_score", 0)) >= MIN_SOURCE_SCORE]
+        print(f"กรองตามความน่าเชื่อถือ (score>={MIN_SOURCE_SCORE}): {before} -> {len(selected)}")
+        if not selected:
+            print("ไม่เหลือข่าวหลังกรองความน่าเชื่อถือ")
+            return
+
+    # ---------- LLM selection ----------
+    try:
+        tags = groq_batch_tag_and_filter(selected, chunk_size=LLM_BATCH_SIZE)
+    except Exception as e:
+        if _is_429(e):
+            print("Groq 429: งด LLM รอบนี้ (ไม่ล้มทั้งงาน)")
+            tags = [{"is_relevant": False} for _ in selected]
+        else:
+            raise
+
+    final = []
+    for n, tag in zip(selected, tags):
+        if deadline and time.time() > deadline:
+            print("ถึง deadline ระหว่าง LLM apply (หยุด)")
+            break
+
+        if not isinstance(tag, dict) or not tag.get("is_relevant"):
+            continue
+
+        feed_country = (n.get("feed_country") or "").strip()
+        country = (tag.get("country") or "").strip()
+        if country != feed_country:
+            continue
+
+        topic_category = (tag.get("topic_category") or "").strip().lower()
+        if topic_category == "other":
+            continue
+
+        title = n.get("title", "")
+        summary = n.get("summary", "")
+
+        evidence = tag.get("evidence") or []
+        if not isinstance(evidence, list):
+            evidence = [str(evidence)]
+        evidence = [str(x).strip() for x in evidence if str(x).strip()][:2]
+        if not validate_evidence_in_text(title, summary, evidence):
+            continue
+
+        bullets = diversify_bullets(clean_bullets(tag.get("impact_bullets") or [])[:1])
+        if not bullets:
+            continue
+
+        # กันอังกฤษหลุด
+        if is_mostly_english(bullets[0]):
+            bullets = rewrite_impact_bullet_one_thai(n, country, bullets)
+
+        # ถ้ายัง generic/สั้น -> rewrite ไทย
+        if ENABLE_IMPACT_REWRITE and (looks_generic_or_short_one(bullets) or is_mostly_english(bullets[0])):
+            bullets = rewrite_impact_bullet_one_thai(n, country, bullets)
+
+        bullets = diversify_bullets(clean_bullets(bullets)[:1])
+        if not bullets:
+            continue
+
+        if is_mostly_english(bullets[0]):
+            continue
+
+        if not guard_cross_topic(title, summary, bullets):
+            continue
+
+        if not has_meaningful_impact(bullets):
+            continue
+
+        projects = projects_for_country(country)
+        if not projects:
+            projects = ["ALL"]
+
+        n["country"] = country
+        n["projects"] = projects[:12]
+        n["impact_bullets"] = bullets[:1]
+        n["impact_level"] = (tag.get("impact_level") or "unknown")
+        n["evidence"] = evidence
+        n["why_relevant"] = (tag.get("why_relevant") or "").strip()
+
+        final.append(n)
+
+    print("จำนวนข่าวผ่านเงื่อนไข:", len(final))
+    if not final:
+        print("ไม่มีข่าวที่ผ่านเงื่อนไขวันนี้")
+        return
+
+    # ---------- Images ----------
+    for n in final:
+        if deadline and time.time() > deadline:
+            print("ถึง deadline ระหว่างหา image (หยุด)")
+            break
+
+        # ใช้ publisher url ถ้าหาได้, ไม่งั้นใช้ default
+        img = fetch_article_image(n.get("final_url") or n.get("link",""))
+        if _is_good_image_url(img or ""):
+            n["image"] = img
+        else:
+            n["image"] = DEFAULT_HERO_URL
+
+        time.sleep(0.10)
+
+    msgs = create_flex(final[:10])
     send_to_line(msgs)
 
-    save_sent_links([p["url"] for p in passed if p.get("url")])
-    print("Done")
-
+    save_sent_links([n.get("final_url") or n.get("link") for n in final])
+    print("เสร็จสิ้น (Groq calls:", GROQ_CALLS, ")")
 
 if __name__ == "__main__":
     main()
