@@ -1,9 +1,13 @@
 # news.py
 # ============================================================================================================
-# Energy News Bot (Groq) — ไทย + ต่างประเทศ "แนว PDP/Regulator/SMR/LNG-FID/Financing/Security/Geo"
-# FIX (LINE 400):
-#   - LINE carousel จำกัด 12 bubble ต่อ 1 flex message -> แตกส่งเป็นหลาย flex message
-#   - LINE action.uri ยาวได้ไม่เกิน 1000 -> ทำ safe_action_uri() ตัด query/fragment + fallback
+# Energy News Bot (Groq) — ไทย + ต่างประเทศ
+# - ดึงข่าวจากหลาย query (เพิ่มปริมาณข่าว)
+# - LLM คัดข่าวแนว: policy/regulator, investment projects, LNG/FID/financing/EPC, security, transition tech, geo
+# - ดึง "projects" (ชื่อโครงการ/สินทรัพย์/แผน/มาตรการ) + "partners" (ผู้เกี่ยวข้อง/ผู้ร่วมทุน/องค์กร)
+# - สรุป "ผลกระทบ" แบบ 1 bullet ภาษาไทย
+# FIX LINE 400:
+#   - Carousel ได้ไม่เกิน 12 bubble ต่อ 1 flex message => แตกส่งเป็นหลาย flex
+#   - action.uri ยาวได้ไม่เกิน 1000 => safe_action_uri() ตัด query/fragment + fallback
 # ============================================================================================================
 
 import os
@@ -48,10 +52,12 @@ def _as_limit(env_name: str, default: str = "0"):
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "6"))
 LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
 
-MAX_LLM_ITEMS = _as_limit("MAX_LLM_ITEMS", "220")   # แนะนำ 180-260
-MAX_SEND_ITEMS = _as_limit("MAX_SEND_ITEMS", "24")  # จะถูกแบ่งเป็นหลาย flex (12 ต่อ message)
+# ข่าวที่จะส่งเข้า LLM (0 = ไม่จำกัด)
+MAX_LLM_ITEMS = _as_limit("MAX_LLM_ITEMS", "220")
+# ข่าวที่จะส่งขึ้น LINE (0 = ไม่จำกัด; จะถูกแบ่งเป็นหลาย flex โดยอัตโนมัติ)
+MAX_SEND_ITEMS = _as_limit("MAX_SEND_ITEMS", "24")
 
-RUN_DEADLINE_MIN = int(os.getenv("RUN_DEADLINE_MIN", "0"))
+RUN_DEADLINE_MIN = int(os.getenv("RUN_DEADLINE_MIN", "0"))  # 0 = no deadline
 RSS_TIMEOUT_SEC = int(os.getenv("RSS_TIMEOUT_SEC", "18"))
 ARTICLE_TIMEOUT_SEC = int(os.getenv("ARTICLE_TIMEOUT_SEC", "12"))
 
@@ -72,6 +78,10 @@ DEFAULT_HERO_URL = os.getenv(
     "DEFAULT_HERO_URL",
     "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
 )
+
+# === PROJECT SETTINGS (All projects, global) ===
+REQUIRE_PROJECT_MATCH = os.getenv("REQUIRE_PROJECT_MATCH", "false").strip().lower() in ["1", "true", "yes", "y"]
+SHOW_PARTNERS = os.getenv("SHOW_PARTNERS", "true").strip().lower() in ["1", "true", "yes", "y"]
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 S = requests.Session()
@@ -96,7 +106,7 @@ TH_QUERIES = [
 
 EN_QUERIES = [
     '(energy policy OR regulator OR power tariff OR "direct PPA" OR "power market reform")',
-    '(SMR OR "small modular reactor" OR nuclear restart OR nuclear policy OR "reactor")',
+    '(SMR OR "small modular reactor" OR nuclear restart OR nuclear policy OR reactor)',
     '(LNG project OR FID OR export terminal OR liquefaction OR regas OR "floating LNG" OR "gas development")',
     '(structured financing OR project financing OR EPC OR "equipment orders" OR Baker Hughes OR Honeywell OR "Solar Turbines")',
     '(sanctions OR national security OR crude flows OR LNG flows OR shipping OR geopolitics OR "offshore wind halted")',
@@ -108,6 +118,7 @@ for q in TH_QUERIES:
 for q in EN_QUERIES:
     NEWS_FEEDS.append(("GoogleNewsEN", "international", google_news_rss(q, hl="en", gl="US", ceid="US:en")))
 
+# optional RSS
 NEWS_FEEDS.extend([
     ("Oilprice", "international", "https://oilprice.com/rss/main"),
     ("Economist", "international", "https://www.economist.com/latest/rss.xml"),
@@ -274,7 +285,7 @@ def _strip_query_fragment(u: str) -> str:
 def safe_action_uri(u: str) -> str:
     """
     LINE uri length limit <= 1000
-    - normalize: ตัด utm
+    - normalize ตัด utm
     - ถ้ายังยาว: ตัด query/fragment
     - ถ้ายังยาว: fallback
     """
@@ -572,8 +583,10 @@ def call_groq_with_retries(prompt: str, temperature: float = 0.35) -> str:
     raise last
 
 GENERIC_PATTERNS = ["อาจกระทบต้นทุน", "อาจกระทบกฎระเบียบ", "อาจกระทบตารางงาน", "อาจส่งผลกระทบ", "อาจกระทบต่อโครงการ"]
-SPECIFIC_HINTS = ["ใบอนุญาต", "ภาษี", "psc", "สัมปทาน", "ประกัน", "ผู้รับเหมา", "แรงงาน", "ท่าเรือ", "ขนส่ง", "ศุลกากร",
-                  "ค่าเงิน", "คว่ำบาตร", "นัดหยุดงาน", "ความไม่สงบ", "ความปลอดภัย", "Direct PPA", "PDP", "SMR", "LNG", "FID"]
+SPECIFIC_HINTS = [
+    "ใบอนุญาต", "ภาษี", "psc", "สัมปทาน", "ประกัน", "ผู้รับเหมา", "แรงงาน", "ท่าเรือ", "ขนส่ง", "ศุลกากร",
+    "ค่าเงิน", "คว่ำบาตร", "นัดหยุดงาน", "ความไม่สงบ", "ความปลอดภัย", "Direct PPA", "PDP", "SMR", "LNG", "FID"
+]
 def looks_generic_or_short_one(bullets) -> bool:
     if not bullets or not isinstance(bullets, list):
         return True
@@ -612,11 +625,12 @@ bullet เดิม:
     return diversify_bullets(clean_bullets(bullets))[:1]
 
 # ============================================================================================================
-# LLM selection (ไทย-only)
+# LLM selection (Thai output) — projects/partners = global (no whitelist)
 # ============================================================================================================
 
 def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
+
     for i in range(0, len(news_list), chunk_size):
         chunk = news_list[i:i + chunk_size]
         payload = [{"id": idx, "feed_section": (n.get("feed_section") or "").strip(), "title": n.get("title",""), "summary": n.get("summary","")}
@@ -641,8 +655,8 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
 - เขียนภาษาไทยเท่านั้น
 - evidence ต้องเป็น “วลีที่คัดมาจาก title/summary” เท่านั้น (ห้ามแต่งเพิ่ม)
 - impact_bullets ต้องมี 1 bullet (1–2 ประโยค, 25–45 คำ) และต้องโยง: ประเด็นข่าว -> กลไก -> ผลกระทบ
-- projects ให้ดึง “ชื่อโครงการ/สินทรัพย์/แผน/มาตรการ” ที่ถูกกล่าวถึง (เช่น PDP, Direct PPA, SMR 600MW, LNG export terminal, Hail and Ghasha) ถ้ามี
-- partners ให้ดึง “บริษัท/องค์กร/ผู้เกี่ยวข้อง” ที่ถูกกล่าวถึง (เช่น EGCO, GPSC, ADNOC, Baker Hughes) ถ้ามี
+- projects ให้ดึง “ชื่อโครงการ/สินทรัพย์/แผน/มาตรการ/ชื่อสนาม/ชื่อแหล่ง/ชื่อ terminal/pipeline” ที่ถูกกล่าวถึงในข่าว ถ้ามี (ถ้าไม่มีให้ [])
+- partners ให้ดึง “บริษัท/องค์กร/ผู้เกี่ยวข้อง/ผู้ร่วมทุน” ที่ถูกกล่าวถึงในข่าว ถ้ามี (ถ้าไม่มีให้ [])
 - country: ประเทศหลักของข่าว (ถ้าเป็นข่าวไทยให้เป็น Thailand)
 - section: domestic ถ้าเป็นข่าวไทย/บริบทไทย, international ถ้าเป็นต่างประเทศ
 
@@ -746,7 +760,7 @@ def fetch_news_window():
     return uniq
 
 # ============================================================================================================
-# Flex Messages (แตกเป็นหลาย flex, 12 bubble ต่อ message) + safe uri
+# Flex Messages (12 bubble per flex) + safe uri
 # ============================================================================================================
 
 def _shorten(items, take=4):
@@ -819,14 +833,29 @@ def create_flex_messages(news_items: List[Dict[str, Any]], chunk_size: int = 12)
             ]
 
             if projects:
-                contents.append({"type": "text", "text": f"ประเด็น/โครงการ/สินทรัพย์: {_shorten(projects, 4)}", "size": "sm", "color": "#666666", "wrap": True, "margin": "sm"})
-            if partners:
-                contents.append({"type": "text", "text": f"ผู้เกี่ยวข้อง: {_shorten(partners, 6)}", "size": "sm", "color": "#666666", "wrap": True, "margin": "xs"})
+                contents.append({
+                    "type": "text",
+                    "text": f"โครงการ/สินทรัพย์: {_shorten(projects, 4)}",
+                    "size": "sm",
+                    "color": "#666666",
+                    "wrap": True,
+                    "margin": "sm"
+                })
+
+            if SHOW_PARTNERS and partners:
+                contents.append({
+                    "type": "text",
+                    "text": f"ผู้เกี่ยวข้อง/ผู้ร่วมทุน: {_shorten(partners, 6)}",
+                    "size": "sm",
+                    "color": "#666666",
+                    "wrap": True,
+                    "margin": "xs"
+                })
+
             if cred_txt:
                 contents.append({"type": "text", "text": cred_txt, "size": "xs", "color": "#666666", "wrap": True, "margin": "sm"})
 
             contents.append({"type": "text", "text": "ผลกระทบ", "size": "lg", "weight": "bold", "color": "#000000", "margin": "lg"})
-
             if bullets:
                 contents.append({"type": "text", "text": f"• {bullets[0]}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"})
             else:
@@ -856,7 +885,7 @@ def create_flex_messages(news_items: List[Dict[str, Any]], chunk_size: int = 12)
     return messages
 
 # ============================================================================================================
-# LINE send (ส่งทีละ flex message)
+# LINE send (send each flex message)
 # ============================================================================================================
 
 def send_to_line(messages):
@@ -948,7 +977,7 @@ def main():
             print("ไม่เหลือข่าวหลังกรองความน่าเชื่อถือ")
             return
 
-    # LLM
+    # LLM tag/filter
     try:
         tags = groq_batch_tag_and_filter(selected, chunk_size=LLM_BATCH_SIZE)
     except Exception as e:
@@ -1006,8 +1035,16 @@ def main():
             projects = [str(projects)]
         if not isinstance(partners, list):
             partners = [str(partners)]
-        n["projects"] = [str(x).strip() for x in projects if str(x).strip()][:8]
-        n["partners"] = [str(x).strip() for x in partners if str(x).strip()][:10]
+
+        projects = [str(x).strip() for x in projects if str(x).strip()]
+        partners = [str(x).strip() for x in partners if str(x).strip()]
+
+        # ถ้าตั้งให้ "ต้องมีชื่อโครงการ" ถึงจะส่งข่าว
+        if REQUIRE_PROJECT_MATCH and not projects:
+            continue
+
+        n["projects"] = projects[:10]
+        n["partners"] = partners[:12]
 
         n["impact_bullets"] = bullets[:1]
         n["impact_level"] = (tag.get("impact_level") or "unknown")
