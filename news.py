@@ -29,7 +29,7 @@ if not GROQ_API_KEY:
 USER_AGENT = os.getenv("USER_AGENT", "Mozilla/5.0 (NewsBot/1.0)").strip()
 DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() == "true"
 
-# Google News (แหล่งเดียว)
+# Google News (source เดียว)
 GOOGLE_NEWS_QUERY = os.getenv(
     "GOOGLE_NEWS_QUERY",
     'energy OR LNG OR oil OR "electricity tariff" OR nuclear OR OPEC OR sanctions OR geopolitics'
@@ -39,23 +39,23 @@ GOOGLE_NEWS_GL = os.getenv("GOOGLE_NEWS_GL", "US").strip()
 GOOGLE_NEWS_CEID = os.getenv("GOOGLE_NEWS_CEID", "US:en").strip()
 
 # จำนวนข่าว
-SELECT_LIMIT = int(os.getenv("SELECT_LIMIT", "25"))     # ข่าวดึงจาก RSS
-SEND_LIMIT = int(os.getenv("SEND_LIMIT", "10"))         # Bubble ส่งจริง (LINE carousel max 10)
+SELECT_LIMIT = int(os.getenv("SELECT_LIMIT", "25"))     # ดึงจาก RSS
+SEND_LIMIT = int(os.getenv("SEND_LIMIT", "10"))         # LINE carousel สูงสุด 10
 SEND_LIMIT = min(max(SEND_LIMIT, 1), 10)
 
 # LLM batching / clipping กัน 413
-LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "4"))  # แนะนำ 3-5
-SUMMARY_CLIP = int(os.getenv("SUMMARY_CLIP", "200"))    # ตัด summary
+LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "3"))   # แนะนำ 3
+SUMMARY_CLIP = int(os.getenv("SUMMARY_CLIP", "150"))     # ลดโอกาส prompt ใหญ่
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "17000"))
 
 # กัน 429
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "10"))
-SLEEP_MIN = float(os.getenv("SLEEP_MIN", "10"))
-SLEEP_MAX = float(os.getenv("SLEEP_MAX", "16"))
+SLEEP_MIN = float(os.getenv("SLEEP_MIN", "12"))
+SLEEP_MAX = float(os.getenv("SLEEP_MAX", "18"))
 
-# เงื่อนไขกว้างขึ้น (2-stage)
-SCORE_STRICT = int(os.getenv("SCORE_STRICT", "70"))     # Stage A: ส่งได้เลย
-SCORE_RELAXED = int(os.getenv("SCORE_RELAXED", "50"))   # Stage B: ส่งได้ถ้ามี Project/Partner
+# เงื่อนไข (2-stage)
+SCORE_STRICT = int(os.getenv("SCORE_STRICT", "70"))     # Stage A: Theme สูง ส่งได้เลย
+SCORE_RELAXED = int(os.getenv("SCORE_RELAXED", "50"))   # Stage B: Theme ปานกลาง + ต้องมี entity
 REQUIRE_ENTITY_ALWAYS = os.getenv("REQUIRE_ENTITY_ALWAYS", "false").strip().lower() == "true"
 
 # seed + lists
@@ -68,11 +68,13 @@ TRACK_DIR = os.getenv("TRACK_DIR", "sent_links").strip()
 
 # Flex
 DEFAULT_HERO_URL = os.getenv("DEFAULT_HERO_URL", "").strip() or "https://i.imgur.com/4M34hi2.png"
+LINE_BROADCAST = "https://api.line.me/v2/bot/message/broadcast"
 
 bangkok_tz = pytz.timezone("Asia/Bangkok")
 
 S = requests.Session()
 S.headers.update({"User-Agent": USER_AGENT})
+
 
 # =============================================================================
 # UTIL
@@ -118,7 +120,6 @@ def load_list_file(path: str) -> List[str]:
             t = line.strip()
             if t and not t.startswith("#"):
                 out.append(t)
-    # uniq (case-insensitive)
     seen = set()
     uniq = []
     for x in out:
@@ -148,14 +149,43 @@ def save_sent_links(links: List[str]) -> None:
         for x in sorted(new):
             f.write(x + "\n")
 
-def parse_json_loose(s: str) -> Optional[Any]:
+
+# =============================================================================
+# JSON PARSER (สำคัญมาก: แก้ score 0 / impact ว่าง)
+# =============================================================================
+def parse_json_robust(s: str) -> Optional[Any]:
+    if not s:
+        return None
+    t = s.strip()
+
+    # ตัด code fence
+    t = re.sub(r"^```(?:json)?", "", t).strip()
+    t = re.sub(r"```$", "", t).strip()
+
+    # 1) parse ตรง ๆ
     try:
-        t = s.strip()
-        t = re.sub(r"^```(json)?", "", t).strip()
-        t = re.sub(r"```$", "", t).strip()
         return json.loads(t)
     except Exception:
-        return None
+        pass
+
+    # 2) ดึง JSON array ก้อนแรก
+    m = re.search(r"\[[\s\S]*\]", t)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+
+    # 3) ดึง JSON object ก้อนแรก
+    m = re.search(r"\{[\s\S]*\}", t)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+
+    return None
+
 
 # =============================================================================
 # PROJECT / PARTNER
@@ -163,7 +193,6 @@ def parse_json_loose(s: str) -> Optional[Any]:
 PROJECT_NAMES = load_list_file(PROJECT_LIST_FILE)
 PARTNER_NAMES = load_list_file(PARTNER_LIST_FILE)
 
-# alias สำคัญมาก เพราะข่าวเขียนไม่ตรงชื่อเต็ม
 PARTNER_ALIASES = {
     "exxon": "ExxonMobil",
     "total": "TotalEnergies",
@@ -187,6 +216,7 @@ def find_hits(text: str, names: List[str], aliases: Optional[Dict[str, str]] = N
             if k in t:
                 hits.add(v)
     return sorted(hits, key=lambda x: x.lower())
+
 
 # =============================================================================
 # GROQ LLM
@@ -231,6 +261,7 @@ def groq_chat(prompt: str, temperature: float = 0.25) -> str:
 
     raise RuntimeError("Groq failed after retries")
 
+
 # =============================================================================
 # GOOGLE NEWS RSS
 # =============================================================================
@@ -250,6 +281,7 @@ def fetch_google_news(limit: int) -> List[Dict[str, Any]]:
             "source": "GoogleNews"
         })
     return out
+
 
 # =============================================================================
 # PROMPTS
@@ -285,11 +317,6 @@ SCORE_PROMPT = """
   "url": "<link>"
 }
 
-เกณฑ์:
-- score >= 70 = เข้าธีมชัด
-- score 50-69 = พอเกี่ยว
-- score < 50 = ไม่เกี่ยว
-
 impact (รูปแบบมาตรฐาน):
 - bullet เดียวขึ้นต้น "• "
 - 3 ประโยค:
@@ -304,6 +331,7 @@ News Items (JSON):
 <<<ITEMS>>>
 """
 
+
 def build_theme(seed_text: str) -> str:
     prompt = THEME_PROMPT.replace("<<<SEED>>>", seed_text)
     prompt = prompt[:MAX_PROMPT_CHARS]
@@ -312,8 +340,9 @@ def build_theme(seed_text: str) -> str:
     lines = [l.strip() for l in out.splitlines() if l.strip()]
     return "\n".join(lines[:12]).strip()
 
+
 # =============================================================================
-# 413-safe scoring (batch + split)
+# 413-safe scoring (batch + split) + JSON retry
 # =============================================================================
 def _slim_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     slim = []
@@ -325,14 +354,36 @@ def _slim_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         })
     return slim
 
+
 def _score_once(items: List[Dict[str, Any]], theme: str) -> List[Dict[str, Any]]:
     items_json = json.dumps(_slim_items(items), ensure_ascii=False)
     prompt = SCORE_PROMPT.replace("<<<THEME>>>", theme).replace("<<<ITEMS>>>", items_json)
     prompt = prompt[:MAX_PROMPT_CHARS]
+
     _sleep_jitter()
     raw = groq_chat(prompt, temperature=0.25)
-    js = parse_json_loose(raw)
-    return [x for x in js if isinstance(x, dict)] if isinstance(js, list) else []
+    js = parse_json_robust(raw)
+    if isinstance(js, list):
+        return [x for x in js if isinstance(x, dict)]
+
+    # ✅ Retry 1 ครั้ง: บังคับ JSON ล้วน + ห้ามมีข้อความอื่น
+    strict = (
+        "ตอบเป็น JSON array เท่านั้น ห้ามมีข้อความอื่น ห้ามใส่ ```.\n"
+        "รูปแบบต้องเป็น: "
+        "[{\"idx\":1,\"score\":80,\"country\":\"-\",\"category\":\"Energy\",\"impact\":\"• ...\",\"url\":\"...\"}]\n\n"
+        f"Theme:\n{theme}\n\n"
+        f"News Items (JSON):\n{items_json}"
+    )
+    strict = strict[:MAX_PROMPT_CHARS]
+
+    _sleep_jitter()
+    raw2 = groq_chat(strict, temperature=0.2)
+    js2 = parse_json_robust(raw2)
+    if isinstance(js2, list):
+        return [x for x in js2 if isinstance(x, dict)]
+
+    return []
+
 
 def _score_safe(items: List[Dict[str, Any]], theme: str) -> List[Dict[str, Any]]:
     if not items:
@@ -354,6 +405,7 @@ def _score_safe(items: List[Dict[str, Any]], theme: str) -> List[Dict[str, Any]]
         print(f"[413] Payload too large -> split batch {len(items)} => {mid}+{len(items)-mid}")
         return _score_safe(items[:mid], theme) + _score_safe(items[mid:], theme)
 
+
 def score_by_theme(items: List[Dict[str, Any]], theme: str) -> List[Dict[str, Any]]:
     tags_all: List[Dict[str, Any]] = []
     i = 0
@@ -361,7 +413,7 @@ def score_by_theme(items: List[Dict[str, Any]], theme: str) -> List[Dict[str, An
         batch = items[i:i + LLM_BATCH_SIZE]
         tags = _score_safe(batch, theme)
 
-        # กัน LLM คืนไม่ครบ
+        # ✅ ถ้า LLM คืนไม่ครบ -> เติม default (กัน crash)
         if len(tags) < len(batch):
             for k in range(len(tags) + 1, len(batch) + 1):
                 tags.append({
@@ -378,11 +430,10 @@ def score_by_theme(items: List[Dict[str, Any]], theme: str) -> List[Dict[str, An
 
     return tags_all
 
+
 # =============================================================================
 # LINE FLEX
 # =============================================================================
-LINE_BROADCAST = "https://api.line.me/v2/bot/message/broadcast"
-
 def create_flex_carousel(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     now_txt = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
     bubbles = []
@@ -446,6 +497,7 @@ def create_flex_carousel(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "contents": {"type": "carousel", "contents": bubbles}
     }]
 
+
 def send_to_line(messages: List[Dict[str, Any]]) -> None:
     if DRY_RUN:
         print("[DRY_RUN] sending", len(messages), "messages")
@@ -458,13 +510,14 @@ def send_to_line(messages: List[Dict[str, Any]]) -> None:
         print("[LINE ERROR]", r.status_code, r.text[:900])
         r.raise_for_status()
 
+
 # =============================================================================
 # MAIN
 # =============================================================================
 def main():
     seed = read_text_file(SEED_NEWS_FILE)
     if not seed:
-        raise RuntimeError("ไม่พบ seed_news.txt หรือ SEED_NEWS_TEXT (ให้สร้างไฟล์ seed_news.txt)")
+        raise RuntimeError("ไม่พบ seed_news.txt (ให้สร้างไฟล์ seed_news.txt)")
 
     if not PROJECT_NAMES:
         print(f"⚠️ ไม่พบ {PROJECT_LIST_FILE} หรือไฟล์ว่าง (project_hits จะไม่ทำงาน)")
@@ -492,7 +545,7 @@ def main():
         print("ไม่มีข่าวใหม่")
         return
 
-    print("3) ให้ LLM ให้คะแนนข่าวตาม Theme (batch กัน 413)...")
+    print("3) ให้ LLM ให้คะแนนข่าวตาม Theme (batch กัน 413 + parse robust)...")
     tags = score_by_theme(candidates, theme)
 
     scored: List[Dict[str, Any]] = []
@@ -508,10 +561,8 @@ def main():
         summary = it.get("summary", "")
         text = f"{title} {summary}"
 
-        # project/partner hits (string + alias)
         project_hits = find_hits(text, PROJECT_NAMES, aliases=None)
         partner_hits = find_hits(text, PARTNER_NAMES, aliases=PARTNER_ALIASES)
-
         has_entity = bool(project_hits or partner_hits)
 
         score = int(tg.get("score", 0) or 0)
@@ -531,17 +582,12 @@ def main():
 
     scored.sort(key=lambda x: x["score"], reverse=True)
 
-    # -------------------------------------------------------------------------
     # ✅ FINAL FILTER (กว้างขึ้น ไม่เงียบ)
-    #
-    # - ถ้าต้องการบังคับ entity ทุกข่าวจริง ๆ -> ตั้ง REQUIRE_ENTITY_ALWAYS=true
-    # - ค่า default: กว้างขึ้นตามที่คุณขอ
-    # -------------------------------------------------------------------------
     if REQUIRE_ENTITY_ALWAYS:
         passed = [x for x in scored if x["has_entity"] and x["score"] >= SCORE_RELAXED][:SEND_LIMIT]
     else:
-        A = [x for x in scored if x["score"] >= SCORE_STRICT]                           # Theme สูงมาก (ไม่บังคับ entity)
-        B = [x for x in scored if x["score"] >= SCORE_RELAXED and x["has_entity"]]      # Theme ปานกลาง + entity
+        A = [x for x in scored if x["score"] >= SCORE_STRICT]                      # Theme สูง: ส่งได้
+        B = [x for x in scored if x["score"] >= SCORE_RELAXED and x["has_entity"]] # Theme กลาง + entity
         passed = []
         seen = set()
         for x in (A + B):
@@ -566,6 +612,7 @@ def main():
 
     save_sent_links([p["url"] for p in passed if p.get("url")])
     print("Done")
+
 
 if __name__ == "__main__":
     main()
