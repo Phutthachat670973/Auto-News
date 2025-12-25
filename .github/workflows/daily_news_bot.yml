@@ -51,7 +51,7 @@ jobs:
           SLEEP_MAX: "10"
 
           # ====== Project mode controls ======
-          PROJECT_SEND_LIMIT: "10"         # จำกัดจำนวนข่าวฝั่งโครงการ (ตั้ง 1 ถ้าอยากให้ 1 ข่าว)
+          PROJECT_SEND_LIMIT: "10"         # จำกัดจำนวนข่าวฝั่งโครงการ
           MIN_SOURCE_SCORE: "0"            # คัดทิ้งแหล่งคะแนนต่ำ (เช่น 0.6)
           SHOW_SOURCE_RATING: "true"       # แสดงคะแนนความน่าเชื่อถือใน Flex
           USE_KEYWORD_GATE: "false"        # true = ต้องติด keyword ก่อนถึงเข้า LLM
@@ -71,7 +71,6 @@ jobs:
           DRY_RUN: "false"
         run: |
           python -u news.py
-
 
       - name: Commit and push sent_links
         if: always()
