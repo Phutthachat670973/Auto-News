@@ -32,39 +32,37 @@ jobs:
 
       - name: Run news.py
         env:
-          # ====== Required Secrets ======
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-
-          # ====== Model ======
           GROQ_MODEL_NAME: llama-3.1-8b-instant
 
-          # ====== Google News query (แหล่งเดียว) ======
           GOOGLE_NEWS_QUERY: 'energy OR LNG OR oil OR "electricity tariff" OR nuclear OR sanctions OR geopolitics'
-          GOOGLE_NEWS_HL: "th"
-          GOOGLE_NEWS_GL: "TH"
-          GOOGLE_NEWS_CEID: "TH:th"
+          GOOGLE_NEWS_HL: "en"
+          GOOGLE_NEWS_GL: "US"
+          GOOGLE_NEWS_CEID: "US:en"
 
-          # ====== Volume ======
-          SELECT_LIMIT: "30"
+          SELECT_LIMIT: "40"
           SEND_LIMIT: "10"
 
-          # ====== Anti-429 / 413 ======
           MAX_RETRIES: "10"
           SLEEP_MIN: "6"
           SLEEP_MAX: "10"
-          THEME_BATCH_SIZE: "8"
+
+          THEME_BATCH_SIZE: "6"
           SUMMARY_CLIP: "220"
-          MAX_PROMPT_CHARS: "18000"
+          MAX_PROMPT_CHARS: "17000"
 
-          # ====== Misc ======
-          USER_AGENT: "Mozilla/5.0 (NewsBot)"
+          SCORE_THEME_MIN: "60"
+          SCORE_STRICT: "70"
+          SCORE_RELAXED: "50"
+          BONUS_HIT: "10"
+
+          SEED_NEWS_FILE: "seed_news.txt"
+          PROJECT_LIST_FILE: "project_list.txt"
+          PARTNER_LIST_FILE: "partner_list.txt"
+
           DEFAULT_HERO_URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
-
-          # ====== Tracking ======
           TRACK_DIR: "sent_links"
-
-          # ====== Run mode ======
           DRY_RUN: "false"
 
         run: |
