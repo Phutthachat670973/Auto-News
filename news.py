@@ -1,10 +1,11 @@
 # news.py
 # ============================================================================================================
-# Energy News Bot (Groq) — “ข่าวแนว PDP/Regulator/SMR/LNG-FID/Financing/Security/Geo” ไทย+ต่างประเทศ
-# - ใช้ Google News RSS 2 ชุด: ไทย (domestic) + ต่างประเทศ (international)
-# - LLM-first คัดข่าว + จัดหมวด + ดึง "ประเทศ/ผู้เกี่ยวข้อง/โครงการหรือสินทรัพย์ที่ถูกกล่าวถึง"
-# - สรุปผลกระทบเป็นไทย 1 bullet (25–45 คำ) และมี evidence จาก title/summary
-# - Fix รูปหาย: resolve Google News ไป publisher URL แบบปลอดภัย + fallback hero เสมอ
+# Energy News Bot (Groq) — ไทย + ต่างประเทศ "แนว PDP/Regulator/SMR/LNG-FID/Financing/Security/Geo"
+# FIX: ให้จำนวนข่าวกลับมาเยอะขึ้น (ระดับหลักร้อย) ด้วย
+#   1) Multi-query feeds (แตก query หลายฟีดแทน 1 ฟีด)
+#   2) Time window ยืดหยุ่น: ล่าสุด WINDOW_HOURS (default 24 ชม.)
+#   3) Log ต่อฟีด เพื่อ debug ว่าฟีดไหนดึงได้น้อย
+#   4) LLM-first คัดข่าว + หมวด + ดึง projects/partners + ผลกระทบ 1 bullet ไทย
 # ============================================================================================================
 
 import os
@@ -49,13 +50,13 @@ def _as_limit(env_name: str, default: str = "0"):
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "6"))
 LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
 
-MAX_ITEMS_DOMESTIC = _as_limit("MAX_ITEMS_DOMESTIC", "0")
-MAX_ITEMS_INTERNATIONAL = _as_limit("MAX_ITEMS_INTERNATIONAL", "0")
-MAX_LLM_ITEMS = _as_limit("MAX_LLM_ITEMS", "0")          # cap รวมก่อนเข้า LLM (0=ไม่จำกัด)
-MAX_SEND_ITEMS = _as_limit("MAX_SEND_ITEMS", "10")       # จำนวน bubble ที่ส่ง LINE
+# จำนวนข่าวที่ “อนุญาตให้ส่งเข้า LLM” (0=ไม่จำกัด) — ถ้ากลัวกินโควต้าให้ตั้งสัก 200
+MAX_LLM_ITEMS = _as_limit("MAX_LLM_ITEMS", "220")
+# จำนวนที่ส่งขึ้น LINE (0=ไม่จำกัด แต่ LINE carousel ควรไม่เยอะ)
+MAX_SEND_ITEMS = _as_limit("MAX_SEND_ITEMS", "20")
 
 RUN_DEADLINE_MIN = int(os.getenv("RUN_DEADLINE_MIN", "0"))  # 0 = no deadline
-RSS_TIMEOUT_SEC = int(os.getenv("RSS_TIMEOUT_SEC", "15"))
+RSS_TIMEOUT_SEC = int(os.getenv("RSS_TIMEOUT_SEC", "18"))
 ARTICLE_TIMEOUT_SEC = int(os.getenv("ARTICLE_TIMEOUT_SEC", "12"))
 
 SLEEP_MIN = float(os.getenv("SLEEP_MIN", "0.2" if os.getenv("GITHUB_ACTIONS") else "0.6"))
@@ -68,9 +69,13 @@ DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ["1", "true", "yes", 
 SHOW_SOURCE_RATING = os.getenv("SHOW_SOURCE_RATING", "true").strip().lower() in ["1", "true", "yes", "y"]
 MIN_SOURCE_SCORE = int(os.getenv("MIN_SOURCE_SCORE", "0"))
 
+# จำนวน entries ที่อ่านต่อ RSS feed
 MAX_ENTRIES_PER_FEED = int(os.getenv("MAX_ENTRIES_PER_FEED", "120"))
 
-# fallback hero ที่ “ควรขึ้นแน่ๆ”
+# Time window: ล่าสุดกี่ชั่วโมง (แก้ปัญหา “รันบ่ายแล้วได้ข่าวน้อย”)
+WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "24"))
+
+# fallback hero
 DEFAULT_HERO_URL = os.getenv(
     "DEFAULT_HERO_URL",
     "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
@@ -83,39 +88,41 @@ S.headers.update({"User-Agent": "Mozilla/5.0"})
 GROQ_CALLS = 0
 
 # ============================================================================================================
-# FEEDS (แนวเดียวกับที่คุณยกตัวอย่าง)
+# FEEDS (แตกหลาย query เพื่อให้ปริมาณกลับมาเยอะ)
 # ============================================================================================================
 
 def google_news_rss(q: str, hl="en", gl="US", ceid="US:en"):
     return f"https://news.google.com/rss/search?q={quote_plus(q)}&hl={hl}&gl={gl}&ceid={ceid}"
 
-# ปรับ/เติม keyword ได้ใน ENV ถ้าอยาก custom
-TH_STYLE_QUERY = os.getenv("TH_STYLE_QUERY", "").strip() or """
-(แผน PDP OR PDP ใหม่ OR ค่าไฟ OR โครงสร้างค่าไฟ OR กกพ OR "Direct PPA" OR PPA OR
-กฟผ OR SMR OR โรงไฟฟ้านิวเคลียร์ OR นิวเคลียร์ OR Net Zero OR Carbon Neutral OR
-Data Center ไฟฟ้า OR ดีมานด์ไฟ OR
-LNG OR ก๊าซธรรมชาติ OR ท่อส่งก๊าซ OR ท่าเรือ OR โครงสร้างพื้นฐานพลังงาน OR
-แท่นขุดเจาะ OR ความปลอดภัยทรัพย์สินพลังงาน OR โดรน OR
-คว่ำบาตร OR ค่าเงิน OR มาตรการรัฐ OR ภาษีพลังงาน)
-"""
+TH_QUERIES = [
+    '(PDP OR "แผนพัฒนากำลังผลิตไฟฟ้า" OR "แผน PDP" OR กกพ OR "Direct PPA" OR PPA OR ค่าไฟ OR Ft OR โครงสร้างต้นทุนไฟฟ้า)',
+    '(SMR OR "โรงไฟฟ้านิวเคลียร์" OR นิวเคลียร์ OR "พลังงานสะอาด" OR Net Zero OR Carbon Neutral OR "ดาต้าเซนเตอร์" OR "Data Center")',
+    '(LNG OR "ก๊าซธรรมชาติ" OR ท่อส่งก๊าซ OR "ท่าเรือ" OR "โครงสร้างพื้นฐานพลังงาน" OR "นำเข้าก๊าซ" OR "ส่งออกก๊าซ")',
+    '(แท่นขุดเจาะ OR โดรน OR "ความปลอดภัยทรัพย์สินพลังงาน" OR "ภัยคุกคาม" OR sabotage OR attack OR security)',
+    '("ตลาดไฟฟ้า" OR "แผนลงทุนโรงไฟฟ้า" OR "ประมูลไฟฟ้า" OR "พลังงานหมุนเวียน" OR โซลาร์ OR ลม OR ไฮโดรเจน)',
+]
 
-WORLD_STYLE_QUERY = os.getenv("WORLD_STYLE_QUERY", "").strip() or """
-(energy policy OR power tariff OR regulator OR direct PPA OR
-SMR OR small modular reactor OR nuclear restart OR
-LNG project OR FID OR liquefaction OR export terminal OR import terminal OR
-structured financing OR project financing OR EPC contract OR equipment orders OR
-offshore wind halted OR national security OR sanctions OR crude flows OR LNG flows OR
-OPEC policy OR gas development OR pipeline)
-"""
+EN_QUERIES = [
+    '(energy policy OR regulator OR power tariff OR "direct PPA" OR "power market reform")',
+    '(SMR OR "small modular reactor" OR nuclear restart OR nuclear policy OR "reactor" )',
+    '(LNG project OR FID OR export terminal OR liquefaction OR regas OR "floating LNG" OR "gas development")',
+    '(structured financing OR project financing OR EPC OR "equipment orders" OR Baker Hughes OR Honeywell OR "Solar Turbines")',
+    '(sanctions OR national security OR crude flows OR LNG flows OR shipping OR geopolitics OR "offshore wind halted")',
+]
 
-NEWS_FEEDS = [
-    ("GoogleNewsTH", "domestic", google_news_rss(TH_STYLE_QUERY, hl="th", gl="TH", ceid="TH:th")),
-    ("GoogleNewsEN", "international", google_news_rss(WORLD_STYLE_QUERY, hl="en", gl="US", ceid="US:en")),
-    # จะเก็บ legacy global feed ไว้ก็ได้ (มักได้ข่าว LNG/energy)
+NEWS_FEEDS = []
+
+for q in TH_QUERIES:
+    NEWS_FEEDS.append(("GoogleNewsTH", "domestic", google_news_rss(q, hl="th", gl="TH", ceid="TH:th")))
+for q in EN_QUERIES:
+    NEWS_FEEDS.append(("GoogleNewsEN", "international", google_news_rss(q, hl="en", gl="US", ceid="US:en")))
+
+# legacy feeds (optional)
+NEWS_FEEDS.extend([
     ("Oilprice", "international", "https://oilprice.com/rss/main"),
     ("Economist", "international", "https://www.economist.com/latest/rss.xml"),
     ("YahooFinance", "international", "https://finance.yahoo.com/news/rssindex"),
-]
+])
 
 # ============================================================================================================
 # URL normalize + sent_links
@@ -206,14 +213,8 @@ def _is_good_publisher_url(u: str) -> bool:
     return True
 
 def resolve_final_url(url: str) -> str:
-    """
-    เป้าหมาย: ได้ publisher URL จริง
-    - ห้ามหลุดเป็น tracking/asset (google-analytics / googleusercontent / gstatic)
-    - ถ้าแกะไม่ได้จริงๆ ให้คืน url เดิม
-    """
     if not url:
         return url
-
     try:
         r = S.get(url, timeout=min(ARTICLE_TIMEOUT_SEC, 10), allow_redirects=True)
         final = r.url or url
@@ -229,7 +230,6 @@ def resolve_final_url(url: str) -> str:
         if host == "news.google.com":
             html = r.text or ""
 
-            # canonical
             m = re.search(r'rel=["\']canonical["\']\s+href=["\']([^"\']+)["\']', html, re.I)
             if m:
                 cand = m.group(1).strip()
@@ -240,7 +240,6 @@ def resolve_final_url(url: str) -> str:
                         pass
                     return cand
 
-            # url=
             m = re.search(r"(?:\?|&|amp;)url=(https?%3A%2F%2F[^&\"']+)", html, re.I)
             if m:
                 cand = unquote(m.group(1))
@@ -251,7 +250,6 @@ def resolve_final_url(url: str) -> str:
                         pass
                     return cand
 
-            # first good https href
             hrefs = re.findall(r'href=["\'](https?://[^"\']+)["\']', html, flags=re.I)
             for cand in hrefs[:200]:
                 cand = cand.strip()
@@ -294,10 +292,7 @@ HIGH_TRUST_DOMAINS = {
     "spglobal.com", "iea.org", "opec.org", "worldbank.org", "imf.org", "un.org",
 }
 
-ENERGY_TRADE_DOMAINS = {
-    "oilprice.com", "rigzone.com", "argusmedia.com", "energyintel.com",
-}
-
+ENERGY_TRADE_DOMAINS = {"oilprice.com", "rigzone.com", "argusmedia.com", "energyintel.com"}
 LOW_TRUST_HINTS = ["click", "viral", "rumor", "shocking", "unbelievable", "exposed", "หวย", "ทำนาย", "ดวง", "แจก", "เครดิตฟรี"]
 
 def assess_source_credibility(original_url: str, final_url: str, title: str) -> Dict[str, Any]:
@@ -307,14 +302,7 @@ def assess_source_credibility(original_url: str, final_url: str, title: str) -> 
     domain = _get_domain(fu)
 
     if domain in TRACKER_HOSTS or any(domain.endswith(x) for x in TRACKER_HOSTS):
-        return {
-            "domain": domain,
-            "final_url": original_url,
-            "score": 0,
-            "rating": "low",
-            "rating_th": "ต่ำ",
-            "signals": ["tracker-url"],
-        }
+        return {"domain": domain, "final_url": original_url, "score": 0, "rating": "low", "rating_th": "ต่ำ", "signals": ["tracker-url"]}
 
     if _is_https(fu):
         score += 1
@@ -325,9 +313,7 @@ def assess_source_credibility(original_url: str, final_url: str, title: str) -> 
         signals.append("gov/edu")
 
     def _is_high_trust(d: str) -> bool:
-        if d in HIGH_TRUST_DOMAINS:
-            return True
-        return any(d.endswith(hd) for hd in HIGH_TRUST_DOMAINS)
+        return d in HIGH_TRUST_DOMAINS or any(d.endswith(hd) for hd in HIGH_TRUST_DOMAINS)
 
     if domain and _is_high_trust(domain):
         score += 3
@@ -357,14 +343,7 @@ def assess_source_credibility(original_url: str, final_url: str, title: str) -> 
     else:
         rating, rating_th = "low", "ต่ำ"
 
-    return {
-        "domain": domain,
-        "final_url": fu,
-        "score": score,
-        "rating": rating,
-        "rating_th": rating_th,
-        "signals": signals,
-    }
+    return {"domain": domain, "final_url": fu, "score": score, "rating": rating, "rating_th": rating_th, "signals": signals}
 
 # ============================================================================================================
 # Feed parsing + image fetch
@@ -505,7 +484,8 @@ def has_meaningful_impact(bullets) -> bool:
     t = txt.lower().replace(" ", "")
     if any(x.replace(" ", "") in t for x in bad):
         return False
-    return len(txt.strip()) >= 70
+    # ลด threshold ให้ผ่านง่ายขึ้นนิดหน่อย (กัน 0 ข่าวผ่าน)
+    return len(txt.strip()) >= 50
 
 def validate_evidence_in_text(title: str, summary: str, evidence_list: list) -> bool:
     text = f"{title or ''} {summary or ''}".lower()
@@ -581,7 +561,8 @@ def call_groq_with_retries(prompt: str, temperature: float = 0.35) -> str:
     raise last
 
 GENERIC_PATTERNS = ["อาจกระทบต้นทุน", "อาจกระทบกฎระเบียบ", "อาจกระทบตารางงาน", "อาจส่งผลกระทบ", "อาจกระทบต่อโครงการ"]
-SPECIFIC_HINTS = ["ใบอนุญาต", "ภาษี", "psc", "สัมปทาน", "ประกัน", "ผู้รับเหมา", "แรงงาน", "ท่าเรือ", "ขนส่ง", "ศุลกากร", "ค่าเงิน", "คว่ำบาตร", "นัดหยุดงาน", "ความไม่สงบ", "ความปลอดภัย", "Direct PPA", "PDP", "SMR", "LNG", "FID"]
+SPECIFIC_HINTS = ["ใบอนุญาต", "ภาษี", "psc", "สัมปทาน", "ประกัน", "ผู้รับเหมา", "แรงงาน", "ท่าเรือ", "ขนส่ง", "ศุลกากร",
+                  "ค่าเงิน", "คว่ำบาตร", "นัดหยุดงาน", "ความไม่สงบ", "ความปลอดภัย", "Direct PPA", "PDP", "SMR", "LNG", "FID"]
 def looks_generic_or_short_one(bullets) -> bool:
     if not bullets or not isinstance(bullets, list):
         return True
@@ -589,7 +570,7 @@ def looks_generic_or_short_one(bullets) -> bool:
     joined = " ".join(bullets).lower()
     generic_hit = any(p.replace(" ", "") in joined.replace(" ", "") for p in GENERIC_PATTERNS)
     specific_hit = any(k.lower() in joined for k in SPECIFIC_HINTS)
-    too_short = len(joined) < 70
+    too_short = len(joined) < 50
     return (generic_hit and not specific_hit) or too_short
 
 def rewrite_impact_bullet_one_thai(news, bullets):
@@ -621,7 +602,7 @@ bullet เดิม:
     return diversify_bullets(clean_bullets(bullets))[:1]
 
 # ============================================================================================================
-# LLM selection (ไทย-only) — ดึง หมวด/ประเทศ/ผู้เกี่ยวข้อง/โครงการหรือสินทรัพย์ + bullet
+# LLM selection (ไทย-only) — หมวด/ประเทศ/projects/partners + bullet
 # ============================================================================================================
 
 def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
@@ -705,20 +686,22 @@ def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int =
     return results
 
 # ============================================================================================================
-# Window: 21:00 yesterday -> 06:00 today (Bangkok)
+# Fetch window: last WINDOW_HOURS (Bangkok)
 # ============================================================================================================
 
 def fetch_news_window():
     now_local = datetime.now(bangkok_tz)
-    start = (now_local - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
-    end = now_local.replace(hour=6, minute=0, second=0, microsecond=0)
+    start = now_local - timedelta(hours=WINDOW_HOURS)
+    end = now_local
 
     out = []
     for site, feed_section, url in NEWS_FEEDS:
         try:
             feed = parse_feed_with_timeout(url)
             entries = list(feed.entries or [])[:MAX_ENTRIES_PER_FEED]
+            print(f"[FEED] {site}/{feed_section} entries={len(entries)} url={url[:110]}...")
 
+            kept = 0
             for e in entries:
                 pub = getattr(e, "published", None) or getattr(e, "updated", None)
                 if not pub:
@@ -748,11 +731,14 @@ def fetch_news_window():
                     "link": link,
                     "published": dt_local,
                 })
+                kept += 1
+
+            print(f"[FEED] kept_in_window={kept}")
+
         except Exception as ex:
             print(f"[WARN] feed failed: {site}/{feed_section} -> {type(ex).__name__}: {ex}")
             continue
 
-    # unique by link
     uniq, seen = [], set()
     for n in out:
         k = _normalize_link(n["link"])
@@ -907,28 +893,23 @@ def main():
 
     sent = load_sent_links()
 
-    # ---------- Pre-filter (ตัดซ้ำ/ตัดที่ส่งแล้ว + จำกัดแยก domestic/international) ----------
-    domestic, international = [], []
+    # ---------- ตัดซ้ำ URL + ตัดที่ส่งแล้ว ----------
+    selected = []
+    seen = set()
     for n in all_news:
         if deadline and time.time() > deadline:
             print("ถึง deadline ระหว่าง pre-filter (หยุด)")
             break
-
-        if _normalize_link(n["link"]) in sent:
+        k = _normalize_link(n["link"])
+        if not k:
             continue
+        if k in sent:
+            continue
+        if k in seen:
+            continue
+        seen.add(k)
+        selected.append(n)
 
-        sec = (n.get("feed_section") or "international").strip().lower()
-        if sec == "domestic":
-            domestic.append(n)
-        else:
-            international.append(n)
-
-    if MAX_ITEMS_DOMESTIC is not None:
-        domestic = domestic[:MAX_ITEMS_DOMESTIC]
-    if MAX_ITEMS_INTERNATIONAL is not None:
-        international = international[:MAX_ITEMS_INTERNATIONAL]
-
-    selected = domestic + international
     selected.sort(key=lambda x: x["published"], reverse=True)
     selected = dedupe_near_titles(selected, threshold=0.88)
     print("จำนวนข่าวหลังตัดซ้ำใกล้เคียง:", len(selected))
@@ -949,11 +930,8 @@ def main():
 
         original = n.get("link", "")
         final_url = resolve_final_url(original)
-
-        # กัน final_url หลุดเป็น tracker
         if _get_domain(final_url) in TRACKER_HOSTS or any(_get_domain(final_url).endswith(x) for x in TRACKER_HOSTS):
             final_url = original
-
         n["final_url"] = final_url
 
         cred = assess_source_credibility(original, final_url, n.get("title", ""))
@@ -1008,30 +986,21 @@ def main():
         if not bullets:
             continue
 
-        # กันอังกฤษหลุด
-        if is_mostly_english(bullets[0]):
-            bullets = rewrite_impact_bullet_one_thai(n, bullets)
-
-        # ถ้ายัง generic/สั้น -> rewrite ไทย
-        if ENABLE_IMPACT_REWRITE and (looks_generic_or_short_one(bullets) or is_mostly_english(bullets[0])):
+        # กันอังกฤษหลุด / generic -> rewrite ไทย
+        if is_mostly_english(bullets[0]) or (ENABLE_IMPACT_REWRITE and looks_generic_or_short_one(bullets)):
             bullets = rewrite_impact_bullet_one_thai(n, bullets)
 
         bullets = diversify_bullets(clean_bullets(bullets)[:1])
-        if not bullets:
+        if not bullets or is_mostly_english(bullets[0]):
             continue
-
-        if is_mostly_english(bullets[0]):
-            continue
-
         if not guard_cross_topic(title, summary, bullets):
             continue
-
         if not has_meaningful_impact(bullets):
             continue
 
-        # enrich fields from LLM
         n["section"] = (tag.get("section") or n.get("feed_section") or "international").strip().lower()
         n["country"] = (tag.get("country") or ("Thailand" if n["section"] == "domestic" else "Unknown")).strip()
+        n["topic_category"] = topic_category
 
         projects = tag.get("projects") or []
         partners = tag.get("partners") or []
@@ -1039,12 +1008,9 @@ def main():
             projects = [str(projects)]
         if not isinstance(partners, list):
             partners = [str(partners)]
-        projects = [str(x).strip() for x in projects if str(x).strip()][:8]
-        partners = [str(x).strip() for x in partners if str(x).strip()][:10]
+        n["projects"] = [str(x).strip() for x in projects if str(x).strip()][:8]
+        n["partners"] = [str(x).strip() for x in partners if str(x).strip()][:10]
 
-        n["topic_category"] = topic_category
-        n["projects"] = projects
-        n["partners"] = partners
         n["impact_bullets"] = bullets[:1]
         n["impact_level"] = (tag.get("impact_level") or "unknown")
         n["evidence"] = evidence
@@ -1064,15 +1030,12 @@ def main():
             break
 
         img = fetch_article_image(n.get("final_url") or n.get("link", ""))
-        if _is_good_image_url(img or ""):
-            n["image"] = img
-        else:
-            n["image"] = DEFAULT_HERO_URL
-
-        time.sleep(0.10)
+        n["image"] = img if _is_good_image_url(img or "") else DEFAULT_HERO_URL
+        time.sleep(0.08)
 
     final.sort(key=lambda x: x["published"], reverse=True)
     send_cap = len(final) if MAX_SEND_ITEMS is None else min(MAX_SEND_ITEMS, len(final))
+
     msgs = create_flex(final[:send_cap])
     send_to_line(msgs)
 
