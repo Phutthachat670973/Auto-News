@@ -1,1082 +1,641 @@
 # news.py
-# ============================================================================================================
-# Energy News Bot (Groq) — ไทย + ต่างประเทศ
-# - ดึงข่าวจากหลาย query (เพิ่มปริมาณข่าว)
-# - LLM คัดข่าวแนว: policy/regulator, investment projects, LNG/FID/financing/EPC, security, transition tech, geo
-# - ดึง "projects" (ชื่อโครงการ/สินทรัพย์/แผน/มาตรการ) + "partners" (ผู้เกี่ยวข้อง/ผู้ร่วมทุน/องค์กร)
-# - สรุป "ผลกระทบ" แบบ 1 bullet ภาษาไทย
-# FIX LINE 400:
-#   - Carousel ได้ไม่เกิน 12 bubble ต่อ 1 flex message => แตกส่งเป็นหลาย flex
-#   - action.uri ยาวได้ไม่เกิน 1000 => safe_action_uri() ตัด query/fragment + fallback
-# ============================================================================================================
+# -*- coding: utf-8 -*-
 
 import os
 import re
 import json
 import time
-import random
+import hashlib
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, quote_plus, unquote
-from difflib import SequenceMatcher
+from urllib.parse import urlparse, parse_qs, unquote
 
-import feedparser
 import requests
-from dateutil import parser as dateutil_parser
+import feedparser
 import pytz
-from groq import Groq
+from dateutil import parser as dateutil_parser
 
-# ============================================================================================================
-# ENV
-# ============================================================================================================
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+
+# =============================================================================
+# ENV / CONFIG
+# =============================================================================
+TZ = pytz.timezone(os.getenv("TZ", "Asia/Bangkok"))
+
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-
-if not GROQ_API_KEY:
-    raise RuntimeError("ไม่พบ GROQ_API_KEY")
 if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise RuntimeError("ไม่พบ LINE_CHANNEL_ACCESS_TOKEN")
+    raise RuntimeError("Missing LINE_CHANNEL_ACCESS_TOKEN")
 
-GROQ_MODEL_NAME = os.getenv("GROQ_MODEL_NAME", "llama-3.1-8b-instant").strip() or "llama-3.1-8b-instant"
-groq_client = Groq(api_key=GROQ_API_KEY)
+# LLM (Groq OpenAI-compatible)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
+GROQ_ENDPOINT = os.getenv("GROQ_ENDPOINT", "https://api.groq.com/openai/v1/chat/completions").strip()
 
-def _as_limit(env_name: str, default: str = "0"):
-    """<=0 => None (unlimited)"""
-    try:
-        v = int(os.getenv(env_name, default))
-        return None if v <= 0 else v
-    except Exception:
-        return None
+# Optional Gemini fallback (ถ้าคุณยังใช้)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash").strip()
 
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "6"))
-LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
+USE_LLM = os.getenv("USE_LLM", "1").strip() == "1"
 
-# ข่าวที่จะส่งเข้า LLM (0 = ไม่จำกัด)
-MAX_LLM_ITEMS = _as_limit("MAX_LLM_ITEMS", "220")
-# ข่าวที่จะส่งขึ้น LINE (0 = ไม่จำกัด; จะถูกแบ่งเป็นหลาย flex โดยอัตโนมัติ)
-MAX_SEND_ITEMS = _as_limit("MAX_SEND_ITEMS", "24")
+# News window
+WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "48"))
+MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "100"))
 
-RUN_DEADLINE_MIN = int(os.getenv("RUN_DEADLINE_MIN", "0"))  # 0 = no deadline
-RSS_TIMEOUT_SEC = int(os.getenv("RSS_TIMEOUT_SEC", "18"))
-ARTICLE_TIMEOUT_SEC = int(os.getenv("ARTICLE_TIMEOUT_SEC", "12"))
+# LLM batching / limits
+MAX_LLM_ITEMS = int(os.getenv("MAX_LLM_ITEMS", "200"))  # จะตัดหลัง dedup
+SLEEP_BETWEEN_CALLS = float(os.getenv("SLEEP_BETWEEN_CALLS", "0.8"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "450"))
 
-SLEEP_MIN = float(os.getenv("SLEEP_MIN", "0.2" if os.getenv("GITHUB_ACTIONS") else "0.6"))
-SLEEP_MAX = float(os.getenv("SLEEP_MAX", "0.6" if os.getenv("GITHUB_ACTIONS") else "1.2"))
-SLEEP_BETWEEN_CALLS = (max(0.0, SLEEP_MIN), max(SLEEP_MIN, SLEEP_MAX))
+# LINE limits
+BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))  # ปลอดภัย
+MAX_MESSAGES_PER_RUN = int(os.getenv("MAX_MESSAGES_PER_RUN", "20"))   # กันสแปม
 
-ENABLE_IMPACT_REWRITE = os.getenv("ENABLE_IMPACT_REWRITE", "true").strip().lower() in ["1", "true", "yes", "y"]
-DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ["1", "true", "yes", "y"]
+# sent links
+SENT_DIR = os.getenv("SENT_DIR", "sent_links")
+os.makedirs(SENT_DIR, exist_ok=True)
 
-SHOW_SOURCE_RATING = os.getenv("SHOW_SOURCE_RATING", "true").strip().lower() in ["1", "true", "yes", "y"]
-MIN_SOURCE_SCORE = int(os.getenv("MIN_SOURCE_SCORE", "0"))
+DRY_RUN = os.getenv("DRY_RUN", "0").strip() == "1"
 
-MAX_ENTRIES_PER_FEED = int(os.getenv("MAX_ENTRIES_PER_FEED", "120"))
-WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "24"))
 
-DEFAULT_HERO_URL = os.getenv(
-    "DEFAULT_HERO_URL",
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
-)
+# =============================================================================
+# PROJECT DB (ประเทศ/โครงการตามไฟล์ที่ให้มา)
+# =============================================================================
+# NOTE: ประเทศที่อนุญาต = key ใน PROJECTS_BY_COUNTRY เท่านั้น
+PROJECTS_BY_COUNTRY = {
+    "ประเทศไทย": {
+        "โครงการจี 1/61": "PTTEP 60% (Operator), Mubadala Energy 40%",
+        "โครงการจี 2/61": "PTTEP 100% (Operator)",
+        "โครงการอาทิตย์ (Arthit)": "PTTEP 80% (Operator), Chevron 16%, MOECO 4%",
+        "โครงการเอส 1 (S1)": "PTTEP 100% (Operator)",
+        "โครงการสัมปทาน 4 (Contract 4)": "PTTEP 60% + (กลุ่ม) Chevron (Operator) — ผู้ร่วมทุนรายอื่นไม่ระบุครบ",
+        "โครงการพีทีทีอีพี 1 (PTTEP 1)": "PTTEP 100% (Operator)",
+        "โครงการบี 6/27": "PTTEP 100% (Operator)",
+        "โครงการแอล 22/43": "PTTEP 100% (Operator)",
+        "โครงการอี 5 (E5)": "PTTEP 20% + ExxonMobil (Operator) — ผู้ร่วมทุนรายอื่นไม่ระบุครบ",
+        "โครงการจี 4/43": "PTTEP 21.375% + Chevron (Operator) — ผู้ร่วมทุนรายอื่นไม่ระบุครบ",
+        "โครงการสินภูฮ่อม (Sinphuhorm)": "PTTEP 55%, APICO LLC 35%, ExxonMobil 10%",
+        "โครงการบี 8/32 และ 9เอ (B8/32 & 9A)": "Chevron 51.660% (Operator), PTTEP 25.000%, MOECO 16.706%, KrisEnergy 4.634%, Palang Sophon 2.000%",
+        "โครงการจี 4/48": "PTTEP 5% + Chevron (Operator) — ผู้ร่วมทุนรายอื่นไม่ระบุครบ",
+        "โครงการจี 12/48": "PTTEP 66.67% (Operator), TotalEnergies EP Thailand 33.33%",
+        "โครงการจี 1/65": "PTTEP 100% (Operator)",
+        "โครงการจี 3/65": "PTTEP 100% (Operator)",
+        "โครงการแอล 53/43 และแอล 54/43": "PTTEP 100% (Operator)",
+    },
+    "เมียนมา": {
+        "โครงการซอติก้า (Zawtika)": "PTTEP 80% (Operator), MOGE 20%",
+        "โครงการยาดานา (Yadana)": "PTTEP 62.96% (Operator), MOGE 37.04%",
+        "โครงการเมียนมา เอ็ม 3 (Myanmar M3)": "PTTEP 100% (Operator)",
+    },
+    "มาเลเซีย": {
+        "Malaysia SK309 and SK311": "ไม่ระบุครบ (มีเพียง PTTEP 42–59.5% และ Operator: PTTEP)",
+        "Malaysia Block H": "Petronas Carigali, Pertamina Malaysia E&P + PTTEP (Operator) — ไม่ระบุ % ครบ",
+        "Malaysia SK410B": "KUFPEC, Petronas Carigali + PTTEP (Operator) — ไม่ระบุ % ครบ",
+        "Malaysia SK417": "ไม่ระบุครบ (มีเพียง PTTEP 80%, Operator: PTTEP)",
+        "Malaysia SK405B": "ไม่ระบุครบ (มีเพียง PTTEP 49.5%, Operator: PTTEP)",
+        "Malaysia SK438": "ไม่ระบุครบ (มีเพียง PTTEP 80%, Operator: PTTEP)",
+        "Malaysia SK314A": "ไม่ระบุครบ (มีเพียง PTTEP 59.5%, Operator: PTTEP)",
+        "Malaysia SK325": "ไม่ระบุครบ (มีเพียง PTTEP 32.5%, Operator: Petronas Carigali)",
+        "Malaysia SB412": "ไม่ระบุครบ (มีเพียง PTTEP 60%, Operator: PTTEP)",
+        "Malaysia Block K (เช่น Gumusut-Kakap)": "Shell (Operator), ConocoPhillips, Petronas, PTTEP, ฯลฯ — ไม่ระบุ % ครบ",
+    },
+    "เวียดนาม": {
+        "โครงการเวียดนาม 16-1": "ไม่ระบุชื่อผู้ร่วมทุนครบ (Operator: HL JOC)",
+        "โครงการเวียดนาม บี และ 48/95": "ไม่ระบุครบ (Operator: Vietnam Oil and Gas Group)",
+        "โครงการเวียดนาม 52/97": "ไม่ระบุครบ (Operator: Vietnam Oil and Gas Group)",
+        "โครงการเวียดนาม 9-2": "ไม่ระบุชื่อผู้ร่วมทุนครบ (Operator: HV JOC)",
+    },
+    "อินโดนีเซีย": {
+        "โครงการนาทูน่า ซี เอ (Natuna Sea A)": "ไม่ระบุครบ (Operator: Harbour Energy)",
+    },
+    "คาซัคสถาน": {
+        "โครงการดุงกา (Dunga)": "Dunga Operating GmbH 60% (Operator), Oman Oil Company Limited 20%, PTTEP (Kazakhstan) 20%",
+    },
+    "โอมาน": {
+        "Oman Block 61": "bp 40% (Operator), OQ 30%, PTTEP 20%, PETRONAS 10%",
+        "Oman Block 6 (PDO)": "รัฐบาลโอมาน 60%, Shell 34%, TotalEnergies 4%, PTTEP (Partex) 2%",
+        "Oman Block 53": "Occidental 47% (Operator), OQEP 20%, Indian Oil 17%, Liwa 15%, PTTEP 1%",
+        "Oman Onshore Block 12": "ไม่ระบุครบ (มีเพียง PTTEP 20%, Operator: TotalEnergies)",
+        "Oman LNG Project": "รัฐบาลโอมาน, Shell, TotalEnergies, Mitsubishi ฯลฯ — ไม่ระบุ % ครบ",
+    },
+    "UAE": {
+        "Abu Dhabi Offshore 1": "Eni 70% (Operator), PTTEP 30%",
+        "Abu Dhabi Offshore 2": "Eni 70% (Operator), PTTEP 30%",
+        "Abu Dhabi Offshore 3": "ไม่ระบุครบ (ระบุว่าโครงสร้าง 70/30 ตามชุดเดียวกัน)",
+        "Ghasha Concession": "PTTEP 10% + ADNOC (ผู้ถือสิทธิหลัก/Operator) (+มีการกล่าวถึง Eni) — ไม่ระบุ % ครบ",
+        "ADNOC Gas Processing (AGP)": "PTTEP (ผ่าน Partex) 2% + ADNOC (Operator) — ไม่ระบุ % ครบ",
+    },
+    "แอลจีเรีย": {
+        "โครงการแอลจีเรีย 433a และ 416b": "ไม่ระบุชื่อผู้ร่วมทุนครบ (Operator: GBRS)",
+        "โครงการแอลจีเรีย ฮาสซิ เบียร์ เรกาอิซ (Hassi Bir Rekaiz)": "ไม่ระบุชื่อผู้ร่วมทุนครบ (Operator: GHBR)",
+    },
+    "โมซัมบิก": {
+        "Mozambique Area 1 (Mozambique LNG)": "TotalEnergies 26.5% (Operator), Mitsui 20%, ENH 15%, Bharat Petroleum 10%, Oil India 10%, ONGC Videsh 10%, PTTEP 8.5%",
+    },
+    "ออสเตรเลีย": {
+        "PTTEP Australasia": "PTTEP 100% (Operator)",
+    },
+    "เม็กซิโก": {
+        "Mexico Block 12 (2.4)": "Petronas (Operator), PTTEP, Ophir — ไม่ระบุ % ครบ",
+        "Mexico Block 29 (2.4)": "ไม่ระบุครบ (มีเพียง PTTEP 16.67%, Operator: Repsol)",
+    },
+}
 
-# === PROJECT SETTINGS (All projects, global) ===
-REQUIRE_PROJECT_MATCH = os.getenv("REQUIRE_PROJECT_MATCH", "false").strip().lower() in ["1", "true", "yes", "y"]
-SHOW_PARTNERS = os.getenv("SHOW_PARTNERS", "true").strip().lower() in ["1", "true", "yes", "y"]
+# Flatten helpers
+PROJECT_TO_COUNTRY = {}
+PROJECT_TO_PARTNERS = {}
+ALL_PROJECT_NAMES = []
+for c, d in PROJECTS_BY_COUNTRY.items():
+    for p, partners in d.items():
+        PROJECT_TO_COUNTRY[p] = c
+        PROJECT_TO_PARTNERS[p] = partners
+        ALL_PROJECT_NAMES.append(p)
 
-bangkok_tz = pytz.timezone("Asia/Bangkok")
-S = requests.Session()
-S.headers.update({"User-Agent": "Mozilla/5.0"})
+ALLOWED_COUNTRIES = set(PROJECTS_BY_COUNTRY.keys())
 
-GROQ_CALLS = 0
 
-# ============================================================================================================
-# FEEDS (multi-query)
-# ============================================================================================================
+# =============================================================================
+# FEEDS (กว้าง ๆ แล้วค่อยให้ LLM จับเข้าโครงการ)
+# =============================================================================
+def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
+    return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
 
-def google_news_rss(q: str, hl="en", gl="US", ceid="US:en"):
-    return f"https://news.google.com/rss/search?q={quote_plus(q)}&hl={hl}&gl={gl}&ceid={ceid}"
-
-TH_QUERIES = [
-    '(PDP OR "แผนพัฒนากำลังผลิตไฟฟ้า" OR "แผน PDP" OR กกพ OR "Direct PPA" OR PPA OR ค่าไฟ OR Ft OR โครงสร้างต้นทุนไฟฟ้า)',
-    '(SMR OR "โรงไฟฟ้านิวเคลียร์" OR นิวเคลียร์ OR "พลังงานสะอาด" OR Net Zero OR Carbon Neutral OR "ดาต้าเซนเตอร์" OR "Data Center")',
-    '(LNG OR "ก๊าซธรรมชาติ" OR ท่อส่งก๊าซ OR "ท่าเรือ" OR "โครงสร้างพื้นฐานพลังงาน" OR "นำเข้าก๊าซ" OR "ส่งออกก๊าซ")',
-    '(แท่นขุดเจาะ OR โดรน OR "ความปลอดภัยทรัพย์สินพลังงาน" OR "ภัยคุกคาม" OR sabotage OR attack OR security)',
-    '("ตลาดไฟฟ้า" OR "แผนลงทุนโรงไฟฟ้า" OR "ประมูลไฟฟ้า" OR "พลังงานหมุนเวียน" OR โซลาร์ OR ลม OR ไฮโดรเจน)',
-]
-
-EN_QUERIES = [
-    '(energy policy OR regulator OR power tariff OR "direct PPA" OR "power market reform")',
-    '(SMR OR "small modular reactor" OR nuclear restart OR nuclear policy OR reactor)',
-    '(LNG project OR FID OR export terminal OR liquefaction OR regas OR "floating LNG" OR "gas development")',
-    '(structured financing OR project financing OR EPC OR "equipment orders" OR Baker Hughes OR Honeywell OR "Solar Turbines")',
-    '(sanctions OR national security OR crude flows OR LNG flows OR shipping OR geopolitics OR "offshore wind halted")',
-]
-
-NEWS_FEEDS = []
-for q in TH_QUERIES:
-    NEWS_FEEDS.append(("GoogleNewsTH", "domestic", google_news_rss(q, hl="th", gl="TH", ceid="TH:th")))
-for q in EN_QUERIES:
-    NEWS_FEEDS.append(("GoogleNewsEN", "international", google_news_rss(q, hl="en", gl="US", ceid="US:en")))
-
-# optional RSS
-NEWS_FEEDS.extend([
+FEEDS = [
+    # Thai domestic (broad energy policy / regulator / electricity)
+    ("GoogleNewsTH", "domestic", gnews_rss('(พลังงาน OR PDP OR "กกพ" OR ค่าไฟ OR "Direct PPA" OR ก๊าซ OR LNG OR นิวเคลียร์ OR SMR OR โดรน OR แท่นขุดเจาะ)', hl="th", gl="TH", ceid="TH:th")),
+    # International (broad)
+    ("GoogleNewsEN", "international", gnews_rss('(energy policy OR regulator OR power tariff OR "direct PPA" OR LNG OR gas OR "small modular reactor" OR SMR OR sanctions OR "national security" OR drilling OR offshore OR "project financing")', hl="en", gl="US", ceid="US:en")),
+    # Oilprice
     ("Oilprice", "international", "https://oilprice.com/rss/main"),
-    ("Economist", "international", "https://www.economist.com/latest/rss.xml"),
+    # Yahoo Finance (optional general macro/energy)
     ("YahooFinance", "international", "https://finance.yahoo.com/news/rssindex"),
-])
+]
 
-# ============================================================================================================
-# URL normalize + sent_links
-# ============================================================================================================
 
-def _normalize_link(url: str) -> str:
+# =============================================================================
+# UTIL
+# =============================================================================
+def now_tz() -> datetime:
+    return datetime.now(TZ)
+
+def sha1(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
+
+def normalize_url(url: str) -> str:
+    url = (url or "").strip()
+    if not url:
+        return url
+    # strip fragments
     try:
-        p = urlparse(url)
-        scheme = (p.scheme or "https").lower()
-        netloc = (p.netloc or "").lower()
-        path = p.path or ""
-        q = dict(parse_qsl(p.query, keep_blank_values=True))
-        for k in list(q.keys()):
-            lk = k.lower()
-            if lk.startswith("utm_") or lk in ["fbclid", "gclid", "mc_cid", "mc_eid"]:
-                q.pop(k, None)
-        query = urlencode(sorted(q.items()))
-        return urlunparse((scheme, netloc, path, "", query, ""))
+        u = urlparse(url)
+        clean = u._replace(fragment="").geturl()
+        return clean
     except Exception:
-        return url or ""
+        return url
 
-def get_sent_links_file():
-    d = datetime.now(bangkok_tz).strftime("%Y-%m-%d")
-    os.makedirs("sent_links", exist_ok=True)
-    return os.path.join("sent_links", f"sent_links_{d}.txt")
-
-def load_sent_links():
-    fp = get_sent_links_file()
-    if not os.path.exists(fp):
-        return set()
-    with open(fp, "r", encoding="utf-8") as f:
-        return set(x.strip() for x in f if x.strip())
-
-def save_sent_links(links):
-    fp = get_sent_links_file()
-    existing = load_sent_links()
-    existing.update(_normalize_link(x) for x in links if x)
-    with open(fp, "w", encoding="utf-8") as f:
-        for x in sorted(existing):
-            f.write(x + "\n")
-
-# ============================================================================================================
-# Resolve Google News -> publisher + safe uri (LINE limit)
-# ============================================================================================================
-
-def _get_domain(u: str) -> str:
+def domain_of(url: str) -> str:
     try:
-        p = urlparse(u)
-        host = (p.netloc or "").lower().split(":")[0]
-        if host.startswith("www."):
-            host = host[4:]
-        return host
+        return urlparse(url).netloc.replace("www.", "")
     except Exception:
         return ""
 
-IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico")
-
-DISALLOWED_HOSTS = {
-    "lh3.googleusercontent.com",
-    "googleusercontent.com",
-    "gstatic.com",
-    "accounts.google.com",
-    "support.google.com",
-}
-
-TRACKER_HOSTS = {
-    "google-analytics.com",
-    "www.google-analytics.com",
-    "googletagmanager.com",
-    "doubleclick.net",
-    "stats.g.doubleclick.net",
-    "t.co",
-}
-
-def _is_good_publisher_url(u: str) -> bool:
-    if not u or not u.startswith(("http://", "https://")):
-        return False
-    host = _get_domain(u)
-    if not host:
-        return False
-    if host in DISALLOWED_HOSTS or any(host.endswith(x) for x in DISALLOWED_HOSTS):
-        return False
-    if host in TRACKER_HOSTS or any(host.endswith(x) for x in TRACKER_HOSTS):
-        return False
-    path = (urlparse(u).path or "").lower()
-    if any(path.endswith(ext) for ext in IMAGE_EXTS):
-        return False
-    return True
-
-def resolve_final_url(url: str) -> str:
+def shorten_google_news_url(url: str) -> str:
+    """
+    พยายามทำให้ url สั้นลง (ลดโอกาสเกิน 1000 chars)
+    - ถ้าเป็น Google News RSS redirect ที่มีพารามิเตอร์ url= ให้ดึงปลายทาง
+    - ถ้าเป็น news.google.com/articles/... จะลอง follow redirect 1 ครั้ง
+    """
+    url = normalize_url(url)
     if not url:
         return url
-    try:
-        r = S.get(url, timeout=min(ARTICLE_TIMEOUT_SEC, 10), allow_redirects=True)
-        final = r.url or url
-        host = _get_domain(final)
 
-        if host in TRACKER_HOSTS or any(host.endswith(x) for x in TRACKER_HOSTS):
+    try:
+        u = urlparse(url)
+        if "news.google.com" in u.netloc:
+            qs = parse_qs(u.query)
+            if "url" in qs and qs["url"]:
+                return normalize_url(unquote(qs["url"][0]))
+            # Some google news links embed original in "article" params, try follow
             try:
-                r.close()
+                r = requests.get(url, allow_redirects=True, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                final = normalize_url(r.url)
+                # keep if shorter and not empty
+                if final and len(final) < len(url):
+                    return final
             except Exception:
                 pass
-            return url
-
-        if host == "news.google.com":
-            html = r.text or ""
-
-            m = re.search(r'rel=["\']canonical["\']\s+href=["\']([^"\']+)["\']', html, re.I)
-            if m:
-                cand = m.group(1).strip()
-                if _is_good_publisher_url(cand):
-                    try:
-                        r.close()
-                    except Exception:
-                        pass
-                    return cand
-
-            m = re.search(r"(?:\?|&|amp;)url=(https?%3A%2F%2F[^&\"']+)", html, re.I)
-            if m:
-                cand = unquote(m.group(1))
-                if _is_good_publisher_url(cand):
-                    try:
-                        r.close()
-                    except Exception:
-                        pass
-                    return cand
-
-            hrefs = re.findall(r'href=["\'](https?://[^"\']+)["\']', html, flags=re.I)
-            for cand in hrefs[:200]:
-                cand = cand.strip()
-                if _is_good_publisher_url(cand):
-                    try:
-                        r.close()
-                    except Exception:
-                        pass
-                    return cand
-
-            try:
-                r.close()
-            except Exception:
-                pass
-            return final
-
-        try:
-            r.close()
-        except Exception:
-            pass
-        return final
-    except Exception:
-        return url
-
-def _strip_query_fragment(u: str) -> str:
-    try:
-        p = urlparse(u)
-        return urlunparse((p.scheme, p.netloc, p.path, "", "", ""))
-    except Exception:
-        return u
-
-def safe_action_uri(u: str) -> str:
-    """
-    LINE uri length limit <= 1000
-    - normalize ตัด utm
-    - ถ้ายังยาว: ตัด query/fragment
-    - ถ้ายังยาว: fallback
-    """
-    if not u:
-        return "https://news.google.com/"
-    u = _normalize_link(u)
-    if len(u) <= 1000:
-        return u
-    u2 = _strip_query_fragment(u)
-    if len(u2) <= 1000:
-        return u2
-    return "https://news.google.com/"
-
-# ============================================================================================================
-# Credibility
-# ============================================================================================================
-
-def _is_https(u: str) -> bool:
-    try:
-        return (urlparse(u).scheme or "").lower() == "https"
-    except Exception:
-        return False
-
-HIGH_TRUST_DOMAINS = {
-    "reuters.com", "bloomberg.com", "wsj.com", "ft.com", "economist.com",
-    "apnews.com", "bbc.co.uk", "bbc.com", "nytimes.com", "washingtonpost.com",
-    "theguardian.com", "aljazeera.com", "nhk.or.jp", "nikkei.com",
-    "spglobal.com", "iea.org", "opec.org", "worldbank.org", "imf.org", "un.org",
-}
-ENERGY_TRADE_DOMAINS = {"oilprice.com", "rigzone.com", "argusmedia.com", "energyintel.com"}
-LOW_TRUST_HINTS = ["click", "viral", "rumor", "shocking", "unbelievable", "exposed", "หวย", "ทำนาย", "ดวง", "แจก", "เครดิตฟรี"]
-
-def assess_source_credibility(original_url: str, final_url: str, title: str) -> Dict[str, Any]:
-    score = 0
-    signals = []
-    fu = final_url or original_url
-    domain = _get_domain(fu)
-
-    if domain in TRACKER_HOSTS or any(domain.endswith(x) for x in TRACKER_HOSTS):
-        return {"domain": domain, "final_url": original_url, "score": 0, "rating": "low", "rating_th": "ต่ำ", "signals": ["tracker-url"]}
-
-    if _is_https(fu):
-        score += 1
-        signals.append("https")
-
-    if domain.endswith(".gov") or domain.endswith(".edu"):
-        score += 2
-        signals.append("gov/edu")
-
-    def _is_high_trust(d: str) -> bool:
-        return d in HIGH_TRUST_DOMAINS or any(d.endswith(hd) for hd in HIGH_TRUST_DOMAINS)
-
-    if domain and _is_high_trust(domain):
-        score += 3
-        signals.append("major-domain")
-
-    if domain and (domain in ENERGY_TRADE_DOMAINS or any(domain.endswith(x) for x in ENERGY_TRADE_DOMAINS)):
-        score += 2
-        signals.append("energy-trade-press")
-
-    if domain == "news.google.com":
-        score += 2
-        signals.append("google-news-aggregator")
-
-    t = (title or "").lower()
-    if any(h in t for h in LOW_TRUST_HINTS):
-        score -= 2
-        signals.append("clickbait-terms-in-title")
-
-    if domain.count("-") >= 3:
-        score -= 1
-        signals.append("many-hyphens-domain")
-
-    if score >= 5:
-        rating, rating_th = "high", "สูง"
-    elif score >= 3:
-        rating, rating_th = "medium", "กลาง"
-    else:
-        rating, rating_th = "low", "ต่ำ"
-
-    return {"domain": domain, "final_url": fu, "score": score, "rating": rating, "rating_th": rating_th, "signals": signals}
-
-# ============================================================================================================
-# Feed parsing + image
-# ============================================================================================================
-
-def parse_feed_with_timeout(url: str):
-    r = S.get(url, timeout=RSS_TIMEOUT_SEC, allow_redirects=True)
-    r.raise_for_status()
-    return feedparser.parse(r.text)
-
-def _is_good_image_url(u: str) -> bool:
-    if not u or not isinstance(u, str):
-        return False
-    if not u.startswith("https://"):
-        return False
-    host = _get_domain(u)
-    if host in DISALLOWED_HOSTS or any(host.endswith(x) for x in DISALLOWED_HOSTS):
-        return False
-    if host in TRACKER_HOSTS or any(host.endswith(x) for x in TRACKER_HOSTS):
-        return False
-    if len(u) > 1200:
-        return False
-    return True
-
-def fetch_article_image(url: str):
-    try:
-        if not url or not url.startswith(("http://", "https://")):
-            return None
-        if _get_domain(url) == "news.google.com":
-            return None
-
-        r = S.get(url, timeout=ARTICLE_TIMEOUT_SEC, allow_redirects=True)
-        if r.status_code >= 300:
-            return None
-        html = r.text or ""
-
-        m = re.search(r'property=["\']og:image["\']\s+content=["\']([^"\']+)["\']', html, re.I)
-        if m:
-            u = m.group(1).strip()
-            if _is_good_image_url(u):
-                return u
-
-        m = re.search(r'name=["\']twitter:image["\']\s+content=["\']([^"\']+)["\']', html, re.I)
-        if m:
-            u = m.group(1).strip()
-            if _is_good_image_url(u):
-                return u
-
-        return None
-    except Exception:
-        return None
-
-# ============================================================================================================
-# Dedupe near-duplicate titles
-# ============================================================================================================
-
-def normalize_title(t: str) -> str:
-    t = (t or "").lower()
-    t = re.sub(r"[\W_]+", " ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
-def dedupe_near_titles(items: list, threshold: float = 0.88) -> list:
-    kept = []
-    seen_titles = []
-    for n in items:
-        nt = normalize_title(n.get("title", ""))
-        if not nt:
-            continue
-        dup = False
-        for st in seen_titles:
-            if SequenceMatcher(None, nt, st).ratio() >= threshold:
-                dup = True
-                break
-        if not dup:
-            kept.append(n)
-            seen_titles.append(nt)
-    return kept
-
-# ============================================================================================================
-# JSON extractor + bullet helpers
-# ============================================================================================================
-
-def _extract_json_object(raw: str):
-    if not raw:
-        return None
-    s = raw.strip()
-    if s.startswith("```"):
-        s = re.sub(r"^```(json)?", "", s, flags=re.I).strip()
-        s = re.sub(r"```$", "", s).strip()
-    try:
-        return json.loads(s)
     except Exception:
         pass
-    first = s.find("{")
-    last = s.rfind("}")
-    if first != -1 and last != -1 and last > first:
-        candidate = s[first:last + 1]
-        candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
-        try:
-            return json.loads(candidate)
-        except Exception:
-            return None
-    return None
 
-def clean_bullets(bullets):
-    if not isinstance(bullets, list):
-        bullets = [str(bullets)]
-    out = []
-    for b in bullets:
-        s = str(b).strip()
-        if not s or s == "•":
+    return url
+
+def read_sent_links() -> set:
+    sent = set()
+    for fn in os.listdir(SENT_DIR):
+        if not fn.endswith(".txt"):
             continue
-        out.append(s)
-    return out
+        fp = os.path.join(SENT_DIR, fn)
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        sent.add(line)
+        except Exception:
+            continue
+    return sent
 
-def diversify_bullets(bullets):
-    if not bullets:
-        return bullets
+def append_sent_link(url: str):
+    url = normalize_url(url)
+    if not url:
+        return
+    fn = os.path.join(SENT_DIR, now_tz().strftime("%Y-%m-%d") + ".txt")
+    with open(fn, "a", encoding="utf-8") as f:
+        f.write(url + "\n")
+
+def in_time_window(published_dt: datetime, hours: int) -> bool:
+    if not published_dt:
+        return False
+    return published_dt >= (now_tz() - timedelta(hours=hours))
+
+
+# =============================================================================
+# FETCH + PARSE RSS
+# =============================================================================
+def fetch_feed(name: str, section: str, url: str):
+    d = feedparser.parse(url)
+    entries = d.entries or []
+    print(f"[FEED] {name}/{section} entries={len(entries)} url={url[:120]}...")
+    return entries
+
+def parse_entry(e, feed_name: str, section: str):
+    title = (getattr(e, "title", "") or "").strip()
+    link = (getattr(e, "link", "") or "").strip()
+    summary = (getattr(e, "summary", "") or "").strip()
+    published = getattr(e, "published", None) or getattr(e, "updated", None)
+
+    try:
+        published_dt = dateutil_parser.parse(published) if published else None
+        if published_dt and published_dt.tzinfo is None:
+            published_dt = TZ.localize(published_dt)
+        if published_dt:
+            published_dt = published_dt.astimezone(TZ)
+    except Exception:
+        published_dt = None
+
+    return {
+        "title": title,
+        "url": normalize_url(link),
+        "summary": summary,
+        "published_dt": published_dt,
+        "feed": feed_name,
+        "section": section,
+        "source_domain": domain_of(link),
+    }
+
+def dedup_items(items):
+    """
+    Dedup by normalized url + title hash (ง่าย ๆ แต่ได้ผล)
+    """
     seen = set()
     out = []
-    for b in bullets:
-        k = re.sub(r"\s+", " ", (b or "").strip().lower())
-        if not k or k in seen:
+    for it in items:
+        key = sha1((it.get("title", "") + "||" + it.get("url", "")).lower())
+        if key in seen:
             continue
-        seen.add(k)
-        out.append((b or "").strip())
+        seen.add(key)
+        out.append(it)
     return out
 
-def has_meaningful_impact(bullets) -> bool:
-    if not bullets or not isinstance(bullets, list):
-        return False
-    bullets = [str(x).strip() for x in bullets if str(x).strip()]
-    if len(bullets) < 1:
-        return False
-    txt = " ".join(bullets)
-    bad = ["ยังไม่พบผลกระทบ", "ไม่พบผลกระทบ", "ไม่ระบุผลกระทบ", "ไม่เกี่ยวข้อง", "ข้อมูลไม่เพียงพอ"]
-    t = txt.lower().replace(" ", "")
-    if any(x.replace(" ", "") in t for x in bad):
-        return False
-    return len(txt.strip()) >= 50
 
-def validate_evidence_in_text(title: str, summary: str, evidence_list: list) -> bool:
-    text = f"{title or ''} {summary or ''}".lower()
-    if not evidence_list:
-        return False
-    ok = 0
-    for ev in evidence_list[:2]:
-        ev = str(ev).strip().lower()
-        if len(ev) >= 4 and ev in text:
-            ok += 1
-    return ok >= 1
-
-CROSS_TOPIC_GUARD_TERMS = ["cambodia", "กัมพูชา", "casino", "คาสิโน", "bridge", "สะพาน"]
-def guard_cross_topic(title: str, summary: str, bullets: List[str]) -> bool:
-    text = f"{title or ''} {summary or ''}".lower()
-    for b in bullets[:1]:
-        bl = (b or "").lower()
-        for term in CROSS_TOPIC_GUARD_TERMS:
-            if term in bl and term not in text:
-                return False
-    return True
-
-def english_ratio(text: str) -> float:
-    if not text:
-        return 0.0
-    letters = sum(1 for c in text if c.isalpha())
-    ascii_letters = sum(1 for c in text if ('A' <= c <= 'Z') or ('a' <= c <= 'z'))
-    return (ascii_letters / max(1, letters))
-
-def is_mostly_english(text: str) -> bool:
-    return english_ratio(text) >= 0.55
-
-# ============================================================================================================
-# GROQ calls + rewrite bullet (Thai only)
-# ============================================================================================================
-
-def _is_429(e: Exception) -> bool:
-    s = str(e).lower()
-    return ("429" in s) or ("too many requests" in s) or ("rate limit" in s)
-
-def call_groq(prompt: str, temperature: float = 0.35) -> str:
-    global GROQ_CALLS
-    time.sleep(random.uniform(*SLEEP_BETWEEN_CALLS))
-    resp = groq_client.chat.completions.create(
-        model=GROQ_MODEL_NAME,
-        messages=[
-            {"role": "system", "content": "ตอบเป็น JSON เท่านั้น ห้ามมี markdown ห้ามมีข้อความอื่น"},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=float(temperature),
+# =============================================================================
+# LLM (Groq / fallback)
+# =============================================================================
+def call_groq(messages, temperature=0.2, max_tokens=300):
+    if not GROQ_API_KEY:
+        raise RuntimeError("Missing GROQ_API_KEY")
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    r = requests.post(
+        GROQ_ENDPOINT,
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=60,
     )
-    GROQ_CALLS += 1
-    return (resp.choices[0].message.content or "").strip()
+    r.raise_for_status()
+    data = r.json()
+    return (data["choices"][0]["message"]["content"] or "").strip()
 
-def call_groq_with_retries(prompt: str, temperature: float = 0.35) -> str:
-    last = None
-    for i in range(1, MAX_RETRIES + 1):
-        try:
-            return call_groq(prompt, temperature=temperature)
-        except Exception as e:
-            last = e
-            if _is_429(e) and i < MAX_RETRIES:
-                sleep_s = min(25.0, (1.8 ** i) + random.uniform(0.5, 1.5))
-                print(f"[Groq] 429 -> retry {i}/{MAX_RETRIES} in {sleep_s:.1f}s")
-                time.sleep(sleep_s)
-                continue
-            if i < MAX_RETRIES:
-                sleep_s = min(12.0, (1.5 ** i) + random.uniform(0.3, 1.0))
-                print(f"[Groq] error -> retry {i}/{MAX_RETRIES} in {sleep_s:.1f}s: {type(e).__name__}: {e}")
-                time.sleep(sleep_s)
-                continue
-            raise
-    raise last
+def llm_classify_to_projects(item):
+    """
+    คืนค่า:
+    {
+      "projects":[{"name":"...", "evidence":"..."}],
+      "impact":"...",
+      "relevance":0-100
+    }
+    หรือ None ถ้าไม่เกี่ยว
+    """
+    title = item.get("title", "")[:300]
+    summary = re.sub(r"\s+", " ", (item.get("summary", "") or ""))[:600]
+    text = f"TITLE: {title}\nSUMMARY: {summary}"
 
-GENERIC_PATTERNS = ["อาจกระทบต้นทุน", "อาจกระทบกฎระเบียบ", "อาจกระทบตารางงาน", "อาจส่งผลกระทบ", "อาจกระทบต่อโครงการ"]
-SPECIFIC_HINTS = [
-    "ใบอนุญาต", "ภาษี", "psc", "สัมปทาน", "ประกัน", "ผู้รับเหมา", "แรงงาน", "ท่าเรือ", "ขนส่ง", "ศุลกากร",
-    "ค่าเงิน", "คว่ำบาตร", "นัดหยุดงาน", "ความไม่สงบ", "ความปลอดภัย", "Direct PPA", "PDP", "SMR", "LNG", "FID"
-]
-def looks_generic_or_short_one(bullets) -> bool:
-    if not bullets or not isinstance(bullets, list):
-        return True
-    bullets = [str(x).strip() for x in bullets if str(x).strip()]
-    joined = " ".join(bullets).lower()
-    generic_hit = any(p.replace(" ", "") in joined.replace(" ", "") for p in GENERIC_PATTERNS)
-    specific_hit = any(k.lower() in joined for k in SPECIFIC_HINTS)
-    too_short = len(joined) < 50
-    return (generic_hit and not specific_hit) or too_short
+    # ลด token: ส่งรายชื่อโครงการแบบบรรทัดเดียว
+    project_list = "\n".join([f"- {p} | {PROJECT_TO_COUNTRY[p]}" for p in ALL_PROJECT_NAMES])
 
-def rewrite_impact_bullet_one_thai(news, bullets):
-    prompt = f"""
-คุณคือ Analyst ด้านพลังงาน
-ช่วยเขียน "ผลกระทบ" ให้เหลือ 1 bullet เท่านั้น (1–2 ประโยค) โดยต้องเฉพาะเจาะจงและโยงกับข่าวจริง
+    sys = (
+        "คุณเป็นผู้ช่วยคัดกรองข่าวให้เกี่ยวข้องกับ 'โครงการ' ในรายการเท่านั้น "
+        "ห้ามเดาประเทศนอกลิสต์ และห้ามเลือกโครงการถ้าไม่มีคำยืนยันใน TITLE/SUMMARY"
+    )
 
-ข้อกำหนด:
-- เขียนเป็นภาษาไทยเท่านั้น ห้ามใช้ภาษาอังกฤษ
-- ต้องอธิบายเส้นทางผลกระทบ: ประเด็นข่าว -> กลไก -> ผลกระทบต่อการลงทุน/โครงการ/ความเสี่ยง
-- ต้องมีคำ/วลีจาก title/summary อย่างน้อย 1 จุด (ห้ามเดา)
-- ห้ามปนบริบท: ห้ามพูดถึงประเทศ/เหตุการณ์/คำสำคัญที่ไม่อยู่ในหัวข้อ/สรุป
-- ความยาวประมาณ 25–45 คำ
+    user = f"""
+ให้เลือกเฉพาะโครงการจากรายการนี้เท่านั้น:
+{project_list}
 
-หัวข้อ: {news.get("title","")}
-สรุป: {news.get("summary","")}
+กติกา:
+1) เลือกโครงการได้ 0-3 โครงการที่ 'มีหลักฐานชัดเจน' ว่าเกี่ยวข้องใน TITLE/SUMMARY
+2) field evidence ต้องเป็นคำ/วลีที่พบจริงใน TITLE/SUMMARY (ยกมาแบบสั้น)
+3) ถ้าไม่เกี่ยวกับโครงการใดเลย ให้ projects เป็น [] และ relevance ต่ำ
+4) impact ให้เป็น bullet เดียว (ประโยคเดียว) อธิบายผลกระทบต่อโครงการแบบสุภาพ กระชับ
 
-bullet เดิม:
-{json.dumps(bullets, ensure_ascii=False)}
-
-ตอบเป็น JSON เท่านั้น:
-{{"impact_bullets": ["..."]}}
-"""
-    text = call_groq_with_retries(prompt, temperature=0.55)
-    data = _extract_json_object(text)
-    if isinstance(data, dict) and isinstance(data.get("impact_bullets"), list):
-        return diversify_bullets(clean_bullets(data["impact_bullets"])[:1])
-    return diversify_bullets(clean_bullets(bullets))[:1]
-
-# ============================================================================================================
-# LLM selection (Thai output) — projects/partners = global (no whitelist)
-# ============================================================================================================
-
-def groq_batch_tag_and_filter(news_list: List[Dict[str, Any]], chunk_size: int = 10) -> List[Dict[str, Any]]:
-    results: List[Dict[str, Any]] = []
-
-    for i in range(0, len(news_list), chunk_size):
-        chunk = news_list[i:i + chunk_size]
-        payload = [{"id": idx, "feed_section": (n.get("feed_section") or "").strip(), "title": n.get("title",""), "summary": n.get("summary","")}
-                   for idx, n in enumerate(chunk)]
-
-        prompt = f"""
-คุณเป็นผู้ช่วยคัดเลือกข่าว “พลังงานเชิงนโยบาย/โครงสร้างตลาด/โครงการลงทุน/ความเสี่ยง” เพื่อส่งสรุปให้ผู้บริหาร
-
-คัดเฉพาะข่าวที่เข้ากลุ่มนี้:
-1) นโยบาย/กำกับดูแลพลังงาน-ไฟฟ้า (PDP, tariff, regulator, Direct PPA)
-2) โครงการลงทุนพลังงาน/โครงสร้างพื้นฐาน (LNG project/FID, terminal, pipeline, financing, EPC, supply chain)
-3) ความมั่นคง/ความปลอดภัยสินทรัพย์พลังงาน (แท่นขุด/ท่อ/ท่าเรือ/โดรน/ความไม่สงบ)
-4) เทคโนโลยีพลังงานเปลี่ยนผ่าน (SMR/นิวเคลียร์/CCUS/ไฮโดรเจน/AI-energy)
-5) ภูมิรัฐศาสตร์-การค้า-คว่ำบาตรที่กระทบพลังงาน (crude/LNG flows)
-
-ตัดทิ้งทันทีถ้าเป็น:
-- lifestyle/บันเทิง/กีฬา/ไวรัล
-- ข่าวเชิงโฆษณาไร้สาระ ไม่มีผลต่อกติกา/การลงทุน/ความเสี่ยง
-- ข่าว “ราคา” แบบวันต่อวัน ที่ไม่มีประเด็นโครงสร้าง/นโยบาย/โครงการ/ความเสี่ยง
-
-กติกาผลลัพธ์:
-- เขียนภาษาไทยเท่านั้น
-- evidence ต้องเป็น “วลีที่คัดมาจาก title/summary” เท่านั้น (ห้ามแต่งเพิ่ม)
-- impact_bullets ต้องมี 1 bullet (1–2 ประโยค, 25–45 คำ) และต้องโยง: ประเด็นข่าว -> กลไก -> ผลกระทบ
-- projects ให้ดึง “ชื่อโครงการ/สินทรัพย์/แผน/มาตรการ/ชื่อสนาม/ชื่อแหล่ง/ชื่อ terminal/pipeline” ที่ถูกกล่าวถึงในข่าว ถ้ามี (ถ้าไม่มีให้ [])
-- partners ให้ดึง “บริษัท/องค์กร/ผู้เกี่ยวข้อง/ผู้ร่วมทุน” ที่ถูกกล่าวถึงในข่าว ถ้ามี (ถ้าไม่มีให้ [])
-- country: ประเทศหลักของข่าว (ถ้าเป็นข่าวไทยให้เป็น Thailand)
-- section: domestic ถ้าเป็นข่าวไทย/บริบทไทย, international ถ้าเป็นต่างประเทศ
-
-ตอบเป็น JSON เท่านั้น:
+คืนค่าเป็น JSON เท่านั้น ตามรูป:
 {{
- "items":[
-  {{
-   "id":0,
-   "is_relevant": true/false,
-   "section":"domestic|international",
-   "country":"Thailand|...",
-   "topic_category":"policy_regulatory|security|gas_lng|tech_transition|macro_geo|other",
-   "projects":["...","..."],
-   "partners":["...","..."],
-   "impact_bullets":["..."],
-   "impact_level":"low|medium|high|unknown",
-   "evidence":["...","..."],
-   "why_relevant":"..."
-  }}
- ]
+  "projects":[{{"name":"<project name>","evidence":"<phrase from text>"}}],
+  "impact":"• ...",
+  "relevance":0
 }}
 
-ข่าวชุดนี้:
-{json.dumps(payload, ensure_ascii=False)}
-"""
-        text = call_groq_with_retries(prompt, temperature=0.35)
-        data = _extract_json_object(text)
+TEXT:
+{text}
+""".strip()
 
-        if not (isinstance(data, dict) and isinstance(data.get("items"), list)):
-            results.extend([{"is_relevant": False} for _ in chunk])
-            continue
+    if not USE_LLM:
+        return None
 
-        by_id = {it.get("id"): it for it in data["items"] if isinstance(it, dict) and "id" in it}
-        for idx in range(len(chunk)):
-            t = by_id.get(idx, {"is_relevant": False})
-            results.append(t if isinstance(t, dict) else {"is_relevant": False})
+    content = call_groq(
+        messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+        temperature=0.25,
+        max_tokens=min(LLM_MAX_TOKENS, max(200, LLM_MAX_TOKENS)),
+    )
 
-    return results
+    # Parse JSON (เผื่อมี ```json)
+    content = content.strip()
+    content = re.sub(r"^```json\s*", "", content, flags=re.I).strip()
+    content = re.sub(r"^```\s*", "", content, flags=re.I).strip()
+    content = re.sub(r"\s*```$", "", content).strip()
 
-# ============================================================================================================
-# Fetch window: last WINDOW_HOURS
-# ============================================================================================================
-
-def fetch_news_window():
-    now_local = datetime.now(bangkok_tz)
-    start = now_local - timedelta(hours=WINDOW_HOURS)
-    end = now_local
-
-    out = []
-    for site, feed_section, url in NEWS_FEEDS:
-        try:
-            feed = parse_feed_with_timeout(url)
-            entries = list(feed.entries or [])[:MAX_ENTRIES_PER_FEED]
-            print(f"[FEED] {site}/{feed_section} entries={len(entries)} url={url[:110]}...")
-
-            kept = 0
-            for e in entries:
-                pub = getattr(e, "published", None) or getattr(e, "updated", None)
-                if not pub:
-                    continue
-
-                dt = dateutil_parser.parse(pub)
-                if dt.tzinfo is None:
-                    dt = bangkok_tz.localize(dt)
-                dt_local = dt.astimezone(bangkok_tz)
-
-                if not (start <= dt_local <= end):
-                    continue
-
-                link = _normalize_link(getattr(e, "link", "") or "")
-                if not link:
-                    continue
-
-                title = (getattr(e, "title", "") or "").strip()
-                summary_raw = getattr(e, "summary", "") or ""
-                summary = re.sub(r"\s+", " ", re.sub("<.*?>", " ", summary_raw)).strip()
-
-                out.append({
-                    "site": site,
-                    "feed_section": feed_section,
-                    "title": title,
-                    "summary": summary,
-                    "link": link,
-                    "published": dt_local,
-                })
-                kept += 1
-
-            print(f"[FEED] kept_in_window={kept}")
-
-        except Exception as ex:
-            print(f"[WARN] feed failed: {site}/{feed_section} -> {type(ex).__name__}: {ex}")
-
-    uniq, seen = [], set()
-    for n in out:
-        k = _normalize_link(n["link"])
-        if k and k not in seen:
-            seen.add(k)
-            uniq.append(n)
-
-    uniq.sort(key=lambda x: x["published"], reverse=True)
-    return uniq
-
-# ============================================================================================================
-# Flex Messages (12 bubble per flex) + safe uri
-# ============================================================================================================
-
-def _shorten(items, take=4):
-    items = items or []
-    items = [str(x).strip() for x in items if str(x).strip()]
-    if not items:
-        return "-"
-    if len(items) <= take:
-        return ", ".join(items)
-    return ", ".join(items[:take]) + f" +{len(items)-take}"
-
-def _section_th(s: str) -> str:
-    s = (s or "").strip().lower()
-    return "ข่าวในประเทศ" if s == "domestic" else "ข่าวต่างประเทศ"
-
-def _cat_th(c: str) -> str:
-    c = (c or "").strip().lower()
-    mp = {
-        "policy_regulatory": "นโยบาย/กำกับดูแล",
-        "security": "ความมั่นคง/ความปลอดภัย",
-        "gas_lng": "ก๊าซธรรมชาติ/ LNG",
-        "tech_transition": "เทคโนโลยีพลังงาน",
-        "macro_geo": "ภูมิรัฐศาสตร์/มหภาค",
-        "other": "อื่นๆ",
-    }
-    return mp.get(c, "อื่นๆ")
-
-def create_flex_messages(news_items: List[Dict[str, Any]], chunk_size: int = 12):
-    now_txt = datetime.now(bangkok_tz).strftime("%d/%m/%Y")
-    messages = []
-
-    for start in range(0, len(news_items), chunk_size):
-        batch = news_items[start:start + chunk_size]
-        bubbles = []
-
-        for n in batch:
-            bullets = clean_bullets(n.get("impact_bullets") or [])[:1]
-            section = (n.get("section") or n.get("feed_section") or "international").strip().lower()
-            country = (n.get("country") or "ไม่ระบุ").strip()
-            cat = _cat_th(n.get("topic_category") or "other")
-            projects = n.get("projects") or []
-            partners = n.get("partners") or []
-
-            raw_link = n.get("final_url") or n.get("link") or "https://news.google.com/"
-            link = safe_action_uri(raw_link)
-
-            img = n.get("image") or DEFAULT_HERO_URL
-            if not _is_good_image_url(img):
-                img = DEFAULT_HERO_URL
-
-            cred_txt = ""
-            if SHOW_SOURCE_RATING:
-                rating_th = (n.get("source_rating_th") or "").strip()
-                domain = (n.get("source_domain") or "").strip()
-                score = n.get("source_score")
-                if rating_th:
-                    cred_txt = f"ความน่าเชื่อถือ: {rating_th} (score {score}) · {domain}"
-
-            contents = [
-                {"type": "text", "text": (n.get("title", "")[:140]), "wrap": True, "weight": "bold", "size": "lg"},
-                {
-                    "type": "box",
-                    "layout": "baseline",
-                    "spacing": "md",
-                    "contents": [
-                        {"type": "text", "text": n.get("published").strftime("%d/%m/%Y %H:%M"), "size": "sm", "color": "#666666", "flex": 0},
-                        {"type": "text", "text": f"{_section_th(section)} | {country} | {cat}", "size": "sm", "color": "#1E90FF", "wrap": True},
-                    ],
-                },
-            ]
-
-            if projects:
-                contents.append({
-                    "type": "text",
-                    "text": f"โครงการ/สินทรัพย์: {_shorten(projects, 4)}",
-                    "size": "sm",
-                    "color": "#666666",
-                    "wrap": True,
-                    "margin": "sm"
-                })
-
-            if SHOW_PARTNERS and partners:
-                contents.append({
-                    "type": "text",
-                    "text": f"ผู้เกี่ยวข้อง/ผู้ร่วมทุน: {_shorten(partners, 6)}",
-                    "size": "sm",
-                    "color": "#666666",
-                    "wrap": True,
-                    "margin": "xs"
-                })
-
-            if cred_txt:
-                contents.append({"type": "text", "text": cred_txt, "size": "xs", "color": "#666666", "wrap": True, "margin": "sm"})
-
-            contents.append({"type": "text", "text": "ผลกระทบ", "size": "lg", "weight": "bold", "color": "#000000", "margin": "lg"})
-            if bullets:
-                contents.append({"type": "text", "text": f"• {bullets[0]}", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"})
-            else:
-                contents.append({"type": "text", "text": "• (ไม่มีข้อความผลกระทบ)", "wrap": True, "size": "md", "color": "#000000", "weight": "bold", "margin": "xs"})
-
-            bubbles.append({
-                "type": "bubble",
-                "size": "mega",
-                "hero": {"type": "image", "url": img, "size": "full", "aspectRatio": "16:9", "aspectMode": "cover"},
-                "body": {"type": "box", "layout": "vertical", "contents": contents},
-                "footer": {
-                    "type": "box",
-                    "layout": "vertical",
-                    "contents": [
-                        {"type": "button", "style": "primary", "color": "#1DB446",
-                         "action": {"type": "uri", "label": "อ่านต่อ", "uri": link}}
-                    ],
-                },
-            })
-
-        messages.append({
-            "type": "flex",
-            "altText": f"สรุปข่าวพลังงาน {now_txt} ({start+1}-{start+len(batch)})",
-            "contents": {"type": "carousel", "contents": bubbles},
-        })
-
-    return messages
-
-# ============================================================================================================
-# LINE send (send each flex message)
-# ============================================================================================================
-
-def send_to_line(messages):
-    url = "https://api.line.me/v2/bot/message/broadcast"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
-
-    for i, msg in enumerate(messages, 1):
-        payload = {"messages": [msg]}
-        print("=== LINE PAYLOAD(meta) ===")
-        print(json.dumps({"messages": [{"type": msg.get("type"), "altText": msg.get("altText")}]} , ensure_ascii=False))
-
-        if DRY_RUN:
-            print("[DRY_RUN] ไม่ส่งจริง")
-            continue
-
-        r = S.post(url, headers=headers, json=payload, timeout=20)
-        print(f"Send {i}: {r.status_code}")
-        if r.status_code >= 300:
-            print("Response:", r.text[:1600])
-            break
-
-# ============================================================================================================
-# MAIN
-# ============================================================================================================
-
-def main():
-    deadline = None
-    if RUN_DEADLINE_MIN > 0:
-        deadline = time.time() + RUN_DEADLINE_MIN * 60
-
-    print("ดึงข่าว...")
-    all_news = fetch_news_window()
-    print("จำนวนข่าวดิบทั้งหมด:", len(all_news))
-    if not all_news:
-        print("ไม่พบข่าวในช่วงเวลา")
-        return
-
-    sent = load_sent_links()
-
-    # ตัดซ้ำ URL + ตัดที่ส่งแล้ว
-    selected = []
-    seen = set()
-    for n in all_news:
-        if deadline and time.time() > deadline:
-            print("ถึง deadline ระหว่าง pre-filter (หยุด)")
-            break
-        k = _normalize_link(n["link"])
-        if not k or k in sent or k in seen:
-            continue
-        seen.add(k)
-        selected.append(n)
-
-    selected.sort(key=lambda x: x["published"], reverse=True)
-    selected = dedupe_near_titles(selected, threshold=0.88)
-    print("จำนวนข่าวหลังตัดซ้ำใกล้เคียง:", len(selected))
-
-    if MAX_LLM_ITEMS is not None:
-        selected = selected[:MAX_LLM_ITEMS]
-
-    print("จำนวนข่าวที่จะประเมินด้วย LLM:", len(selected))
-    if not selected:
-        print("ไม่มีข่าวให้ประเมิน")
-        return
-
-    # resolve url + credibility
-    for n in selected:
-        if deadline and time.time() > deadline:
-            print("ถึง deadline ระหว่าง resolve url (หยุด)")
-            break
-
-        original = n.get("link", "")
-        final_url = resolve_final_url(original)
-        if _get_domain(final_url) in TRACKER_HOSTS or any(_get_domain(final_url).endswith(x) for x in TRACKER_HOSTS):
-            final_url = original
-        n["final_url"] = final_url
-
-        cred = assess_source_credibility(original, final_url, n.get("title", ""))
-        n["source_domain"] = cred["domain"]
-        n["source_score"] = cred["score"]
-        n["source_rating"] = cred["rating"]
-        n["source_rating_th"] = cred["rating_th"]
-        n["source_signals"] = cred["signals"]
-
-    if MIN_SOURCE_SCORE > 0:
-        before = len(selected)
-        selected = [n for n in selected if int(n.get("source_score", 0)) >= MIN_SOURCE_SCORE]
-        print(f"กรองตามความน่าเชื่อถือ (score>={MIN_SOURCE_SCORE}): {before} -> {len(selected)}")
-        if not selected:
-            print("ไม่เหลือข่าวหลังกรองความน่าเชื่อถือ")
-            return
-
-    # LLM tag/filter
     try:
-        tags = groq_batch_tag_and_filter(selected, chunk_size=LLM_BATCH_SIZE)
-    except Exception as e:
-        if _is_429(e):
-            print("Groq 429: งด LLM รอบนี้ (ไม่ล้มทั้งงาน)")
-            tags = [{"is_relevant": False} for _ in selected]
-        else:
-            raise
+        data = json.loads(content)
+    except Exception:
+        return None
 
-    final = []
-    for n, tag in zip(selected, tags):
-        if deadline and time.time() > deadline:
-            print("ถึง deadline ระหว่าง LLM apply (หยุด)")
-            break
+    projects = data.get("projects") or []
+    relevance = int(data.get("relevance") or 0)
+    impact = (data.get("impact") or "").strip()
 
-        if not isinstance(tag, dict) or not tag.get("is_relevant"):
+    # ต้องเป็น list และ project ต้องอยู่ในลิสต์จริง
+    valid = []
+    hay = (title + "\n" + summary).lower()
+
+    for p in projects[:3]:
+        name = (p.get("name") or "").strip()
+        evidence = (p.get("evidence") or "").strip()
+        if not name or name not in PROJECT_TO_COUNTRY:
+            continue
+        if not evidence:
+            continue
+        # evidence ต้องพบจริงในข้อความ (กัน LLM เดา)
+        if evidence.lower() not in hay:
+            continue
+        valid.append({"name": name, "evidence": evidence})
+
+    # ถ้าไม่ match โครงการจริง -> ทิ้ง
+    if not valid or relevance < 15:
+        return None
+
+    # impact ต้องเป็น bullet เดียว และไม่ยาวมาก
+    if not impact.startswith("•"):
+        impact = "• " + impact.lstrip("-• ").strip()
+    if len(impact) > 220:
+        impact = impact[:217].rstrip() + "..."
+
+    return {
+        "projects": valid,
+        "impact": impact,
+        "relevance": max(0, min(100, relevance)),
+    }
+
+
+# =============================================================================
+# LINE FLEX
+# =============================================================================
+def line_headers():
+    return {
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+def send_line_message(message_obj):
+    if DRY_RUN:
+        print("=== DRY_RUN LINE PAYLOAD ===")
+        print(json.dumps({"messages": [message_obj]}, ensure_ascii=False)[:2000])
+        return True
+
+    url = "https://api.line.me/v2/bot/message/broadcast"
+    payload = {"messages": [message_obj]}
+    r = requests.post(url, headers=line_headers(), json=payload, timeout=30)
+    print(f"LINE status: {r.status_code}")
+    if r.status_code >= 400:
+        print("Response:", r.text[:2000])
+        return False
+    return True
+
+def flex_bubble(item, llm):
+    title = (item.get("title") or "").strip()
+    published_dt = item.get("published_dt")
+    dt_str = published_dt.strftime("%d/%m/%Y %H:%M") if published_dt else ""
+    src = item.get("source_domain") or item.get("feed") or ""
+
+    # projects + derive country strictly from project list
+    projects = [p["name"] for p in llm["projects"]]
+    # ถ้ามีหลายโครงการ ให้แสดงประเทศจากโครงการแรก (และเพิ่มหมายเหตุถ้าต่างประเทศ)
+    country = PROJECT_TO_COUNTRY.get(projects[0], "")
+    partners = PROJECT_TO_PARTNERS.get(projects[0], "")
+    if len(projects) > 1:
+        # รวมชื่อโครงการแบบสั้น
+        proj_text = ", ".join(projects[:3])
+    else:
+        proj_text = projects[0]
+
+    # URL shorten (แก้ปัญหา uri > 1000)
+    url = shorten_google_news_url(item.get("url") or "")
+    if len(url) > 1000:
+        # fallback: ถ้ายาวเกินจริง ๆ ให้ทิ้งปุ่ม (กัน 400)
+        url = ""
+
+    # จำกัดความยาวข้อความบางส่วน
+    def cut(s, n):
+        s = (s or "").strip()
+        return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
+    title = cut(title, 120)
+    proj_text = cut(proj_text, 120)
+    partners = cut(partners, 170)
+    impact = cut(llm.get("impact") or "", 220)
+
+    body_contents = [
+        {"type": "text", "text": title, "weight": "bold", "wrap": True, "size": "md"},
+        {"type": "text", "text": f"{dt_str}  |  {src}", "wrap": True, "size": "xs", "color": "#888888"},
+        {"type": "text", "text": f"ประเทศ: {country}", "wrap": True, "size": "sm"},
+        {"type": "text", "text": f"โครงการ: {proj_text}", "wrap": True, "size": "sm"},
+    ]
+
+    # ใส่ผู้ร่วมทุนถ้ามี
+    if partners:
+        body_contents.append({"type": "text", "text": f"ผู้ร่วมทุน: {partners}", "wrap": True, "size": "sm"})
+
+    # ใส่ผลกระทบ (bullet เดียว)
+    if impact:
+        body_contents.append({"type": "text", "text": impact, "wrap": True, "size": "sm"})
+
+    bubble = {
+        "type": "bubble",
+        "size": "mega",
+        "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": body_contents},
+    }
+
+    # footer button ถ้า url สั้นพอ
+    if url:
+        bubble["footer"] = {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "height": "sm",
+                    "action": {"type": "uri", "label": "อ่านข่าว", "uri": url},
+                }
+            ],
+        }
+
+    return bubble
+
+def flex_messages_from_bubbles(bubbles, alt_prefix="สรุปข่าวพลังงาน"):
+    """
+    แบ่งเป็นหลาย carousel เพื่อไม่ให้เกินลิมิต
+    """
+    msgs = []
+    chunks = [bubbles[i:i+BUBBLES_PER_CAROUSEL] for i in range(0, len(bubbles), BUBBLES_PER_CAROUSEL)]
+    date_tag = now_tz().strftime("%d/%m/%Y")
+    for idx, ch in enumerate(chunks[:MAX_MESSAGES_PER_RUN], start=1):
+        msgs.append({
+            "type": "flex",
+            "altText": f"{alt_prefix} {date_tag} ({idx}/{len(chunks)})",
+            "contents": {"type": "carousel", "contents": ch},
+        })
+    return msgs
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+def main():
+    sent = read_sent_links()
+
+    # 1) fetch + parse + time window filter
+    raw_items = []
+    for name, section, url in FEEDS:
+        entries = fetch_feed(name, section, url)
+        kept = 0
+        for e in entries[:MAX_PER_FEED]:
+            it = parse_entry(e, name, section)
+            if not it["title"] or not it["url"]:
+                continue
+            if it["url"] in sent:
+                continue
+            if it["published_dt"] and not in_time_window(it["published_dt"], WINDOW_HOURS):
+                continue
+            raw_items.append(it)
+            kept += 1
+        print(f"[FEED] kept_in_window={kept}")
+
+    print(f"จำนวนข่าวดิบทั้งหมด: {len(raw_items)}")
+
+    # 2) dedup
+    items = dedup_items(raw_items)
+    print(f"จำนวนข่าวหลังตัดซ้ำ: {len(items)}")
+
+    # 3) cap
+    items = items[:MAX_LLM_ITEMS]
+    print(f"จำนวนข่าวที่จะประเมินด้วย LLM: {len(items)}")
+
+    # 4) LLM filter -> only projects in list (ประเทศจะไม่หลุดลิสต์)
+    passed = []
+    groq_calls = 0
+
+    for i, it in enumerate(items, start=1):
+        llm = None
+        try:
+            llm = llm_classify_to_projects(it)
+            groq_calls += 1
+            time.sleep(SLEEP_BETWEEN_CALLS)
+        except Exception as ex:
+            # ถ้า LLM มีปัญหา ข้ามข่าวนั้นไป
+            print(f"[LLM ERROR] {i}/{len(items)} {ex}")
             continue
 
-        topic_category = (tag.get("topic_category") or "").strip().lower()
-        if topic_category == "other":
+        if not llm:
             continue
 
-        title = n.get("title", "")
-        summary = n.get("summary", "")
-
-        evidence = tag.get("evidence") or []
-        if not isinstance(evidence, list):
-            evidence = [str(evidence)]
-        evidence = [str(x).strip() for x in evidence if str(x).strip()][:2]
-        if not validate_evidence_in_text(title, summary, evidence):
+        # Safety: ประเทศต้องอยู่ใน allowed list (ได้จาก project)
+        first_proj = llm["projects"][0]["name"]
+        country = PROJECT_TO_COUNTRY.get(first_proj, "")
+        if country not in ALLOWED_COUNTRIES:
             continue
 
-        bullets = diversify_bullets(clean_bullets(tag.get("impact_bullets") or [])[:1])
-        if not bullets:
-            continue
+        passed.append((it, llm))
 
-        if is_mostly_english(bullets[0]) or (ENABLE_IMPACT_REWRITE and looks_generic_or_short_one(bullets)):
-            bullets = rewrite_impact_bullet_one_thai(n, bullets)
+    print(f"จำนวนข่าวผ่านเงื่อนไข (match โครงการเท่านั้น): {len(passed)}")
+    print(f"เสร็จสิ้น (Groq calls: {groq_calls})")
 
-        bullets = diversify_bullets(clean_bullets(bullets)[:1])
-        if not bullets or is_mostly_english(bullets[0]):
-            continue
-        if not guard_cross_topic(title, summary, bullets):
-            continue
-        if not has_meaningful_impact(bullets):
-            continue
-
-        n["section"] = (tag.get("section") or n.get("feed_section") or "international").strip().lower()
-        n["country"] = (tag.get("country") or ("Thailand" if n["section"] == "domestic" else "Unknown")).strip()
-        n["topic_category"] = topic_category
-
-        projects = tag.get("projects") or []
-        partners = tag.get("partners") or []
-        if not isinstance(projects, list):
-            projects = [str(projects)]
-        if not isinstance(partners, list):
-            partners = [str(partners)]
-
-        projects = [str(x).strip() for x in projects if str(x).strip()]
-        partners = [str(x).strip() for x in partners if str(x).strip()]
-
-        # ถ้าตั้งให้ "ต้องมีชื่อโครงการ" ถึงจะส่งข่าว
-        if REQUIRE_PROJECT_MATCH and not projects:
-            continue
-
-        n["projects"] = projects[:10]
-        n["partners"] = partners[:12]
-
-        n["impact_bullets"] = bullets[:1]
-        n["impact_level"] = (tag.get("impact_level") or "unknown")
-        n["evidence"] = evidence
-        n["why_relevant"] = (tag.get("why_relevant") or "").strip()
-
-        final.append(n)
-
-    print("จำนวนข่าวผ่านเงื่อนไข:", len(final))
-    if not final:
-        print("ไม่มีข่าวที่ผ่านเงื่อนไขวันนี้")
+    if not passed:
+        print("ไม่มีข่าวที่ match โครงการในลิสต์วันนี้")
         return
 
-    # images
-    for n in final:
-        if deadline and time.time() > deadline:
-            print("ถึง deadline ระหว่างหา image (หยุด)")
+    # 5) Build bubbles
+    bubbles = []
+    for it, llm in passed:
+        bubbles.append(flex_bubble(it, llm))
+
+    # 6) Send LINE (split carousels)
+    messages = flex_messages_from_bubbles(bubbles, alt_prefix="สรุปข่าวตามโครงการ")
+    ok_any = False
+    for idx, msg in enumerate(messages, start=1):
+        print("=== LINE PAYLOAD(meta) ===")
+        print(json.dumps({"messages": [{"type": "flex", "altText": msg["altText"]}]}, ensure_ascii=False))
+        ok = send_line_message(msg)
+        if ok:
+            ok_any = True
+        else:
+            # ถ้าตีกลับ ให้หยุดก่อนเพื่อไม่ยิงซ้ำเยอะ
             break
-        img = fetch_article_image(n.get("final_url") or n.get("link", ""))
-        n["image"] = img if _is_good_image_url(img or "") else DEFAULT_HERO_URL
-        time.sleep(0.06)
 
-    final.sort(key=lambda x: x["published"], reverse=True)
-
-    send_cap = len(final) if MAX_SEND_ITEMS is None else min(MAX_SEND_ITEMS, len(final))
-    to_send = final[:send_cap]
-
-    flex_messages = create_flex_messages(to_send, chunk_size=12)
-    send_to_line(flex_messages)
-
-    save_sent_links([n.get("final_url") or n.get("link") for n in final])
-    print("เสร็จสิ้น (Groq calls:", GROQ_CALLS, ")")
+    # 7) Mark sent links (เฉพาะถ้าส่งสำเร็จอย่างน้อย 1 ข้อความ)
+    if ok_any:
+        for it, _ in passed:
+            append_sent_link(it["url"])
 
 if __name__ == "__main__":
     main()
