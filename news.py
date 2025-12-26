@@ -5,6 +5,7 @@ import os
 import re
 import json
 import time
+import random
 import hashlib
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs, unquote
@@ -30,29 +31,18 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("Missing LINE_CHANNEL_ACCESS_TOKEN")
 
-# LLM (Groq OpenAI-compatible)
+# Groq (OpenAI-compatible)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
 GROQ_ENDPOINT = os.getenv("GROQ_ENDPOINT", "https://api.groq.com/openai/v1/chat/completions").strip()
+USE_LLM_IMPACT = os.getenv("USE_LLM_IMPACT", "1").strip() == "1"
 
-# Optional Gemini fallback (ถ้าคุณยังใช้)
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash").strip()
-
-USE_LLM = os.getenv("USE_LLM", "1").strip() == "1"
-
-# News window
 WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "48"))
 MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "100"))
 
-# LLM batching / limits
-MAX_LLM_ITEMS = int(os.getenv("MAX_LLM_ITEMS", "200"))  # จะตัดหลัง dedup
-SLEEP_BETWEEN_CALLS = float(os.getenv("SLEEP_BETWEEN_CALLS", "0.8"))
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "450"))
-
 # LINE limits
-BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))  # ปลอดภัย
-MAX_MESSAGES_PER_RUN = int(os.getenv("MAX_MESSAGES_PER_RUN", "20"))   # กันสแปม
+BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))  # max 12 แต่เผื่อปลอดภัย
+MAX_MESSAGES_PER_RUN = int(os.getenv("MAX_MESSAGES_PER_RUN", "20"))
 
 # sent links
 SENT_DIR = os.getenv("SENT_DIR", "sent_links")
@@ -60,117 +50,76 @@ os.makedirs(SENT_DIR, exist_ok=True)
 
 DRY_RUN = os.getenv("DRY_RUN", "0").strip() == "1"
 
+# LLM limits / retry
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "900"))
+LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "8"))  # 1 call ต่อ 8 ข่าว
+LLM_MAX_RETRIES_429 = int(os.getenv("LLM_MAX_RETRIES_429", "8"))
+LLM_BASE_BACKOFF = float(os.getenv("LLM_BASE_BACKOFF", "1.5"))
+
 
 # =============================================================================
-# PROJECT DB (ประเทศ/โครงการตามไฟล์ที่ให้มา)
+# PROJECT DB (ประเทศ/โครงการตามที่คุณให้ — ประเทศจะ “มีได้เท่านี้เท่านั้น”)
 # =============================================================================
-# NOTE: ประเทศที่อนุญาต = key ใน PROJECTS_BY_COUNTRY เท่านั้น
+# หมายเหตุ: คุณสามารถเติม/แก้รายการนี้ให้ตรง 100% ตามไฟล์คุณได้
 PROJECTS_BY_COUNTRY = {
     "ประเทศไทย": {
         "โครงการจี 1/61": "PTTEP 60% (Operator), Mubadala Energy 40%",
         "โครงการจี 2/61": "PTTEP 100% (Operator)",
         "โครงการอาทิตย์ (Arthit)": "PTTEP 80% (Operator), Chevron 16%, MOECO 4%",
         "โครงการเอส 1 (S1)": "PTTEP 100% (Operator)",
-        "โครงการสัมปทาน 4 (Contract 4)": "PTTEP 60% + (กลุ่ม) Chevron (Operator) — ผู้ร่วมทุนรายอื่นไม่ระบุครบ",
-        "โครงการพีทีทีอีพี 1 (PTTEP 1)": "PTTEP 100% (Operator)",
-        "โครงการบี 6/27": "PTTEP 100% (Operator)",
-        "โครงการแอล 22/43": "PTTEP 100% (Operator)",
-        "โครงการอี 5 (E5)": "PTTEP 20% + ExxonMobil (Operator) — ผู้ร่วมทุนรายอื่นไม่ระบุครบ",
-        "โครงการจี 4/43": "PTTEP 21.375% + Chevron (Operator) — ผู้ร่วมทุนรายอื่นไม่ระบุครบ",
         "โครงการสินภูฮ่อม (Sinphuhorm)": "PTTEP 55%, APICO LLC 35%, ExxonMobil 10%",
         "โครงการบี 8/32 และ 9เอ (B8/32 & 9A)": "Chevron 51.660% (Operator), PTTEP 25.000%, MOECO 16.706%, KrisEnergy 4.634%, Palang Sophon 2.000%",
-        "โครงการจี 4/48": "PTTEP 5% + Chevron (Operator) — ผู้ร่วมทุนรายอื่นไม่ระบุครบ",
         "โครงการจี 12/48": "PTTEP 66.67% (Operator), TotalEnergies EP Thailand 33.33%",
-        "โครงการจี 1/65": "PTTEP 100% (Operator)",
-        "โครงการจี 3/65": "PTTEP 100% (Operator)",
         "โครงการแอล 53/43 และแอล 54/43": "PTTEP 100% (Operator)",
     },
     "เมียนมา": {
         "โครงการซอติก้า (Zawtika)": "PTTEP 80% (Operator), MOGE 20%",
         "โครงการยาดานา (Yadana)": "PTTEP 62.96% (Operator), MOGE 37.04%",
-        "โครงการเมียนมา เอ็ม 3 (Myanmar M3)": "PTTEP 100% (Operator)",
-    },
-    "มาเลเซีย": {
-        "Malaysia SK309 and SK311": "ไม่ระบุครบ (มีเพียง PTTEP 42–59.5% และ Operator: PTTEP)",
-        "Malaysia Block H": "Petronas Carigali, Pertamina Malaysia E&P + PTTEP (Operator) — ไม่ระบุ % ครบ",
-        "Malaysia SK410B": "KUFPEC, Petronas Carigali + PTTEP (Operator) — ไม่ระบุ % ครบ",
-        "Malaysia SK417": "ไม่ระบุครบ (มีเพียง PTTEP 80%, Operator: PTTEP)",
-        "Malaysia SK405B": "ไม่ระบุครบ (มีเพียง PTTEP 49.5%, Operator: PTTEP)",
-        "Malaysia SK438": "ไม่ระบุครบ (มีเพียง PTTEP 80%, Operator: PTTEP)",
-        "Malaysia SK314A": "ไม่ระบุครบ (มีเพียง PTTEP 59.5%, Operator: PTTEP)",
-        "Malaysia SK325": "ไม่ระบุครบ (มีเพียง PTTEP 32.5%, Operator: Petronas Carigali)",
-        "Malaysia SB412": "ไม่ระบุครบ (มีเพียง PTTEP 60%, Operator: PTTEP)",
-        "Malaysia Block K (เช่น Gumusut-Kakap)": "Shell (Operator), ConocoPhillips, Petronas, PTTEP, ฯลฯ — ไม่ระบุ % ครบ",
-    },
-    "เวียดนาม": {
-        "โครงการเวียดนาม 16-1": "ไม่ระบุชื่อผู้ร่วมทุนครบ (Operator: HL JOC)",
-        "โครงการเวียดนาม บี และ 48/95": "ไม่ระบุครบ (Operator: Vietnam Oil and Gas Group)",
-        "โครงการเวียดนาม 52/97": "ไม่ระบุครบ (Operator: Vietnam Oil and Gas Group)",
-        "โครงการเวียดนาม 9-2": "ไม่ระบุชื่อผู้ร่วมทุนครบ (Operator: HV JOC)",
-    },
-    "อินโดนีเซีย": {
-        "โครงการนาทูน่า ซี เอ (Natuna Sea A)": "ไม่ระบุครบ (Operator: Harbour Energy)",
-    },
-    "คาซัคสถาน": {
-        "โครงการดุงกา (Dunga)": "Dunga Operating GmbH 60% (Operator), Oman Oil Company Limited 20%, PTTEP (Kazakhstan) 20%",
     },
     "โอมาน": {
         "Oman Block 61": "bp 40% (Operator), OQ 30%, PTTEP 20%, PETRONAS 10%",
         "Oman Block 6 (PDO)": "รัฐบาลโอมาน 60%, Shell 34%, TotalEnergies 4%, PTTEP (Partex) 2%",
         "Oman Block 53": "Occidental 47% (Operator), OQEP 20%, Indian Oil 17%, Liwa 15%, PTTEP 1%",
-        "Oman Onshore Block 12": "ไม่ระบุครบ (มีเพียง PTTEP 20%, Operator: TotalEnergies)",
-        "Oman LNG Project": "รัฐบาลโอมาน, Shell, TotalEnergies, Mitsubishi ฯลฯ — ไม่ระบุ % ครบ",
+        "Oman Onshore Block 12": "PTTEP 20% (ไม่ระบุรายอื่นครบ)",
+        "Oman LNG Project": "รัฐบาลโอมาน, Shell, TotalEnergies, Mitsubishi ฯลฯ (ไม่ระบุ % ครบ)",
     },
     "UAE": {
         "Abu Dhabi Offshore 1": "Eni 70% (Operator), PTTEP 30%",
         "Abu Dhabi Offshore 2": "Eni 70% (Operator), PTTEP 30%",
-        "Abu Dhabi Offshore 3": "ไม่ระบุครบ (ระบุว่าโครงสร้าง 70/30 ตามชุดเดียวกัน)",
-        "Ghasha Concession": "PTTEP 10% + ADNOC (ผู้ถือสิทธิหลัก/Operator) (+มีการกล่าวถึง Eni) — ไม่ระบุ % ครบ",
-        "ADNOC Gas Processing (AGP)": "PTTEP (ผ่าน Partex) 2% + ADNOC (Operator) — ไม่ระบุ % ครบ",
-    },
-    "แอลจีเรีย": {
-        "โครงการแอลจีเรีย 433a และ 416b": "ไม่ระบุชื่อผู้ร่วมทุนครบ (Operator: GBRS)",
-        "โครงการแอลจีเรีย ฮาสซิ เบียร์ เรกาอิซ (Hassi Bir Rekaiz)": "ไม่ระบุชื่อผู้ร่วมทุนครบ (Operator: GHBR)",
+        "Ghasha Concession": "PTTEP + ADNOC (ไม่ระบุ % ครบ)",
+        "ADNOC Gas Processing (AGP)": "PTTEP (ผ่าน Partex) + ADNOC (ไม่ระบุ % ครบ)",
     },
     "โมซัมบิก": {
-        "Mozambique Area 1 (Mozambique LNG)": "TotalEnergies 26.5% (Operator), Mitsui 20%, ENH 15%, Bharat Petroleum 10%, Oil India 10%, ONGC Videsh 10%, PTTEP 8.5%",
-    },
-    "ออสเตรเลีย": {
-        "PTTEP Australasia": "PTTEP 100% (Operator)",
+        "Mozambique Area 1 (Mozambique LNG)": "TotalEnergies (Operator), Mitsui, ENH, Bharat Petroleum, Oil India, ONGC Videsh, PTTEP ฯลฯ",
     },
     "เม็กซิโก": {
-        "Mexico Block 12 (2.4)": "Petronas (Operator), PTTEP, Ophir — ไม่ระบุ % ครบ",
-        "Mexico Block 29 (2.4)": "ไม่ระบุครบ (มีเพียง PTTEP 16.67%, Operator: Repsol)",
+        "Mexico Block 12 (2.4)": "Petronas (Operator), PTTEP, Ophir (ไม่ระบุ % ครบ)",
+        "Mexico Block 29 (2.4)": "Repsol (Operator), PTTEP 16.67% (ไม่ระบุครบ)",
     },
 }
 
-# Flatten helpers
 PROJECT_TO_COUNTRY = {}
 PROJECT_TO_PARTNERS = {}
-ALL_PROJECT_NAMES = []
+ALL_PROJECTS = []
 for c, d in PROJECTS_BY_COUNTRY.items():
     for p, partners in d.items():
         PROJECT_TO_COUNTRY[p] = c
         PROJECT_TO_PARTNERS[p] = partners
-        ALL_PROJECT_NAMES.append(p)
+        ALL_PROJECTS.append(p)
 
 ALLOWED_COUNTRIES = set(PROJECTS_BY_COUNTRY.keys())
 
 
 # =============================================================================
-# FEEDS (กว้าง ๆ แล้วค่อยให้ LLM จับเข้าโครงการ)
+# FEEDS
 # =============================================================================
 def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
     return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
 
 FEEDS = [
-    # Thai domestic (broad energy policy / regulator / electricity)
     ("GoogleNewsTH", "domestic", gnews_rss('(พลังงาน OR PDP OR "กกพ" OR ค่าไฟ OR "Direct PPA" OR ก๊าซ OR LNG OR นิวเคลียร์ OR SMR OR โดรน OR แท่นขุดเจาะ)', hl="th", gl="TH", ceid="TH:th")),
-    # International (broad)
     ("GoogleNewsEN", "international", gnews_rss('(energy policy OR regulator OR power tariff OR "direct PPA" OR LNG OR gas OR "small modular reactor" OR SMR OR sanctions OR "national security" OR drilling OR offshore OR "project financing")', hl="en", gl="US", ceid="US:en")),
-    # Oilprice
     ("Oilprice", "international", "https://oilprice.com/rss/main"),
-    # Yahoo Finance (optional general macro/energy)
     ("YahooFinance", "international", "https://finance.yahoo.com/news/rssindex"),
 ]
 
@@ -181,18 +130,13 @@ FEEDS = [
 def now_tz() -> datetime:
     return datetime.now(TZ)
 
-def sha1(s: str) -> str:
-    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
-
 def normalize_url(url: str) -> str:
     url = (url or "").strip()
     if not url:
         return url
-    # strip fragments
     try:
         u = urlparse(url)
-        clean = u._replace(fragment="").geturl()
-        return clean
+        return u._replace(fragment="").geturl()
     except Exception:
         return url
 
@@ -204,9 +148,7 @@ def domain_of(url: str) -> str:
 
 def shorten_google_news_url(url: str) -> str:
     """
-    พยายามทำให้ url สั้นลง (ลดโอกาสเกิน 1000 chars)
-    - ถ้าเป็น Google News RSS redirect ที่มีพารามิเตอร์ url= ให้ดึงปลายทาง
-    - ถ้าเป็น news.google.com/articles/... จะลอง follow redirect 1 ครั้ง
+    ลดปัญหา LINE: uri ต้อง <= 1000 ตัวอักษร
     """
     url = normalize_url(url)
     if not url:
@@ -218,11 +160,11 @@ def shorten_google_news_url(url: str) -> str:
             qs = parse_qs(u.query)
             if "url" in qs and qs["url"]:
                 return normalize_url(unquote(qs["url"][0]))
-            # Some google news links embed original in "article" params, try follow
+
+            # follow redirect 1 ครั้ง (ถ้าสั้นลง)
             try:
                 r = requests.get(url, allow_redirects=True, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
                 final = normalize_url(r.url)
-                # keep if shorter and not empty
                 if final and len(final) < len(url):
                     return final
             except Exception:
@@ -231,6 +173,9 @@ def shorten_google_news_url(url: str) -> str:
         pass
 
     return url
+
+def sha1(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
 
 def read_sent_links() -> set:
     sent = set()
@@ -261,9 +206,13 @@ def in_time_window(published_dt: datetime, hours: int) -> bool:
         return False
     return published_dt >= (now_tz() - timedelta(hours=hours))
 
+def cut(s: str, n: int) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
 
 # =============================================================================
-# FETCH + PARSE RSS
+# PARSE RSS
 # =============================================================================
 def fetch_feed(name: str, section: str, url: str):
     d = feedparser.parse(url)
@@ -297,13 +246,10 @@ def parse_entry(e, feed_name: str, section: str):
     }
 
 def dedup_items(items):
-    """
-    Dedup by normalized url + title hash (ง่าย ๆ แต่ได้ผล)
-    """
     seen = set()
     out = []
     for it in items:
-        key = sha1((it.get("title", "") + "||" + it.get("url", "")).lower())
+        key = sha1(((it.get("title", "") + "||" + it.get("url", "")).lower()))
         if key in seen:
             continue
         seen.add(key)
@@ -312,230 +258,240 @@ def dedup_items(items):
 
 
 # =============================================================================
-# LLM (Groq / fallback)
+# PROJECT MATCHING (DETERMINISTIC) — ประเทศจะไม่มั่ว เพราะมาจากโครงการเท่านั้น
 # =============================================================================
-def call_groq(messages, temperature=0.2, max_tokens=300):
+def _norm_text(s: str) -> str:
+    s = (s or "").lower()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def _aliases_from_project_name(p: str):
+    aliases = set()
+    raw = p.strip()
+
+    # 1) ชื่อเต็ม
+    aliases.add(raw)
+
+    # 2) เอาข้างในวงเล็บ เช่น (Zawtika), (Arthit), (B8/32 & 9A)
+    for m in re.findall(r"\(([^)]+)\)", raw):
+        m = m.strip()
+        if m:
+            aliases.add(m)
+
+    # 3) ดึง pattern แบบ จี 1/61, บี 8/32, แอล 22/43, อี 5
+    for m in re.findall(r"(จี|บี|แอล|อี)\s*([0-9]+)\s*/\s*([0-9]+)", raw):
+        t, a, b = m
+        aliases.add(f"{t} {a}/{b}")
+        aliases.add(f"{t}{a}/{b}")
+    # 9A / 9เอ
+    if "9เอ" in raw or "9a" in raw.lower():
+        aliases.add("9เอ")
+        aliases.add("9a")
+
+    # 4) Block / SK / Offshore / Area
+    lowered = raw.lower()
+    for m in re.findall(r"\b(block|sk|area)\s*([0-9]+[a-z]?)\b", lowered):
+        aliases.add(f"{m[0]} {m[1]}")
+        aliases.add(f"{m[0]}{m[1]}")
+
+    # 5) คีย์เวิร์ดสำคัญ
+    for kw in ["zawtika", "yadana", "sinphuhorm", "ghasha", "mozambique", "australasia", "pdo", "natuna", "dunga", "adnoc", "abu dhabi"]:
+        if kw in lowered:
+            aliases.add(kw)
+
+    # ทำให้เป็นรูป normalize
+    out = []
+    for a in aliases:
+        a2 = _norm_text(a)
+        a2 = a2.replace("โครงการ", "").strip()
+        if a2 and len(a2) >= 3:
+            out.append(a2)
+    # เอา alias สั้นมากออกกันมั่ว
+    out = [x for x in out if len(x) >= 3]
+    return sorted(set(out), key=len, reverse=True)
+
+PROJECT_MATCHERS = {}  # project -> list[regex]
+for proj in ALL_PROJECTS:
+    aliases = _aliases_from_project_name(proj)
+    patterns = []
+    for a in aliases:
+        # escape แล้วทำให้ space ยืดหยุ่น
+        esc = re.escape(a)
+        esc = esc.replace(r"\ ", r"\s+")
+        patterns.append(re.compile(esc, re.IGNORECASE))
+    PROJECT_MATCHERS[proj] = patterns
+
+def detect_projects(title: str, summary: str, max_projects: int = 3):
+    text = _norm_text(f"{title} {summary}")
+    hits = []
+    for proj, pats in PROJECT_MATCHERS.items():
+        for pat in pats:
+            if pat.search(text):
+                hits.append(proj)
+                break
+        if len(hits) >= max_projects:
+            break
+    return hits
+
+
+# =============================================================================
+# LLM (Impact only) — batch + retry 429
+# =============================================================================
+def call_groq_with_retry(messages, temperature=0.25, max_tokens=900):
     if not GROQ_API_KEY:
         raise RuntimeError("Missing GROQ_API_KEY")
+
     payload = {
         "model": GROQ_MODEL,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-    r = requests.post(
-        GROQ_ENDPOINT,
-        headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=60,
-    )
-    r.raise_for_status()
-    data = r.json()
-    return (data["choices"][0]["message"]["content"] or "").strip()
 
-def llm_classify_to_projects(item):
-    """
-    คืนค่า:
-    {
-      "projects":[{"name":"...", "evidence":"..."}],
-      "impact":"...",
-      "relevance":0-100
-    }
-    หรือ None ถ้าไม่เกี่ยว
-    """
-    title = item.get("title", "")[:300]
-    summary = re.sub(r"\s+", " ", (item.get("summary", "") or ""))[:600]
-    text = f"TITLE: {title}\nSUMMARY: {summary}"
+    for attempt in range(LLM_MAX_RETRIES_429 + 1):
+        r = requests.post(
+            GROQ_ENDPOINT,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=60,
+        )
 
-    # ลด token: ส่งรายชื่อโครงการแบบบรรทัดเดียว
-    project_list = "\n".join([f"- {p} | {PROJECT_TO_COUNTRY[p]}" for p in ALL_PROJECT_NAMES])
+        if r.status_code == 429:
+            # exponential backoff + jitter
+            wait = (LLM_BASE_BACKOFF ** min(attempt + 1, 8)) + random.uniform(0.0, 0.8)
+            print(f"[LLM] 429 Too Many Requests -> backoff {wait:.1f}s (attempt {attempt+1})")
+            time.sleep(wait)
+            continue
+
+        r.raise_for_status()
+        data = r.json()
+        return (data["choices"][0]["message"]["content"] or "").strip()
+
+    raise RuntimeError("LLM rate-limited too long (429)")
+
+def llm_generate_impacts_batch(batch_items):
+    """
+    batch_items: list of dict {id,title,summary,project,country,partners}
+    return dict id -> impact_bullet
+    """
+    if not USE_LLM_IMPACT:
+        return {x["id"]: "• มีความเป็นไปได้ที่จะส่งผลต่อความเสี่ยง/ต้นทุน/แผนงานของโครงการ ควรติดตามความคืบหน้าอย่างใกล้ชิด" for x in batch_items}
 
     sys = (
-        "คุณเป็นผู้ช่วยคัดกรองข่าวให้เกี่ยวข้องกับ 'โครงการ' ในรายการเท่านั้น "
-        "ห้ามเดาประเทศนอกลิสต์ และห้ามเลือกโครงการถ้าไม่มีคำยืนยันใน TITLE/SUMMARY"
+        "คุณเป็นผู้ช่วยสรุปผลกระทบข่าวต่อโครงการพลังงานแบบสุภาพและกระชับ "
+        "ห้ามเดาโครงการหรือประเทศเพิ่ม และห้ามใส่ประเทศอื่นนอกเหนือจากที่ให้มา"
     )
+
+    user_payload = {
+        "items": batch_items,
+        "rules": {
+            "format": "JSON only",
+            "impact": "bullet เดียว เริ่มด้วย • ความยาวไม่เกิน 1 ประโยค",
+        }
+    }
 
     user = f"""
-ให้เลือกเฉพาะโครงการจากรายการนี้เท่านั้น:
-{project_list}
+จงเขียน impact ต่อ 'โครงการ' ตามข้อมูลที่ให้มาเท่านั้น
+ส่งกลับเป็น JSON รูปแบบ:
+{{"impacts": [{{"id":"1","impact":"• ..."}}]}}
 
-กติกา:
-1) เลือกโครงการได้ 0-3 โครงการที่ 'มีหลักฐานชัดเจน' ว่าเกี่ยวข้องใน TITLE/SUMMARY
-2) field evidence ต้องเป็นคำ/วลีที่พบจริงใน TITLE/SUMMARY (ยกมาแบบสั้น)
-3) ถ้าไม่เกี่ยวกับโครงการใดเลย ให้ projects เป็น [] และ relevance ต่ำ
-4) impact ให้เป็น bullet เดียว (ประโยคเดียว) อธิบายผลกระทบต่อโครงการแบบสุภาพ กระชับ
-
-คืนค่าเป็น JSON เท่านั้น ตามรูป:
-{{
-  "projects":[{{"name":"<project name>","evidence":"<phrase from text>"}}],
-  "impact":"• ...",
-  "relevance":0
-}}
-
-TEXT:
-{text}
+ข้อมูล:
+{json.dumps(user_payload, ensure_ascii=False)}
 """.strip()
 
-    if not USE_LLM:
-        return None
-
-    content = call_groq(
-        messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+    content = call_groq_with_retry(
+        [{"role": "system", "content": sys}, {"role": "user", "content": user}],
         temperature=0.25,
-        max_tokens=min(LLM_MAX_TOKENS, max(200, LLM_MAX_TOKENS)),
+        max_tokens=LLM_MAX_TOKENS,
     )
 
-    # Parse JSON (เผื่อมี ```json)
-    content = content.strip()
     content = re.sub(r"^```json\s*", "", content, flags=re.I).strip()
     content = re.sub(r"^```\s*", "", content, flags=re.I).strip()
     content = re.sub(r"\s*```$", "", content).strip()
 
+    out = {}
     try:
         data = json.loads(content)
+        arr = data.get("impacts") or []
+        for x in arr:
+            _id = str(x.get("id", "")).strip()
+            imp = (x.get("impact") or "").strip()
+            if _id:
+                if not imp.startswith("•"):
+                    imp = "• " + imp.lstrip("-• ").strip()
+                out[_id] = cut(imp, 220)
     except Exception:
-        return None
+        pass
 
-    projects = data.get("projects") or []
-    relevance = int(data.get("relevance") or 0)
-    impact = (data.get("impact") or "").strip()
-
-    # ต้องเป็น list และ project ต้องอยู่ในลิสต์จริง
-    valid = []
-    hay = (title + "\n" + summary).lower()
-
-    for p in projects[:3]:
-        name = (p.get("name") or "").strip()
-        evidence = (p.get("evidence") or "").strip()
-        if not name or name not in PROJECT_TO_COUNTRY:
-            continue
-        if not evidence:
-            continue
-        # evidence ต้องพบจริงในข้อความ (กัน LLM เดา)
-        if evidence.lower() not in hay:
-            continue
-        valid.append({"name": name, "evidence": evidence})
-
-    # ถ้าไม่ match โครงการจริง -> ทิ้ง
-    if not valid or relevance < 15:
-        return None
-
-    # impact ต้องเป็น bullet เดียว และไม่ยาวมาก
-    if not impact.startswith("•"):
-        impact = "• " + impact.lstrip("-• ").strip()
-    if len(impact) > 220:
-        impact = impact[:217].rstrip() + "..."
-
-    return {
-        "projects": valid,
-        "impact": impact,
-        "relevance": max(0, min(100, relevance)),
-    }
+    # fallback for missing ids
+    for x in batch_items:
+        if x["id"] not in out:
+            out[x["id"]] = "• มีความเป็นไปได้ที่จะส่งผลต่อความเสี่ยง/ต้นทุน/แผนงานของโครงการ ควรติดตามความคืบหน้าอย่างใกล้ชิด"
+    return out
 
 
 # =============================================================================
 # LINE FLEX
 # =============================================================================
 def line_headers():
-    return {
-        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
-        "Content-Type": "application/json",
-    }
+    return {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}
 
 def send_line_message(message_obj):
     if DRY_RUN:
-        print("=== DRY_RUN LINE PAYLOAD ===")
-        print(json.dumps({"messages": [message_obj]}, ensure_ascii=False)[:2000])
+        print("=== DRY_RUN LINE PAYLOAD(meta) ===")
+        print(json.dumps({"messages": [{"type": "flex", "altText": message_obj.get("altText","")}]} , ensure_ascii=False))
         return True
 
     url = "https://api.line.me/v2/bot/message/broadcast"
     payload = {"messages": [message_obj]}
     r = requests.post(url, headers=line_headers(), json=payload, timeout=30)
-    print(f"LINE status: {r.status_code}")
+    print(f"Send -> LINE status: {r.status_code}")
     if r.status_code >= 400:
         print("Response:", r.text[:2000])
         return False
     return True
 
-def flex_bubble(item, llm):
-    title = (item.get("title") or "").strip()
+def flex_bubble(item):
+    title = cut(item.get("title") or "", 120)
     published_dt = item.get("published_dt")
     dt_str = published_dt.strftime("%d/%m/%Y %H:%M") if published_dt else ""
     src = item.get("source_domain") or item.get("feed") or ""
 
-    # projects + derive country strictly from project list
-    projects = [p["name"] for p in llm["projects"]]
-    # ถ้ามีหลายโครงการ ให้แสดงประเทศจากโครงการแรก (และเพิ่มหมายเหตุถ้าต่างประเทศ)
-    country = PROJECT_TO_COUNTRY.get(projects[0], "")
-    partners = PROJECT_TO_PARTNERS.get(projects[0], "")
-    if len(projects) > 1:
-        # รวมชื่อโครงการแบบสั้น
-        proj_text = ", ".join(projects[:3])
-    else:
-        proj_text = projects[0]
+    project = item["project"]
+    country = item["country"]
+    partners = PROJECT_TO_PARTNERS.get(project, "")
 
-    # URL shorten (แก้ปัญหา uri > 1000)
     url = shorten_google_news_url(item.get("url") or "")
     if len(url) > 1000:
-        # fallback: ถ้ายาวเกินจริง ๆ ให้ทิ้งปุ่ม (กัน 400)
-        url = ""
+        url = ""  # กัน LINE 400
 
-    # จำกัดความยาวข้อความบางส่วน
-    def cut(s, n):
-        s = (s or "").strip()
-        return s if len(s) <= n else s[: n - 1].rstrip() + "…"
-
-    title = cut(title, 120)
-    proj_text = cut(proj_text, 120)
-    partners = cut(partners, 170)
-    impact = cut(llm.get("impact") or "", 220)
-
-    body_contents = [
+    body = [
         {"type": "text", "text": title, "weight": "bold", "wrap": True, "size": "md"},
         {"type": "text", "text": f"{dt_str}  |  {src}", "wrap": True, "size": "xs", "color": "#888888"},
         {"type": "text", "text": f"ประเทศ: {country}", "wrap": True, "size": "sm"},
-        {"type": "text", "text": f"โครงการ: {proj_text}", "wrap": True, "size": "sm"},
+        {"type": "text", "text": f"โครงการ: {cut(project, 150)}", "wrap": True, "size": "sm"},
     ]
 
-    # ใส่ผู้ร่วมทุนถ้ามี
     if partners:
-        body_contents.append({"type": "text", "text": f"ผู้ร่วมทุน: {partners}", "wrap": True, "size": "sm"})
+        body.append({"type": "text", "text": f"ผู้ร่วมทุน: {cut(partners, 200)}", "wrap": True, "size": "sm"})
 
-    # ใส่ผลกระทบ (bullet เดียว)
+    impact = item.get("impact") or ""
     if impact:
-        body_contents.append({"type": "text", "text": impact, "wrap": True, "size": "sm"})
+        body.append({"type": "text", "text": cut(impact, 220), "wrap": True, "size": "sm"})
 
-    bubble = {
-        "type": "bubble",
-        "size": "mega",
-        "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": body_contents},
-    }
+    bubble = {"type": "bubble", "size": "mega", "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": body}}
 
-    # footer button ถ้า url สั้นพอ
     if url:
         bubble["footer"] = {
             "type": "box",
             "layout": "vertical",
             "spacing": "sm",
-            "contents": [
-                {
-                    "type": "button",
-                    "style": "primary",
-                    "height": "sm",
-                    "action": {"type": "uri", "label": "อ่านข่าว", "uri": url},
-                }
-            ],
+            "contents": [{"type": "button", "style": "primary", "height": "sm", "action": {"type": "uri", "label": "อ่านข่าว", "uri": url}}],
         }
 
     return bubble
 
-def flex_messages_from_bubbles(bubbles, alt_prefix="สรุปข่าวพลังงาน"):
-    """
-    แบ่งเป็นหลาย carousel เพื่อไม่ให้เกินลิมิต
-    """
+def flex_messages_from_bubbles(bubbles, alt_prefix="สรุปข่าวตามโครงการ"):
     msgs = []
     chunks = [bubbles[i:i+BUBBLES_PER_CAROUSEL] for i in range(0, len(bubbles), BUBBLES_PER_CAROUSEL)]
     date_tag = now_tz().strftime("%d/%m/%Y")
@@ -554,7 +510,7 @@ def flex_messages_from_bubbles(bubbles, alt_prefix="สรุปข่าวพ�
 def main():
     sent = read_sent_links()
 
-    # 1) fetch + parse + time window filter
+    # 1) fetch + parse + time window
     raw_items = []
     for name, section, url in FEEDS:
         entries = fetch_feed(name, section, url)
@@ -573,68 +529,70 @@ def main():
 
     print(f"จำนวนข่าวดิบทั้งหมด: {len(raw_items)}")
 
-    # 2) dedup
     items = dedup_items(raw_items)
     print(f"จำนวนข่าวหลังตัดซ้ำ: {len(items)}")
 
-    # 3) cap
-    items = items[:MAX_LLM_ITEMS]
-    print(f"จำนวนข่าวที่จะประเมินด้วย LLM: {len(items)}")
-
-    # 4) LLM filter -> only projects in list (ประเทศจะไม่หลุดลิสต์)
-    passed = []
-    groq_calls = 0
-
-    for i, it in enumerate(items, start=1):
-        llm = None
-        try:
-            llm = llm_classify_to_projects(it)
-            groq_calls += 1
-            time.sleep(SLEEP_BETWEEN_CALLS)
-        except Exception as ex:
-            # ถ้า LLM มีปัญหา ข้ามข่าวนั้นไป
-            print(f"[LLM ERROR] {i}/{len(items)} {ex}")
+    # 2) detect project deterministically (ประเทศ = ประเทศของโครงการเท่านั้น)
+    matched = []
+    for it in items:
+        projs = detect_projects(it.get("title",""), it.get("summary",""), max_projects=1)
+        if not projs:
             continue
-
-        if not llm:
-            continue
-
-        # Safety: ประเทศต้องอยู่ใน allowed list (ได้จาก project)
-        first_proj = llm["projects"][0]["name"]
-        country = PROJECT_TO_COUNTRY.get(first_proj, "")
+        proj = projs[0]
+        country = PROJECT_TO_COUNTRY.get(proj, "")
         if country not in ALLOWED_COUNTRIES:
             continue
 
-        passed.append((it, llm))
+        it2 = dict(it)
+        it2["project"] = proj
+        it2["country"] = country
+        matched.append(it2)
 
-    print(f"จำนวนข่าวผ่านเงื่อนไข (match โครงการเท่านั้น): {len(passed)}")
-    print(f"เสร็จสิ้น (Groq calls: {groq_calls})")
-
-    if not passed:
+    print(f"จำนวนข่าวที่ match โครงการ (deterministic): {len(matched)}")
+    if not matched:
         print("ไม่มีข่าวที่ match โครงการในลิสต์วันนี้")
         return
 
-    # 5) Build bubbles
-    bubbles = []
-    for it, llm in passed:
-        bubbles.append(flex_bubble(it, llm))
+    # 3) LLM impacts (batch)
+    impacts = {}
+    if USE_LLM_IMPACT and GROQ_API_KEY:
+        batch = []
+        for idx, it in enumerate(matched, start=1):
+            batch.append({
+                "id": str(idx),
+                "title": cut(it.get("title",""), 180),
+                "summary": cut(re.sub(r"\s+"," ", it.get("summary","") or ""), 500),
+                "project": it["project"],
+                "country": it["country"],
+                "partners": cut(PROJECT_TO_PARTNERS.get(it["project"], ""), 220),
+            })
+        # split batch
+        for i in range(0, len(batch), LLM_BATCH_SIZE):
+            sub = batch[i:i+LLM_BATCH_SIZE]
+            out = llm_generate_impacts_batch(sub)
+            impacts.update(out)
 
-    # 6) Send LINE (split carousels)
-    messages = flex_messages_from_bubbles(bubbles, alt_prefix="สรุปข่าวตามโครงการ")
+    # attach impacts
+    for idx, it in enumerate(matched, start=1):
+        it["impact"] = impacts.get(str(idx), "• มีความเป็นไปได้ที่จะส่งผลต่อความเสี่ยง/ต้นทุน/แผนงานของโครงการ ควรติดตามความคืบหน้าอย่างใกล้ชิด")
+
+    # 4) Build bubbles + send
+    bubbles = [flex_bubble(it) for it in matched]
+    messages = flex_messages_from_bubbles(bubbles)
+
     ok_any = False
-    for idx, msg in enumerate(messages, start=1):
+    for msg in messages:
         print("=== LINE PAYLOAD(meta) ===")
-        print(json.dumps({"messages": [{"type": "flex", "altText": msg["altText"]}]}, ensure_ascii=False))
+        print(json.dumps({"messages": [{"type":"flex","altText": msg["altText"]}]}, ensure_ascii=False))
         ok = send_line_message(msg)
         if ok:
             ok_any = True
         else:
-            # ถ้าตีกลับ ให้หยุดก่อนเพื่อไม่ยิงซ้ำเยอะ
             break
 
-    # 7) Mark sent links (เฉพาะถ้าส่งสำเร็จอย่างน้อย 1 ข้อความ)
+    # 5) Mark sent links only if sent
     if ok_any:
-        for it, _ in passed:
+        for it in matched:
             append_sent_link(it["url"])
 
 if __name__ == "__main__":
