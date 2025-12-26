@@ -61,7 +61,7 @@ os.makedirs(SENT_DIR, exist_ok=True)
 
 # =============================================================================
 # PROJECT DB (ประเทศ/โครงการ)
-# - แสดงบนการ์ด: “โครงการในประเทศนี้: ...” เท่านั้น (ตามที่คุณต้องการ)
+# - แสดงบนการ์ด: “โครงการในประเทศนี้: ...” เท่านั้น
 # =============================================================================
 PROJECTS_BY_COUNTRY = {
     "Thailand": [
@@ -107,13 +107,13 @@ PROJECTS_BY_COUNTRY = {
 
 ALLOWED_COUNTRIES = set(PROJECTS_BY_COUNTRY.keys())
 
+
 # =============================================================================
-# FEEDS (เพิ่ม “ต่างประเทศ” แบบล็อกประเทศที่มีโครงการของคุณ)
+# FEEDS (เพิ่ม “ต่างประเทศ” แบบล็อกประเทศที่มีโครงการ)
 # =============================================================================
 def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
     return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
 
-# ใช้ประเทศที่มีโครงการเป็นตัว “ล็อก” ให้ได้ข่าวต่างประเทศจริง ๆ
 COUNTRY_EN_QUERY = "(" + " OR ".join([
     "Thailand", "Myanmar", "Malaysia", "Vietnam", "Indonesia", "Kazakhstan",
     "Oman", "United Arab Emirates", "UAE", "Algeria", "Mozambique", "Australia", "Mexico"
@@ -127,12 +127,10 @@ ENERGY_EN_QUERY = "(" + " OR ".join([
 ]) + ")"
 
 FEEDS = [
-    # Thai
     ("GoogleNewsTH", "domestic", gnews_rss(
         '(พลังงาน OR PDP OR "กกพ" OR ค่าไฟ OR "Direct PPA" OR ก๊าซ OR LNG OR นิวเคลียร์ OR SMR OR โดรน OR แท่นขุดเจาะ)',
         hl="th", gl="TH", ceid="TH:th"
     )),
-    # International (ล็อกประเทศที่คุณมีโครงการ)
     ("GoogleNewsEN", "international", gnews_rss(
         f"{COUNTRY_EN_QUERY} AND {ENERGY_EN_QUERY}",
         hl="en", gl="US", ceid="US:en"
@@ -167,6 +165,8 @@ def domain_of(url: str) -> str:
 def shorten_google_news_url(url: str) -> str:
     """
     ลดโอกาส LINE error: uri ต้อง <= 1000 chars
+    - ถ้ามี query url= ดึงปลายทาง
+    - ถ้าเป็น news.google.com/articles/... ลอง follow redirect 1 ครั้ง
     """
     url = normalize_url(url)
     if not url:
@@ -230,6 +230,17 @@ def norm(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
     return s
 
+def canonical_title_key(title: str) -> str:
+    """
+    ใช้ตัดซ้ำแบบ near-duplicate (หัวข้อคล้ายกันมาก)
+    """
+    t = (title or "").lower().strip()
+    t = re.sub(r"\s+", " ", t)
+    t = t.replace("“", '"').replace("”", '"').replace("’", "'")
+    t = re.sub(r"[^\w\u0E00-\u0E7F\s\"'/.-]", "", t)  # เก็บไทย/อังกฤษ/ตัวเลข
+    t = re.sub(r"\s*-\s*[a-z0-9_.]+\s*$", "", t)      # ตัดท้ายชื่อสื่อ
+    return t[:140]
+
 
 # =============================================================================
 # RSS PARSE
@@ -255,9 +266,12 @@ def parse_entry(e, feed_name: str, section: str):
     except Exception:
         published_dt = None
 
+    canon = shorten_google_news_url(link)
+
     return {
         "title": title,
         "url": normalize_url(link),
+        "canon_url": normalize_url(canon),
         "summary": summary,
         "published_dt": published_dt,
         "feed": feed_name,
@@ -266,13 +280,24 @@ def parse_entry(e, feed_name: str, section: str):
     }
 
 def dedup_items(items):
+    """
+    ตัดซ้ำ 2 ชั้น:
+    - canonical url (กัน google redirect/amp)
+    - near-duplicate title (กัน title เหมือนแต่ url ต่างเล็กน้อย)
+    """
     seen = set()
     out = []
     for it in items:
-        key = sha1(((it.get("title", "") + "||" + it.get("url", "")).lower()))
-        if key in seen:
+        tkey = canonical_title_key(it.get("title", ""))
+        ukey = normalize_url(it.get("canon_url") or it.get("url") or "")
+        key_url = "U:" + sha1(ukey.lower())
+        key_title = "T:" + sha1(tkey)
+
+        if key_url in seen or key_title in seen:
             continue
-        seen.add(key)
+
+        seen.add(key_url)
+        seen.add(key_title)
         out.append(it)
     return out
 
@@ -333,15 +358,15 @@ def call_groq_with_retry(messages, temperature=0.25, max_tokens=900):
 def llm_context_impact_batch(batch_items):
     """
     batch_items: [{id,title,summary,country,projects_hint}]
-    return id -> (bullet1, bullet2)
+    return id -> (context, impact)
     """
     # fallback without LLM
     if (not USE_LLM_SUMMARY) or (not GROQ_API_KEY):
         out = {}
         for x in batch_items:
             out[x["id"]] = (
-                "• บริบท: ข่าวพลังงาน/นโยบาย/โครงสร้างพื้นฐานมีการอัปเดตที่อาจเปลี่ยนทิศทางตลาดหรือกฎระเบียบ",
-                "• ผลกระทบ: อาจกระทบต้นทุน/ความเสี่ยง/แผนงานของโครงการในประเทศนี้ ควรติดตามความคืบหน้าอย่างใกล้ชิด",
+                "• บริบท: มีความเคลื่อนไหว/ประกาศ/อัปเดตด้านพลังงานที่เกี่ยวข้องกับนโยบายหรือโครงสร้างตลาด",
+                "• ผลกระทบ: อาจกระทบต้นทุน/ความเสี่ยง/แผนงานของโครงการในประเทศนี้ ควรติดตามอย่างใกล้ชิด",
             )
         return out
 
@@ -386,7 +411,7 @@ def llm_context_impact_batch(batch_items):
                     c = "• " + c.lstrip("-• ").strip()
                 if not imp.startswith("•"):
                     imp = "• " + imp.lstrip("-• ").strip()
-                out[_id] = (cut(c, 220), cut(imp, 240))
+                out[_id] = (cut(c, 240), cut(imp, 260))
     except Exception:
         pass
 
@@ -431,7 +456,8 @@ def flex_bubble(item):
     context = item.get("context") or ""
     impact = item.get("impact") or ""
 
-    url = shorten_google_news_url(item.get("url") or "")
+    url = item.get("canon_url") or item.get("url") or ""
+    url = shorten_google_news_url(url)
     if len(url) > 1000:
         url = ""  # กัน LINE 400
 
@@ -441,14 +467,19 @@ def flex_bubble(item):
         {"type": "text", "text": f"ประเทศ: {country}", "wrap": True, "size": "sm"},
     ]
 
-    # ✅ ตามที่คุณต้องการ: แสดง “เฉพาะโครงการในประเทศนี้”
+    # ✅ ตามที่ต้องการ: แสดง “เฉพาะโครงการในประเทศนี้”
     if hints:
-        body.append({"type": "text", "text": f"โครงการในประเทศนี้: {cut(', '.join(hints), 240)}", "wrap": True, "size": "sm"})
+        body.append({
+            "type": "text",
+            "text": f"โครงการในประเทศนี้: {cut(', '.join(hints), 260)}",
+            "wrap": True,
+            "size": "sm"
+        })
 
     if context:
-        body.append({"type": "text", "text": cut(context, 220), "wrap": True, "size": "sm"})
+        body.append({"type": "text", "text": cut(context, 240), "wrap": True, "size": "sm"})
     if impact:
-        body.append({"type": "text", "text": cut(impact, 240), "wrap": True, "size": "sm"})
+        body.append({"type": "text", "text": cut(impact, 260), "wrap": True, "size": "sm"})
 
     bubble = {"type": "bubble", "size": "mega", "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": body}}
 
@@ -457,7 +488,8 @@ def flex_bubble(item):
             "type": "box",
             "layout": "vertical",
             "spacing": "sm",
-            "contents": [{"type": "button", "style": "primary", "height": "sm", "action": {"type": "uri", "label": "อ่านข่าว", "uri": url}}],
+            "contents": [{"type": "button", "style": "primary", "height": "sm",
+                          "action": {"type": "uri", "label": "อ่านข่าว", "uri": url}}],
         }
 
     return bubble
@@ -490,7 +522,9 @@ def main():
             it = parse_entry(e, name, section)
             if not it["title"] or not it["url"]:
                 continue
-            if it["url"] in sent:
+            # ใช้ canon_url กันส่งซ้ำข้ามวัน/ข้าม feed
+            check_url = it.get("canon_url") or it.get("url")
+            if check_url in sent or it["url"] in sent:
                 continue
             if it["published_dt"] and not in_time_window(it["published_dt"], WINDOW_HOURS):
                 continue
@@ -499,6 +533,7 @@ def main():
         print(f"[FEED] kept_in_window={kept}")
 
     print(f"จำนวนข่าวดิบทั้งหมด: {len(raw_items)}")
+
     items = dedup_items(raw_items)
     print(f"จำนวนข่าวหลังตัดซ้ำ: {len(items)}")
 
@@ -511,8 +546,7 @@ def main():
         if not c:
             continue
 
-        # project hints: แสดงเฉพาะ “โครงการในประเทศนี้” (เอา 3-5 โครงการแรก)
-        hints = PROJECTS_BY_COUNTRY.get(c, [])[:5]
+        hints = PROJECTS_BY_COUNTRY.get(c, [])[:5]  # ปรับจำนวนได้ (แต่ระวังความยาวการ์ด)
 
         it2 = dict(it)
         it2["country"] = c
@@ -563,7 +597,7 @@ def main():
     # 5) mark sent links only if sent
     if ok_any:
         for it in matched:
-            append_sent_link(it["url"])
+            append_sent_link(it.get("canon_url") or it.get("url") or "")
 
 
 if __name__ == "__main__":
