@@ -31,17 +31,17 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("Missing LINE_CHANNEL_ACCESS_TOKEN")
 
-# Groq (OpenAI-compatible) – optional, for "impact" only
+# Groq (OpenAI-compatible) – optional (ใช้เพื่อสรุป “บริบท+ผลกระทบ”)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
 GROQ_ENDPOINT = os.getenv("GROQ_ENDPOINT", "https://api.groq.com/openai/v1/chat/completions").strip()
-USE_LLM_IMPACT = os.getenv("USE_LLM_IMPACT", "1").strip().lower() in ["1", "true", "yes", "y"]
+USE_LLM_SUMMARY = os.getenv("USE_LLM_SUMMARY", "1").strip().lower() in ["1", "true", "yes", "y"]
 
 WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "48"))
 MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "100"))
 
-# If true: ต้อง match โครงการเท่านั้น ไม่ใช้ fallback ประเทศ
-REQUIRE_PROJECT_MATCH = os.getenv("REQUIRE_PROJECT_MATCH", "false").strip().lower() in ["1", "true", "yes", "y"]
+# ถ้า true จะส่งเฉพาะข่าวที่ match ประเทศในลิสต์ประเทศโครงการเท่านั้น (กันประเทศมั่ว)
+REQUIRE_COUNTRY_WHITELIST = os.getenv("REQUIRE_COUNTRY_WHITELIST", "true").strip().lower() in ["1", "true", "yes", "y"]
 
 # LINE limits
 BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))  # safe (<=12)
@@ -49,7 +49,7 @@ MAX_MESSAGES_PER_RUN = int(os.getenv("MAX_MESSAGES_PER_RUN", "20"))
 DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ["1", "true", "yes", "y"]
 
 # LLM batching / retry
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "900"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1100"))
 LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "8"))
 LLM_MAX_RETRIES_429 = int(os.getenv("LLM_MAX_RETRIES_429", "8"))
 LLM_BASE_BACKOFF = float(os.getenv("LLM_BASE_BACKOFF", "1.5"))
@@ -60,7 +60,8 @@ os.makedirs(SENT_DIR, exist_ok=True)
 
 
 # =============================================================================
-# PROJECT DB (ประเทศ/โครงการตามลิสต์ของคุณ)  ✅ ประเทศจะมีได้เฉพาะ key ใน dict นี้เท่านั้น
+# PROJECT DB (ประเทศ/โครงการ)
+# - แสดงบนการ์ด: “โครงการในประเทศนี้: ...” เท่านั้น (ตามที่คุณต้องการ)
 # =============================================================================
 PROJECTS_BY_COUNTRY = {
     "Thailand": [
@@ -100,36 +101,42 @@ PROJECTS_BY_COUNTRY = {
     "UAE": ["Abu Dhabi Offshore 1", "Abu Dhabi Offshore 2", "Abu Dhabi Offshore 3", "Ghasha", "Ghasha Concession", "ADNOC Gas Processing", "AGP"],
     "Algeria": ["433a", "416b", "Hassi Bir Rekaiz"],
     "Mozambique": ["Mozambique Area 1", "Mozambique LNG", "Area 1"],
-    "Australia": ["PTTEP Australasia"],
+    "Australia": ["PTTEP Australasia", "Australasia"],
     "Mexico": ["Mexico Block 12", "Block 12", "Mexico Block 29", "Block 29"],
-}
-
-# ผู้ร่วมทุน (ใส่เท่าที่คุณมีข้อมูล — ไม่มีไม่เป็นไร)
-PARTNERS_BY_PROJECT = {
-    "Zawtika": "PTTEP 80% (Operator), MOGE 20%",
-    "Yadana": "PTTEP 62.96% (Operator), MOGE 37.04%",
-    "Oman Block 61": "bp (Operator), OQ, PTTEP, PETRONAS",
-    "Oman Block 6": "รัฐบาลโอมาน, Shell, TotalEnergies, PTTEP (Partex)",
-    "Mozambique Area 1": "TotalEnergies (Operator), Mitsui, ENH, Bharat Petroleum, Oil India, ONGC Videsh, PTTEP",
-    "Abu Dhabi Offshore 1": "Eni (Operator), PTTEP",
-    "Abu Dhabi Offshore 2": "Eni (Operator), PTTEP",
-    "Ghasha Concession": "ADNOC (+พันธมิตร), PTTEP",
-    "Mexico Block 12": "Petronas (Operator), PTTEP (+พันธมิตร)",
-    "Mexico Block 29": "Repsol (Operator), PTTEP",
 }
 
 ALLOWED_COUNTRIES = set(PROJECTS_BY_COUNTRY.keys())
 
-
 # =============================================================================
-# FEEDS
+# FEEDS (เพิ่ม “ต่างประเทศ” แบบล็อกประเทศที่มีโครงการของคุณ)
 # =============================================================================
 def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
     return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
 
+# ใช้ประเทศที่มีโครงการเป็นตัว “ล็อก” ให้ได้ข่าวต่างประเทศจริง ๆ
+COUNTRY_EN_QUERY = "(" + " OR ".join([
+    "Thailand", "Myanmar", "Malaysia", "Vietnam", "Indonesia", "Kazakhstan",
+    "Oman", "United Arab Emirates", "UAE", "Algeria", "Mozambique", "Australia", "Mexico"
+]) + ")"
+
+ENERGY_EN_QUERY = "(" + " OR ".join([
+    "energy policy", "regulator", "power tariff", "electricity tariff", "direct PPA",
+    "LNG", "natural gas", "gas", "oil", "crude", "offshore", "drilling",
+    "small modular reactor", "SMR", "nuclear", "sanctions", "national security",
+    "project financing", "FID", "export terminal", "pipeline"
+]) + ")"
+
 FEEDS = [
-    ("GoogleNewsTH", "domestic", gnews_rss('(พลังงาน OR PDP OR "กกพ" OR ค่าไฟ OR "Direct PPA" OR ก๊าซ OR LNG OR นิวเคลียร์ OR SMR OR โดรน OR แท่นขุดเจาะ)', hl="th", gl="TH", ceid="TH:th")),
-    ("GoogleNewsEN", "international", gnews_rss('(energy policy OR regulator OR power tariff OR "direct PPA" OR LNG OR gas OR "small modular reactor" OR SMR OR sanctions OR "national security" OR drilling OR offshore OR "project financing")', hl="en", gl="US", ceid="US:en")),
+    # Thai
+    ("GoogleNewsTH", "domestic", gnews_rss(
+        '(พลังงาน OR PDP OR "กกพ" OR ค่าไฟ OR "Direct PPA" OR ก๊าซ OR LNG OR นิวเคลียร์ OR SMR OR โดรน OR แท่นขุดเจาะ)',
+        hl="th", gl="TH", ceid="TH:th"
+    )),
+    # International (ล็อกประเทศที่คุณมีโครงการ)
+    ("GoogleNewsEN", "international", gnews_rss(
+        f"{COUNTRY_EN_QUERY} AND {ENERGY_EN_QUERY}",
+        hl="en", gl="US", ceid="US:en"
+    )),
     ("Oilprice", "international", "https://oilprice.com/rss/main"),
     ("YahooFinance", "international", "https://finance.yahoo.com/news/rssindex"),
 ]
@@ -160,8 +167,6 @@ def domain_of(url: str) -> str:
 def shorten_google_news_url(url: str) -> str:
     """
     ลดโอกาส LINE error: uri ต้อง <= 1000 chars
-    - ถ้ามี query url= ดึงปลายทาง
-    - ถ้าเป็น news.google.com/articles/... ลอง follow redirect 1 ครั้ง
     """
     url = normalize_url(url)
     if not url:
@@ -273,65 +278,20 @@ def dedup_items(items):
 
 
 # =============================================================================
-# MATCHING (DETERMINISTIC)
+# COUNTRY DETECTION (whitelist only)
 # =============================================================================
-# Build alias regex per country/project
-PROJECT_CANON = []  # list of (canon_project, country, [regex...])
-for country, plist in PROJECTS_BY_COUNTRY.items():
-    # พยายามทำ "ชื่อโครงการหลัก" เป็นชื่อที่ยาวกว่า ถ้ามี "โครงการ..." ให้ใช้เป็น canon
-    # ที่เหลือถือเป็น alias
-    # จัดกลุ่มง่าย ๆ: เอา alias ทั้งหมดไปใส่ matcher ของตัวเอง (canon = alias เอง)
-    for p in plist:
-        aliases = set()
-        aliases.add(p)
-
-        # ถ้ามีวงเล็บ (Zawtika) -> add Zawtika
-        for m in re.findall(r"\(([^)]+)\)", p):
-            m = m.strip()
-            if m:
-                aliases.add(m)
-
-        # pattern แบบ จี 1/61, บี 8/32, แอล 53/43
-        for m in re.findall(r"(จี|บี|แอล|อี)\s*([0-9]+)\s*/\s*([0-9]+)", p):
-            t, a, b = m
-            aliases.add(f"{t} {a}/{b}")
-            aliases.add(f"{t}{a}/{b}")
-
-        # Block / SK / Area
-        low = p.lower()
-        for m in re.findall(r"\b(block|sk|area)\s*([0-9]+[a-z]?)\b", low):
-            aliases.add(f"{m[0]} {m[1]}")
-            aliases.add(f"{m[0]}{m[1]}")
-
-        # สร้าง regex list (ยาวก่อน)
-        alias_list = sorted({norm(a) for a in aliases if len(norm(a)) >= 3}, key=len, reverse=True)
-        regs = []
-        for a in alias_list:
-            esc = re.escape(a).replace(r"\ ", r"\s+")
-            regs.append(re.compile(esc, re.IGNORECASE))
-        PROJECT_CANON.append((p, country, regs))
-
-def detect_project_and_country(title: str, summary: str):
-    text = norm(f"{title} {summary}")
-    for canon, country, regs in PROJECT_CANON:
-        for rgx in regs:
-            if rgx.search(text):
-                return canon, country
-    return "", ""
-
-# Fallback country keywords (เฉพาะประเทศใน whitelist)
 COUNTRY_KEYWORDS = {
     "Thailand": r"(thailand|ไทย|ประเทศไทย|กกพ|กฟผ|pdp|ค่าไฟ|direct ppa)",
-    "Myanmar": r"(myanmar|เมียนมา|moge|yadana|zawtika)",
-    "Malaysia": r"(malaysia|มาเลเซีย|\bsk\s*3\d{2}[a-z]?\b|\bsk\s*4\d{2}[a-z]?\b|petronas|gumusut|kakap)",
-    "Vietnam": r"(vietnam|เวียดนาม|petrovietnam|block b|48/95|52/97|9-2|16-1)",
-    "Indonesia": r"(indonesia|อินโดนีเซีย|natuna)",
-    "Kazakhstan": r"(kazakhstan|คาซัคสถาน|dunga)",
+    "Myanmar": r"(myanmar|เมียนมา|moge|yangon|naypyidaw)",
+    "Malaysia": r"(malaysia|มาเลเซีย|petronas|sabah|sarawak|\bsk\s*3\d{2}[a-z]?\b|\bsk\s*4\d{2}[a-z]?\b)",
+    "Vietnam": r"(vietnam|เวียดนาม|petrovietnam|hanoi|ho chi minh|block b|48/95|52/97|9-2|16-1)",
+    "Indonesia": r"(indonesia|อินโดนีเซีย|jakarta|natuna)",
+    "Kazakhstan": r"(kazakhstan|คาซัคสถาน|astana|dunga)",
     "Oman": r"(oman|โอมาน|muscat|\bpdo\b|\boq\b)",
     "UAE": r"(uae|united arab emirates|abu dhabi|dubai|adnoc|ghasha)",
     "Algeria": r"(algeria|แอลจีเรีย|hassi|bir rekaiz|433a|416b)",
-    "Mozambique": r"(mozambique|โมซัมบิก|rovuma|area 1)",
-    "Australia": r"(australia|ออสเตรเลีย|australasia)",
+    "Mozambique": r"(mozambique|โมซัมบิก|maputo|rovuma|area 1)",
+    "Australia": r"(australia|ออสเตรเลีย|perth|australasia)",
     "Mexico": r"(mexico|เม็กซิโก|pemex|block 12|block 29)",
 }
 COUNTRY_REGEX = {k: re.compile(v, re.IGNORECASE) for k, v in COUNTRY_KEYWORDS.items() if k in ALLOWED_COUNTRIES}
@@ -345,7 +305,7 @@ def detect_country(title: str, summary: str) -> str:
 
 
 # =============================================================================
-# LLM IMPACT (batch) – optional
+# LLM SUMMARY (บริบท + ผลกระทบ) – batch + retry 429
 # =============================================================================
 def call_groq_with_retry(messages, temperature=0.25, max_tokens=900):
     if not GROQ_API_KEY:
@@ -370,33 +330,37 @@ def call_groq_with_retry(messages, temperature=0.25, max_tokens=900):
 
     raise RuntimeError("LLM rate-limited too long (429)")
 
-def llm_impacts_batch(batch_items):
+def llm_context_impact_batch(batch_items):
     """
-    batch_items: [{id,title,summary,country,project,mode}]
-    mode: "project" or "country"
+    batch_items: [{id,title,summary,country,projects_hint}]
+    return id -> (bullet1, bullet2)
     """
-    # no LLM -> fallback
-    if (not USE_LLM_IMPACT) or (not GROQ_API_KEY):
+    # fallback without LLM
+    if (not USE_LLM_SUMMARY) or (not GROQ_API_KEY):
         out = {}
         for x in batch_items:
-            if x.get("mode") == "project":
-                out[x["id"]] = "• อาจกระทบแผนงาน/ต้นทุน/ความเสี่ยงของโครงการ ควรติดตามรายละเอียดจากหน่วยงานที่เกี่ยวข้องอย่างใกล้ชิด"
-            else:
-                out[x["id"]] = "• อาจกระทบภาพรวมสภาพแวดล้อมการลงทุน/กฎระเบียบในประเทศนี้ ซึ่งอาจส่งผลต่อโครงการในประเทศดังกล่าว"
+            out[x["id"]] = (
+                "• บริบท: ข่าวพลังงาน/นโยบาย/โครงสร้างพื้นฐานมีการอัปเดตที่อาจเปลี่ยนทิศทางตลาดหรือกฎระเบียบ",
+                "• ผลกระทบ: อาจกระทบต้นทุน/ความเสี่ยง/แผนงานของโครงการในประเทศนี้ ควรติดตามความคืบหน้าอย่างใกล้ชิด",
+            )
         return out
 
     sys = (
-        "คุณเป็นผู้ช่วยสรุปผลกระทบข่าวต่อโครงการ/ประเทศแบบสุภาพ กระชับ "
-        "ห้ามเดาประเทศใหม่ และห้ามอ้างโครงการที่ไม่ได้ให้มา"
+        "คุณเป็นผู้ช่วยสรุปข่าวพลังงานให้เข้าใจบริบทแบบสุภาพ กระชับ "
+        "ห้ามเดาประเทศอื่นนอกเหนือจากที่ระบุใน field country "
+        "และห้ามอ้างชื่อโครงการนอกเหนือจาก projects_hint"
     )
-    user_payload = {"items": batch_items}
+
     user = f"""
-เขียนผลกระทบ (impact) เป็น bullet เดียว เริ่มด้วย • ความยาวไม่เกิน 1 ประโยค
+ทำสรุปข่าวแต่ละรายการเป็น 2 bullet:
+1) '• บริบท: ...' อธิบายว่าเกิดอะไรขึ้น/ใครทำอะไร/เรื่องนี้เกี่ยวกับอะไร (1 ประโยค)
+2) '• ผลกระทบ: ...' อธิบายผลต่อโครงการในประเทศนี้ (1 ประโยค) อ้างอิง projects_hint ได้
+
 ส่งกลับเป็น JSON เท่านั้น:
-{{"impacts":[{{"id":"1","impact":"• ..."}}]}}
+{{"items":[{{"id":"1","context":"• บริบท: ...","impact":"• ผลกระทบ: ..."}}]}}
 
 ข้อมูล:
-{json.dumps(user_payload, ensure_ascii=False)}
+{json.dumps({"items": batch_items}, ensure_ascii=False)}
 """.strip()
 
     content = call_groq_with_retry(
@@ -412,21 +376,26 @@ def llm_impacts_batch(batch_items):
     out = {}
     try:
         data = json.loads(content)
-        arr = data.get("impacts") or []
+        arr = data.get("items") or []
         for x in arr:
             _id = str(x.get("id", "")).strip()
+            c = (x.get("context") or "").strip()
             imp = (x.get("impact") or "").strip()
             if _id:
+                if not c.startswith("•"):
+                    c = "• " + c.lstrip("-• ").strip()
                 if not imp.startswith("•"):
                     imp = "• " + imp.lstrip("-• ").strip()
-                out[_id] = cut(imp, 220)
+                out[_id] = (cut(c, 220), cut(imp, 240))
     except Exception:
         pass
 
-    # fill missing
     for x in batch_items:
         if x["id"] not in out:
-            out[x["id"]] = "• อาจมีผลกระทบต่อแผนงาน/ความเสี่ยง ควรติดตามความคืบหน้าอย่างใกล้ชิด"
+            out[x["id"]] = (
+                "• บริบท: ข่าวพลังงาน/นโยบาย/ตลาดมีการอัปเดตที่สำคัญ",
+                "• ผลกระทบ: อาจกระทบต้นทุน/ความเสี่ยง/แผนงานของโครงการในประเทศนี้ ควรติดตามอย่างใกล้ชิด",
+            )
     return out
 
 
@@ -458,10 +427,9 @@ def flex_bubble(item):
     src = item.get("source_domain") or item.get("feed") or ""
 
     country = item.get("country") or ""
-    project = item.get("project") or ""
-    impact = item.get("impact") or ""
-    partners = item.get("partners") or ""
     hints = item.get("project_hints") or []
+    context = item.get("context") or ""
+    impact = item.get("impact") or ""
 
     url = shorten_google_news_url(item.get("url") or "")
     if len(url) > 1000:
@@ -473,19 +441,14 @@ def flex_bubble(item):
         {"type": "text", "text": f"ประเทศ: {country}", "wrap": True, "size": "sm"},
     ]
 
-    if project:
-        body.append({"type": "text", "text": f"โครงการ: {cut(project, 160)}", "wrap": True, "size": "sm"})
-    else:
-        body.append({"type": "text", "text": "โครงการ: ไม่พบชื่อโครงการในหัวข้อ/สรุป", "wrap": True, "size": "sm"})
-
-    if partners:
-        body.append({"type": "text", "text": f"ผู้ร่วมทุน: {cut(partners, 220)}", "wrap": True, "size": "sm"})
-
+    # ✅ ตามที่คุณต้องการ: แสดง “เฉพาะโครงการในประเทศนี้”
     if hints:
-        body.append({"type": "text", "text": f"โครงการในประเทศนี้: {cut(', '.join(hints), 220)}", "wrap": True, "size": "sm"})
+        body.append({"type": "text", "text": f"โครงการในประเทศนี้: {cut(', '.join(hints), 240)}", "wrap": True, "size": "sm"})
 
+    if context:
+        body.append({"type": "text", "text": cut(context, 220), "wrap": True, "size": "sm"})
     if impact:
-        body.append({"type": "text", "text": cut(impact, 220), "wrap": True, "size": "sm"})
+        body.append({"type": "text", "text": cut(impact, 240), "wrap": True, "size": "sm"})
 
     bubble = {"type": "bubble", "size": "mega", "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": body}}
 
@@ -499,7 +462,7 @@ def flex_bubble(item):
 
     return bubble
 
-def flex_messages_from_bubbles(bubbles, alt_prefix="สรุปข่าวตามโครงการ"):
+def flex_messages_from_bubbles(bubbles, alt_prefix="สรุปข่าวตามประเทศ/โครงการ"):
     msgs = []
     chunks = [bubbles[i:i + BUBBLES_PER_CAROUSEL] for i in range(0, len(bubbles), BUBBLES_PER_CAROUSEL)]
     date_tag = now_tz().strftime("%d/%m/%Y")
@@ -536,77 +499,56 @@ def main():
         print(f"[FEED] kept_in_window={kept}")
 
     print(f"จำนวนข่าวดิบทั้งหมด: {len(raw_items)}")
-
     items = dedup_items(raw_items)
     print(f"จำนวนข่าวหลังตัดซ้ำ: {len(items)}")
 
-    # 2) match project deterministically
+    # 2) classify to country (whitelist only)
     matched = []
     for it in items:
-        proj, c = detect_project_and_country(it.get("title", ""), it.get("summary", ""))
-        if proj and c in ALLOWED_COUNTRIES:
-            it2 = dict(it)
-            it2["country"] = c
-            it2["project"] = proj
-            it2["mode"] = "project"
-            # partner info (best-effort)
-            it2["partners"] = PARTNERS_BY_PROJECT.get(proj, "")
-            matched.append(it2)
+        c = detect_country(it.get("title", ""), it.get("summary", ""))
+        if REQUIRE_COUNTRY_WHITELIST and (not c or c not in ALLOWED_COUNTRIES):
+            continue
+        if not c:
+            continue
 
-    print(f"จำนวนข่าวที่ match โครงการ (deterministic): {len(matched)}")
+        # project hints: แสดงเฉพาะ “โครงการในประเทศนี้” (เอา 3-5 โครงการแรก)
+        hints = PROJECTS_BY_COUNTRY.get(c, [])[:5]
 
-    # 3) fallback by country (only whitelist) if no project match
+        it2 = dict(it)
+        it2["country"] = c
+        it2["project_hints"] = hints
+        matched.append(it2)
+
+    print(f"จำนวนข่าวที่เข้า whitelist ประเทศของโครงการ: {len(matched)}")
     if not matched:
-        if REQUIRE_PROJECT_MATCH:
-            print("ไม่มีข่าวที่ match โครงการในลิสต์วันนี้ (REQUIRE_PROJECT_MATCH=true)")
-            return
+        print("ไม่มีข่าวที่เข้า whitelist ประเทศของโครงการในลิสต์วันนี้")
+        return
 
-        fallback = []
-        for it in items:
-            c = detect_country(it.get("title", ""), it.get("summary", ""))
-            if not c or c not in ALLOWED_COUNTRIES:
-                continue
-
-            sample_projects = PROJECTS_BY_COUNTRY.get(c, [])[:3]
-
-            it2 = dict(it)
-            it2["country"] = c
-            it2["project"] = ""  # แสดงว่าไม่เจอชื่อโครงการ
-            it2["mode"] = "country"
-            it2["project_hints"] = sample_projects
-            fallback.append(it2)
-
-        matched = fallback
-        print(f"จำนวนข่าวที่ fallback ด้วยประเทศ: {len(matched)}")
-
-        if not matched:
-            print("ไม่มีข่าวที่เข้า whitelist ประเทศของโครงการในลิสต์วันนี้")
-            return
-
-    # 4) generate impacts (batch)
+    # 3) summary (บริบท + ผลกระทบ) batch
     batch = []
     for idx, it in enumerate(matched, start=1):
         batch.append({
             "id": str(idx),
             "title": cut(it.get("title", ""), 180),
-            "summary": cut(re.sub(r"\s+", " ", it.get("summary", "") or ""), 500),
+            "summary": cut(re.sub(r"\s+", " ", it.get("summary", "") or ""), 650),
             "country": it.get("country", ""),
-            "project": it.get("project", "") or "N/A",
-            "mode": it.get("mode", "project"),
+            "projects_hint": it.get("project_hints", [])[:5],
         })
 
-    impacts = {}
+    summaries = {}
     for i in range(0, len(batch), LLM_BATCH_SIZE):
         sub = batch[i:i + LLM_BATCH_SIZE]
-        out = llm_impacts_batch(sub)
-        impacts.update(out)
+        out = llm_context_impact_batch(sub)
+        summaries.update(out)
 
     for idx, it in enumerate(matched, start=1):
-        it["impact"] = impacts.get(str(idx), "• ควรติดตามความคืบหน้าอย่างใกล้ชิด")
+        c, imp = summaries.get(str(idx), ("", ""))
+        it["context"] = c
+        it["impact"] = imp
 
-    # 5) build bubbles + send (split carousel)
+    # 4) Build & send LINE
     bubbles = [flex_bubble(it) for it in matched]
-    messages = flex_messages_from_bubbles(bubbles, alt_prefix="สรุปข่าวตามโครงการ")
+    messages = flex_messages_from_bubbles(bubbles)
 
     ok_any = False
     for msg in messages:
@@ -618,10 +560,11 @@ def main():
         else:
             break
 
-    # 6) mark sent links only if sent
+    # 5) mark sent links only if sent
     if ok_any:
         for it in matched:
             append_sent_link(it["url"])
+
 
 if __name__ == "__main__":
     main()
