@@ -69,7 +69,7 @@ PROJECTS_BY_COUNTRY = {
 }
 
 # =============================================================================
-# KEYWORD FILTERS (ปรับปรุงให้กรองดีขึ้น)
+# KEYWORD FILTERS
 # =============================================================================
 class KeywordFilter:
     # Official sources and keywords
@@ -85,39 +85,28 @@ class KeywordFilter:
         'minister', 'ministry', 'regulation', 'policy', 'tariff', 'approval'
     ]
     
-    # คำหลักที่เกี่ยวข้องกับพลังงาน (ปรับให้เฉพาะเจาะจงมากขึ้น)
+    # คำหลักที่เกี่ยวข้องกับพลังงาน
     ENERGY_KEYWORDS = [
-        # พลังงานทั่วไป
-        'พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ค่าไฟฟ้า', 'อัตราค่าไฟฟ้า', 'ค่าไฟ้า',
+        'พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ค่าไฟฟ้า', 'อัตราค่าไฟฟ้า',
         'ก๊าซ', 'LNG', 'น้ำมัน', 'เชื้อเพลิง', 'พลังงานทดแทน',
         'โรงไฟฟ้า', 'โรงงานไฟฟ้า', 'พลังงานแสงอาทิตย์', 'โซลาร์', 'พลังงานลม',
         'พลังงานชีวมวล', 'พลังงานน้ำ', 'พลังงานความร้อน',
         'พลังงานนิวเคลียร์', 'ถ่านหิน', 'พลังงานฟอสซิล',
-        
-        # โครงการและนโยบาย
         'โครงการพลังงาน', 'นโยบายพลังงาน', 'แผนพลังงาน', 'ยุทธศาสตร์พลังงาน',
         'สัมปทาน', 'สัมปทานพลังงาน', 'สัมปทานก๊าซ', 'สัมปทานน้ำมัน',
         'แหล่งก๊าซ', 'แหล่งน้ำมัน', 'แหล่งพลังงาน',
-        
-        # การเงินและการลงทุน
         'ราคาพลังงาน', 'ราคาน้ำมัน', 'ราคาก๊าซ', 'ราคาไฟฟ้า',
-        'ลงทุนพลังงาน', 'การลงทุนพลังงาน', 'เงินลงทุนพลังงาน',
-        
-        # ภาษาอังกฤษ
+        'ลงทุนพลังงาน', 'การลงทุนพลังงาน',
         'energy', 'electricity', 'power', 'gas', 'oil', 'fuel',
         'power plant', 'renewable', 'solar', 'wind', 'biomass',
         'energy policy', 'energy project', 'energy investment'
     ]
     
-    # คำที่ต้องหลีกเลี่ยง (non-energy topics ที่อาจมีคำคล้ายพลังงาน)
+    # คำที่ต้องหลีกเลี่ยง
     EXCLUDE_KEYWORDS = [
         'ตลาดรถยนต์', 'รถยนต์', 'รถ', 'รถใหม่', 'รถยนต์ใหม่',
-        'ยานยนต์', 'อุตสาหกรรมยานยนต์', 'ตลาดรถ',
-        'car', 'automotive', 'vehicle', 'automobile',
-        'โทรศัพท์', 'มือถือ', 'smartphone',
-        'อาหาร', 'เครื่องดื่ม', 'restaurant',
-        'แฟชั่น', 'เสื้อผ้า', 'fashion',
-        'บันเทิง', 'ดารา', 'entertainment'
+        'ยานยนต์', 'อุตสาหกรรมยานยนต์',
+        'car', 'automotive', 'vehicle', 'automobile'
     ]
     
     PROJECT_KEYWORDS = [
@@ -140,16 +129,13 @@ class KeywordFilter:
     
     @classmethod
     def is_energy_related(cls, text: str) -> bool:
-        """Check if text is energy related (ปรับปรุงให้ดีขึ้น)"""
+        """Check if text is energy related"""
         text_lower = text.lower()
         
         # ตรวจสอบว่าไม่มีคำที่ต้องหลีกเลี่ยง
         for exclude in cls.EXCLUDE_KEYWORDS:
             if exclude.lower() in text_lower:
-                # ถ้ามีคำที่ต้องหลีกเลี่ยง อาจจะไม่เกี่ยวข้องกับพลังงาน
-                # แต่ต้องตรวจสอบด้วยว่าไม่ได้เป็น false positive
-                # เช่น "ตลาดรถยนต์ไฟฟ้า" ควรจะเกี่ยวข้อง
-                # ดังนั้นให้ตรวจสอบเพิ่มเติมว่าไม่มีคำที่เกี่ยวกับพลังงานร่วมด้วย
+                # ถ้ามีคำที่ต้องหลีกเลี่ยง ตรวจสอบว่ามีคำพลังงานร่วมด้วยหรือไม่
                 has_energy = any(keyword.lower() in text_lower for keyword in cls.ENERGY_KEYWORDS)
                 if not has_energy:
                     return False
@@ -193,11 +179,11 @@ def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
 
 FEEDS = [
     ("GoogleNewsTH", "thai", gnews_rss(
-        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "พลังงานแสงอาทิตย์" OR "สัมปทาน" OR "โครงการพลังงาน") -"รถยนต์" -"ตลาดรถ" -"ยานยนต์"',
+        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "สัมปทาน") -"รถยนต์" -"ตลาดรถ"',
         hl="th", gl="TH", ceid="TH:th"
     )),
     ("GoogleNewsEN", "international", gnews_rss(
-        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy policy" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia OR Myanmar) -car -automotive -vehicle',
+        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia) -car -automotive',
         hl="en", gl="US", ceid="US:en"
     )),
 ]
@@ -328,7 +314,7 @@ def parse_entry(e, feed_name: str, section: str):
     }
 
 # =============================================================================
-# LLM ANALYZER (ปรับปรุงให้กรอง content ไม่เกี่ยวข้อง)
+# LLM ANALYZER (เรียบง่ายขึ้น)
 # =============================================================================
 class LLMAnalyzer:
     def __init__(self, api_key: str, model: str, endpoint: str):
@@ -341,34 +327,22 @@ class LLMAnalyzer:
         if not self.api_key:
             return self._get_default_analysis(title, summary)
         
-        system_prompt = """คุณเป็นผู้ช่วยวิเคราะห์ข่าวพลังงาน
+        system_prompt = """คุณเป็นผู้ช่วยสรุปข่าวพลังงาน
         ตอบกลับเป็น JSON เท่านั้นตามรูปแบบนี้:
         {
             "relevant": true/false,
             "country": "ชื่อประเทศหรือค่าว่าง",
-            "official": true/false,
-            "summary_th": "สรุปภาษาไทยสั้นๆ 1-2 ประโยค",
+            "summary_th": "สรุปภาษาไทยสั้นๆ 1 ประโยค",
             "topics": ["หัวข้อ1", "หัวข้อ2"]
         }
         
-        เกณฑ์:
-        - relevant: ข่าวต้องเกี่ยวข้องกับพลังงานโดยตรงเท่านั้น เช่น 
-          * นโยบายพลังงาน ราคาพลังงาน อัตราค่าไฟฟ้า
-          * โครงการพลังงาน สัมปทานก๊าซ/น้ำมัน
-          * การผลิตพลังงาน โรงไฟฟ้า พลังงานทดแทน
-          * การลงทุนในภาคพลังงาน
-          * **ไม่เกี่ยวข้อง**: ข่าวตลาดรถยนต์ทั่วไป, ข่าวเทคโนโลยีที่ไม่เกี่ยวกับพลังงาน, ข่าวบันเทิง
-        
-        - country: ระบุประเทศจากเนื้อหา
-        - official: เป็นข่าวทางการ ประกาศราชการ มติคณะรัฐมนตรี
-        - summary_th: สรุปสั้นๆ 1-2 ประโยค ให้ข้อมูลสำคัญ
-        - topics: หัวข้อ เช่น พลังงาน, ไฟฟ้า, ก๊าซ, นโยบาย, โครงการ"""
+        โปรดสรุปข่าวพลังงานให้กระชับ:"""
         
         user_prompt = f"""ข่าว: {title}
         
-        เนื้อหา: {summary[:800]}
+        เนื้อหา: {summary[:500]}
         
-        โปรดวิเคราะห์ข่าวนี้ว่าเกี่ยวข้องกับพลังงานโดยตรงหรือไม่ และสรุปเป็นภาษาไทยสั้นๆ:"""
+        โปรดสรุปข่าวนี้เป็นภาษาไทยสั้นๆ 1 ประโยค:"""
         
         try:
             response = requests.post(
@@ -384,7 +358,7 @@ class LLMAnalyzer:
                         {"role": "user", "content": user_prompt}
                     ],
                     "temperature": 0.1,
-                    "max_tokens": 500
+                    "max_tokens": 300
                 },
                 timeout=30
             )
@@ -403,10 +377,9 @@ class LLMAnalyzer:
                 
                 # Validate and clean up
                 return {
-                    "relevant": bool(analysis.get("relevant", False)),
+                    "relevant": bool(analysis.get("relevant", True)),
                     "country": str(analysis.get("country", "")).strip(),
-                    "official": bool(analysis.get("official", False)),
-                    "summary_th": str(analysis.get("summary_th", "")).strip()[:200],
+                    "summary_th": str(analysis.get("summary_th", "")).strip()[:150],
                     "topics": [str(t).strip() for t in analysis.get("topics", []) if t]
                 }
                 
@@ -419,34 +392,18 @@ class LLMAnalyzer:
     
     def _get_default_analysis(self, title: str, summary: str):
         """สร้างการวิเคราะห์พื้นฐานเมื่อ LLM ไม่ทำงาน"""
-        # สรุปแบบง่ายจาก title และ summary
         combined = f"{title} {summary}"
         simple_summary = create_simple_summary(combined, 100)
         
-        # พยายามตรวจจับว่าไม่เกี่ยวข้องเบื้องต้น
-        combined_lower = combined.lower()
-        exclude_indicators = [
-            'ตลาดรถยนต์', 'รถยนต์', 'รถใหม่', 'ยานยนต์',
-            'รถไฟฟ้า', 'ev', 'electric vehicle'  # รถไฟฟ้าอาจจะเกี่ยวข้อง แต่ถ้าเป็นข่าวตลาดรถยนต์ทั่วไปไม่ควรนับ
-        ]
-        
-        # ตรวจสอบว่าเป็นข่าวรถยนต์ทั่วไปหรือไม่
-        is_auto_general = any(indicator in combined_lower for indicator in ['ตลาดรถยนต์', 'รถยนต์ใหม่', 'ยานยนต์'])
-        has_energy_context = any(keyword in combined_lower for keyword in ['พลังงาน', 'ไฟฟ้า', 'นโยบาย'])
-        
-        # ถ้าเป็นข่าวรถยนต์ทั่วไปและไม่มี context พลังงานชัดเจน ให้ถือว่าไม่เกี่ยวข้อง
-        relevant = not (is_auto_general and not has_energy_context)
-        
         return {
-            "relevant": relevant,
+            "relevant": True,
             "country": "",
-            "official": False,
-            "summary_th": simple_summary if simple_summary else "ข้อมูลสรุปไม่พร้อมใช้งาน",
+            "summary_th": simple_summary if simple_summary else "สรุปข้อมูลไม่พร้อมใช้งาน",
             "topics": []
         }
 
 # =============================================================================
-# NEWS PROCESSOR (ปรับปรุงให้กรอง content ไม่เกี่ยวข้อง)
+# NEWS PROCESSOR
 # =============================================================================
 class NewsProcessor:
     def __init__(self):
@@ -472,11 +429,8 @@ class NewsProcessor:
             except Exception as e:
                 print(f"  ✗ Error: {str(e)}")
         
-        # Sort by importance (official first, then by date)
-        all_news.sort(key=lambda x: (
-            -x.get('is_official', 0),
-            -(x.get('published_dt') or datetime.min).timestamp()
-        ))
+        # Sort by date (ใหม่ที่สุดก่อน)
+        all_news.sort(key=lambda x: -((x.get('published_dt') or datetime.min).timestamp()))
         
         return all_news
     
@@ -499,18 +453,16 @@ class NewsProcessor:
         # Combine text for analysis
         full_text = f"{item['title']} {item['summary']}"
         
-        # Step 1: Keyword filtering (ปรับปรุงแล้ว)
+        # Step 1: Keyword filtering
         if not KeywordFilter.is_energy_related(full_text):
-            print(f"  ✗ กรองด้วย keyword: {item['title'][:50]}...")
             return None
         
         # Step 2: Detect country
         country = KeywordFilter.detect_country(full_text)
         if not country:
-            print(f"  ✗ ไม่พบประเทศ: {item['title'][:50]}...")
             return None
         
-        # Step 3: Check if official
+        # Step 3: Check if official (แต่ไม่แสดง badge)
         is_official = (
             KeywordFilter.is_official_source(item['url']) or 
             KeywordFilter.contains_official_keywords(full_text)
@@ -519,40 +471,21 @@ class NewsProcessor:
         # Step 4: Check project references
         has_project_ref = KeywordFilter.contains_project_reference(full_text)
         
-        # Step 5: LLM analysis (สำหรับทุกข่าวที่ผ่านการกรอง)
-        llm_analysis = None
+        # Step 5: LLM analysis (สำหรับสรุปข่าวเท่านั้น)
+        llm_summary = ""
         if USE_LLM_SUMMARY and self.llm_analyzer:
             llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
             
-            # ✅ ใช้ LLM ตรวจสอบความเกี่ยวข้อง - ถ้าไม่เกี่ยวข้องให้ทิ้ง
-            if not llm_analysis.get('relevant', True):
-                print(f"  ✗ LLM กรองว่าไม่เกี่ยวข้อง: {item['title'][:50]}...")
-                return None
-            
-            # Use LLM country if detected
+            # ใช้ LLM country ถ้าตรวจพบ
             if llm_analysis['country'] and llm_analysis['country'] in PROJECTS_BY_COUNTRY:
                 country = llm_analysis['country']
             
-            # Update official status from LLM
-            if llm_analysis['official']:
-                is_official = True
-        
-        # ถ้าไม่มี LLM analysis ให้สร้างสรุปแบบง่าย
-        if not llm_analysis or not llm_analysis.get('summary_th'):
-            simple_summary = create_simple_summary(full_text, 120)
-            if not llm_analysis:
-                llm_analysis = {
-                    "relevant": True,
-                    "country": country,
-                    "official": is_official,
-                    "summary_th": simple_summary,
-                    "topics": []
-                }
-            elif not llm_analysis.get('summary_th'):
-                llm_analysis['summary_th'] = simple_summary
+            # ใช้ summary จาก LLM
+            if llm_analysis.get('summary_th'):
+                llm_summary = llm_analysis['summary_th']
         
         # Get project hints for this country
-        project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:3]
+        project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
         
         # Build final news item
         return {
@@ -563,36 +496,25 @@ class NewsProcessor:
             'published_dt': item['published_dt'],
             'country': country,
             'project_hints': project_hints,
-            'is_official': is_official,
+            'is_official': is_official,  # เก็บข้อมูลแต่ไม่แสดง badge
             'has_project_ref': has_project_ref,
-            'llm_analysis': llm_analysis,
+            'llm_summary': llm_summary,  # เก็บเฉพาะ summary
             'feed': feed_name,
-            'simple_summary': create_simple_summary(full_text, 100)  # สำหรับ fallback
+            'simple_summary': create_simple_summary(full_text, 100)
         }
 
 # =============================================================================
-# LINE MESSAGE BUILDER (ปรับปรุงให้แสดงสรุปในทุก Bubble)
+# LINE MESSAGE BUILDER (แบบเรียบง่าย ไม่มี badge)
 # =============================================================================
 class LineMessageBuilder:
     @staticmethod
     def create_flex_bubble(news_item):
-        """Create a LINE Flex Bubble for a news item"""
+        """Create a LINE Flex Bubble for a news item (แบบเรียบง่าย)"""
         title = cut(news_item.get('title', ''), 80)
         
         # Format timestamp
         pub_dt = news_item.get('published_dt')
         time_str = pub_dt.strftime("%d/%m/%Y %H:%M") if pub_dt else ""
-        
-        # Determine bubble color
-        if news_item.get('is_official'):
-            color = "#4CAF50"  # Green for official news
-            badge = "📢 ข่าวทางการ"
-        elif news_item.get('llm_analysis'):
-            color = "#2196F3"  # Blue for LLM-analyzed news
-            badge = "🤖 วิเคราะห์ด้วย AI"
-        else:
-            color = "#FF9800"  # Orange for regular news
-            badge = "📰 ข่าวทั่วไป"
         
         # Build bubble contents
         contents = [
@@ -606,7 +528,7 @@ class LineMessageBuilder:
             }
         ]
         
-        # Add metadata
+        # Add metadata (เวลาและแหล่งข่าว)
         metadata = []
         if time_str:
             metadata.append(time_str)
@@ -627,7 +549,8 @@ class LineMessageBuilder:
             "type": "text",
             "text": f"ประเทศ: {news_item.get('country', 'N/A')}",
             "size": "sm",
-            "margin": "xs"
+            "margin": "xs",
+            "color": "#666666"
         })
         
         # Add project hints
@@ -642,12 +565,12 @@ class LineMessageBuilder:
                 "margin": "xs"
             })
         
-        # ✅ **เพิ่มสรุปสำหรับทุกข่าว (สำคัญ!)**
+        # ✅ **เพิ่มสรุปข่าวแบบเรียบง่าย**
         summary_text = ""
         
         # 1. พยายามใช้สรุปจาก LLM ก่อน
-        if news_item.get('llm_analysis') and news_item['llm_analysis'].get('summary_th'):
-            summary_text = news_item['llm_analysis']['summary_th']
+        if news_item.get('llm_summary'):
+            summary_text = news_item['llm_summary']
         # 2. ถ้าไม่มีจาก LLM ให้ใช้ simple summary
         elif news_item.get('simple_summary'):
             summary_text = news_item['simple_summary']
@@ -657,44 +580,20 @@ class LineMessageBuilder:
         
         # ถ้ายังไม่มีสรุป ให้สร้างจาก title
         if not summary_text or len(summary_text.strip()) < 10:
-            summary_text = f"ข่าวเกี่ยวกับ{news_item.get('title', 'พลังงาน')[:50]}..."
+            summary_text = f"{news_item.get('title', 'ข่าวพลังงาน')[:60]}..."
         
-        # เพิ่มบล็อกสรุป
+        # เพิ่มบล็อกสรุป (แบบเรียบง่าย)
         if summary_text:
             contents.append({
-                "type": "box",
-                "layout": "vertical",
+                "type": "text",
+                "text": cut(summary_text, 120),
+                "size": "sm",
+                "wrap": True,
                 "margin": "md",
-                "paddingAll": "8px",
-                "backgroundColor": "#F5F5F5",
-                "cornerRadius": "4px",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": "📋 สรุปข่าว",
-                        "size": "xs",
-                        "color": "#666666",
-                        "margin": "none"
-                    },
-                    {
-                        "type": "text",
-                        "text": cut(summary_text, 120),
-                        "size": "sm",
-                        "wrap": True,
-                        "margin": "xs",
-                        "color": "#424242"
-                    }
-                ]
+                "color": "#424242"
             })
         
-        # Add badge
-        contents.append({
-            "type": "text",
-            "text": badge,
-            "size": "xs",
-            "color": color,
-            "margin": "sm"
-        })
+        # ❌ **ไม่เพิ่ม badge อะไรทั้งสิ้น**
         
         # Create bubble
         bubble = {
@@ -710,7 +609,7 @@ class LineMessageBuilder:
         
         # Add button if URL exists
         url = news_item.get('canon_url') or news_item.get('url')
-        if url and len(url) < 1000:  # LINE URL length limit
+        if url and len(url) < 1000:
             bubble["footer"] = {
                 "type": "box",
                 "layout": "vertical",
@@ -771,20 +670,17 @@ class LineSender:
             print("DRY RUN - Would send the following news:")
             print("="*60)
             
-            # Extract news info for display
             contents = message_obj.get('contents', {}).get('contents', [])
             for i, bubble in enumerate(contents):
-                # ดึงข้อมูลจาก bubble
                 body_contents = bubble.get('body', {}).get('contents', [])
                 title = ""
                 
                 for content in body_contents:
                     if content.get('type') == 'text':
                         text = content.get('text', '')
-                        if 'สรุปข่าว' in text:
-                            pass
-                        elif len(text) > 10 and not title:
+                        if len(text) > 10 and not title:
                             title = text[:60]
+                            break
                 
                 print(f"{i+1}. {title}")
             
@@ -849,12 +745,10 @@ def main():
     
     # Count statistics
     official_count = sum(1 for item in news_items if item.get('is_official'))
-    llm_count = sum(1 for item in news_items if item.get('llm_analysis'))
-    summary_count = sum(1 for item in news_items if item.get('simple_summary'))
+    llm_summary_count = sum(1 for item in news_items if item.get('llm_summary'))
     
     print(f"   - ข่าวทางการ: {official_count} ข่าว")
-    print(f"   - วิเคราะห์ด้วย AI: {llm_count} ข่าว")
-    print(f"   - มีสรุปข่าว: {summary_count} ข่าว")
+    print(f"   - สรุปด้วย AI: {llm_summary_count} ข่าว")
     
     # Step 2: Create LINE message
     print("\n[3] กำลังสร้างข้อความ LINE...")
