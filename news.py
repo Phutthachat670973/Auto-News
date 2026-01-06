@@ -69,7 +69,7 @@ PROJECTS_BY_COUNTRY = {
 }
 
 # =============================================================================
-# KEYWORD FILTERS
+# KEYWORD FILTERS (ปรับปรุงให้กรองดีขึ้น)
 # =============================================================================
 class KeywordFilter:
     # Official sources and keywords
@@ -85,11 +85,39 @@ class KeywordFilter:
         'minister', 'ministry', 'regulation', 'policy', 'tariff', 'approval'
     ]
     
+    # คำหลักที่เกี่ยวข้องกับพลังงาน (ปรับให้เฉพาะเจาะจงมากขึ้น)
     ENERGY_KEYWORDS = [
-        'พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ก๊าซ', 'LNG', 'น้ำมัน', 'เชื้อเพลิง',
-        'โรงไฟฟ้า', 'พลังงานทดแทน', 'โซลาร์', 'พลังงานลม', 'พลังงานชีวมวล',
+        # พลังงานทั่วไป
+        'พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ค่าไฟฟ้า', 'อัตราค่าไฟฟ้า', 'ค่าไฟ้า',
+        'ก๊าซ', 'LNG', 'น้ำมัน', 'เชื้อเพลิง', 'พลังงานทดแทน',
+        'โรงไฟฟ้า', 'โรงงานไฟฟ้า', 'พลังงานแสงอาทิตย์', 'โซลาร์', 'พลังงานลม',
+        'พลังงานชีวมวล', 'พลังงานน้ำ', 'พลังงานความร้อน',
+        'พลังงานนิวเคลียร์', 'ถ่านหิน', 'พลังงานฟอสซิล',
+        
+        # โครงการและนโยบาย
+        'โครงการพลังงาน', 'นโยบายพลังงาน', 'แผนพลังงาน', 'ยุทธศาสตร์พลังงาน',
+        'สัมปทาน', 'สัมปทานพลังงาน', 'สัมปทานก๊าซ', 'สัมปทานน้ำมัน',
+        'แหล่งก๊าซ', 'แหล่งน้ำมัน', 'แหล่งพลังงาน',
+        
+        # การเงินและการลงทุน
+        'ราคาพลังงาน', 'ราคาน้ำมัน', 'ราคาก๊าซ', 'ราคาไฟฟ้า',
+        'ลงทุนพลังงาน', 'การลงทุนพลังงาน', 'เงินลงทุนพลังงาน',
+        
+        # ภาษาอังกฤษ
         'energy', 'electricity', 'power', 'gas', 'oil', 'fuel',
-        'power plant', 'renewable', 'solar', 'wind', 'biomass'
+        'power plant', 'renewable', 'solar', 'wind', 'biomass',
+        'energy policy', 'energy project', 'energy investment'
+    ]
+    
+    # คำที่ต้องหลีกเลี่ยง (non-energy topics ที่อาจมีคำคล้ายพลังงาน)
+    EXCLUDE_KEYWORDS = [
+        'ตลาดรถยนต์', 'รถยนต์', 'รถ', 'รถใหม่', 'รถยนต์ใหม่',
+        'ยานยนต์', 'อุตสาหกรรมยานยนต์', 'ตลาดรถ',
+        'car', 'automotive', 'vehicle', 'automobile',
+        'โทรศัพท์', 'มือถือ', 'smartphone',
+        'อาหาร', 'เครื่องดื่ม', 'restaurant',
+        'แฟชั่น', 'เสื้อผ้า', 'fashion',
+        'บันเทิง', 'ดารา', 'entertainment'
     ]
     
     PROJECT_KEYWORDS = [
@@ -112,8 +140,21 @@ class KeywordFilter:
     
     @classmethod
     def is_energy_related(cls, text: str) -> bool:
-        """Check if text is energy related"""
+        """Check if text is energy related (ปรับปรุงให้ดีขึ้น)"""
         text_lower = text.lower()
+        
+        # ตรวจสอบว่าไม่มีคำที่ต้องหลีกเลี่ยง
+        for exclude in cls.EXCLUDE_KEYWORDS:
+            if exclude.lower() in text_lower:
+                # ถ้ามีคำที่ต้องหลีกเลี่ยง อาจจะไม่เกี่ยวข้องกับพลังงาน
+                # แต่ต้องตรวจสอบด้วยว่าไม่ได้เป็น false positive
+                # เช่น "ตลาดรถยนต์ไฟฟ้า" ควรจะเกี่ยวข้อง
+                # ดังนั้นให้ตรวจสอบเพิ่มเติมว่าไม่มีคำที่เกี่ยวกับพลังงานร่วมด้วย
+                has_energy = any(keyword.lower() in text_lower for keyword in cls.ENERGY_KEYWORDS)
+                if not has_energy:
+                    return False
+        
+        # ตรวจสอบว่ามีคำที่เกี่ยวข้องกับพลังงาน
         return any(keyword.lower() in text_lower for keyword in cls.ENERGY_KEYWORDS)
     
     @classmethod
@@ -152,11 +193,11 @@ def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
 
 FEEDS = [
     ("GoogleNewsTH", "thai", gnews_rss(
-        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า")',
+        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "พลังงานแสงอาทิตย์" OR "สัมปทาน" OR "โครงการพลังงาน") -"รถยนต์" -"ตลาดรถ" -"ยานยนต์"',
         hl="th", gl="TH", ceid="TH:th"
     )),
     ("GoogleNewsEN", "international", gnews_rss(
-        '(energy OR electricity OR power OR oil OR gas) AND (Thailand OR Vietnam OR Malaysia OR Indonesia)',
+        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy policy" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia OR Myanmar) -car -automotive -vehicle',
         hl="en", gl="US", ceid="US:en"
     )),
 ]
@@ -215,7 +256,7 @@ def append_sent_link(url: str):
     url = normalize_url(url)
     if not url:
         return
-    fn = os.path.join(SENT_DIR, now_tz().strftime("%Y-%m-d") + ".txt")
+    fn = os.path.join(SENT_DIR, now_tz().strftime("%Y-%m-%d") + ".txt")
     with open(fn, "a", encoding="utf-8") as f:
         f.write(url + "\n")
 
@@ -287,7 +328,7 @@ def parse_entry(e, feed_name: str, section: str):
     }
 
 # =============================================================================
-# LLM ANALYZER (ปรับปรุงให้สรุปทุกข่าว)
+# LLM ANALYZER (ปรับปรุงให้กรอง content ไม่เกี่ยวข้อง)
 # =============================================================================
 class LLMAnalyzer:
     def __init__(self, api_key: str, model: str, endpoint: str):
@@ -311,7 +352,13 @@ class LLMAnalyzer:
         }
         
         เกณฑ์:
-        - relevant: เกี่ยวข้องกับพลังงาน โครงการพลังงาน นโยบายพลังงาน
+        - relevant: ข่าวต้องเกี่ยวข้องกับพลังงานโดยตรงเท่านั้น เช่น 
+          * นโยบายพลังงาน ราคาพลังงาน อัตราค่าไฟฟ้า
+          * โครงการพลังงาน สัมปทานก๊าซ/น้ำมัน
+          * การผลิตพลังงาน โรงไฟฟ้า พลังงานทดแทน
+          * การลงทุนในภาคพลังงาน
+          * **ไม่เกี่ยวข้อง**: ข่าวตลาดรถยนต์ทั่วไป, ข่าวเทคโนโลยีที่ไม่เกี่ยวกับพลังงาน, ข่าวบันเทิง
+        
         - country: ระบุประเทศจากเนื้อหา
         - official: เป็นข่าวทางการ ประกาศราชการ มติคณะรัฐมนตรี
         - summary_th: สรุปสั้นๆ 1-2 ประโยค ให้ข้อมูลสำคัญ
@@ -321,7 +368,7 @@ class LLMAnalyzer:
         
         เนื้อหา: {summary[:800]}
         
-        โปรดวิเคราะห์ข่าวนี้และสรุปเป็นภาษาไทยสั้นๆ:"""
+        โปรดวิเคราะห์ข่าวนี้ว่าเกี่ยวข้องกับพลังงานโดยตรงหรือไม่ และสรุปเป็นภาษาไทยสั้นๆ:"""
         
         try:
             response = requests.post(
@@ -376,8 +423,22 @@ class LLMAnalyzer:
         combined = f"{title} {summary}"
         simple_summary = create_simple_summary(combined, 100)
         
+        # พยายามตรวจจับว่าไม่เกี่ยวข้องเบื้องต้น
+        combined_lower = combined.lower()
+        exclude_indicators = [
+            'ตลาดรถยนต์', 'รถยนต์', 'รถใหม่', 'ยานยนต์',
+            'รถไฟฟ้า', 'ev', 'electric vehicle'  # รถไฟฟ้าอาจจะเกี่ยวข้อง แต่ถ้าเป็นข่าวตลาดรถยนต์ทั่วไปไม่ควรนับ
+        ]
+        
+        # ตรวจสอบว่าเป็นข่าวรถยนต์ทั่วไปหรือไม่
+        is_auto_general = any(indicator in combined_lower for indicator in ['ตลาดรถยนต์', 'รถยนต์ใหม่', 'ยานยนต์'])
+        has_energy_context = any(keyword in combined_lower for keyword in ['พลังงาน', 'ไฟฟ้า', 'นโยบาย'])
+        
+        # ถ้าเป็นข่าวรถยนต์ทั่วไปและไม่มี context พลังงานชัดเจน ให้ถือว่าไม่เกี่ยวข้อง
+        relevant = not (is_auto_general and not has_energy_context)
+        
         return {
-            "relevant": True,  # ผ่านการกรองแล้วจาก KeywordFilter
+            "relevant": relevant,
             "country": "",
             "official": False,
             "summary_th": simple_summary if simple_summary else "ข้อมูลสรุปไม่พร้อมใช้งาน",
@@ -385,7 +446,7 @@ class LLMAnalyzer:
         }
 
 # =============================================================================
-# NEWS PROCESSOR (ปรับปรุงให้ทุกข่าวได้รับสรุป)
+# NEWS PROCESSOR (ปรับปรุงให้กรอง content ไม่เกี่ยวข้อง)
 # =============================================================================
 class NewsProcessor:
     def __init__(self):
@@ -438,13 +499,15 @@ class NewsProcessor:
         # Combine text for analysis
         full_text = f"{item['title']} {item['summary']}"
         
-        # Step 1: Keyword filtering
+        # Step 1: Keyword filtering (ปรับปรุงแล้ว)
         if not KeywordFilter.is_energy_related(full_text):
+            print(f"  ✗ กรองด้วย keyword: {item['title'][:50]}...")
             return None
         
         # Step 2: Detect country
         country = KeywordFilter.detect_country(full_text)
         if not country:
+            print(f"  ✗ ไม่พบประเทศ: {item['title'][:50]}...")
             return None
         
         # Step 3: Check if official
@@ -460,6 +523,11 @@ class NewsProcessor:
         llm_analysis = None
         if USE_LLM_SUMMARY and self.llm_analyzer:
             llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
+            
+            # ✅ ใช้ LLM ตรวจสอบความเกี่ยวข้อง - ถ้าไม่เกี่ยวข้องให้ทิ้ง
+            if not llm_analysis.get('relevant', True):
+                print(f"  ✗ LLM กรองว่าไม่เกี่ยวข้อง: {item['title'][:50]}...")
+                return None
             
             # Use LLM country if detected
             if llm_analysis['country'] and llm_analysis['country'] in PROJECTS_BY_COUNTRY:
@@ -709,20 +777,16 @@ class LineSender:
                 # ดึงข้อมูลจาก bubble
                 body_contents = bubble.get('body', {}).get('contents', [])
                 title = ""
-                summary = ""
                 
                 for content in body_contents:
                     if content.get('type') == 'text':
                         text = content.get('text', '')
                         if 'สรุปข่าว' in text:
-                            # นี่คือบล็อกสรุป
                             pass
                         elif len(text) > 10 and not title:
                             title = text[:60]
                 
                 print(f"{i+1}. {title}")
-                if summary:
-                    print(f"   สรุป: {summary[:50]}...")
             
             print(f"\nTotal: {len(contents)} news items")
             return True
