@@ -1,4 +1,3 @@
-# news.py
 # -*- coding: utf-8 -*-
 
 import os
@@ -9,6 +8,7 @@ import random
 import hashlib
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs, unquote
+from typing import List, Dict, Tuple, Optional
 
 import requests
 import feedparser
@@ -21,7 +21,6 @@ try:
 except Exception:
     pass
 
-
 # =============================================================================
 # ENV / CONFIG
 # =============================================================================
@@ -31,574 +30,598 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("Missing LINE_CHANNEL_ACCESS_TOKEN")
 
-# Groq (OpenAI-compatible) – optional (ใช้เพื่อสรุป “บริบท+ผลกระทบ”)
+# Groq (OpenAI-compatible)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile").strip()  # ใช้โมเดลที่ใหญ่ขึ้นสำหรับการวิเคราะห์ที่ซับซ้อน
 GROQ_ENDPOINT = os.getenv("GROQ_ENDPOINT", "https://api.groq.com/openai/v1/chat/completions").strip()
-USE_LLM_SUMMARY = os.getenv("USE_LLM_SUMMARY", "1").strip().lower() in ["1", "true", "yes", "y"]
+USE_LLM_ANALYSIS = os.getenv("USE_LLM_ANALYSIS", "1").strip().lower() in ["1", "true", "yes", "y"]
 
-WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "48"))
-MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "100"))
+WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "72"))  # เพิ่มเวลา window เป็น 72 ชม.
+MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "50"))  # ลดจำนวนข่าวต่อ feed
 
-# ถ้า true จะส่งเฉพาะข่าวที่ match ประเทศในลิสต์ประเทศโครงการเท่านั้น (กันประเทศมั่ว)
-REQUIRE_COUNTRY_WHITELIST = os.getenv("REQUIRE_COUNTRY_WHITELIST", "true").strip().lower() in ["1", "true", "yes", "y"]
-
-# LINE limits
-BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))  # safe (<=12)
-MAX_MESSAGES_PER_RUN = int(os.getenv("MAX_MESSAGES_PER_RUN", "20"))
-DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ["1", "true", "yes", "y"]
-
-# LLM batching / retry
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1100"))
-LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "8"))
-LLM_MAX_RETRIES_429 = int(os.getenv("LLM_MAX_RETRIES_429", "8"))
-LLM_BASE_BACKOFF = float(os.getenv("LLM_BASE_BACKOFF", "1.5"))
-
-# sent links
-SENT_DIR = os.getenv("SENT_DIR", "sent_links")
-os.makedirs(SENT_DIR, exist_ok=True)
-
+# LLM configuration
+LLM_ANALYSIS_MAX_TOKENS = int(os.getenv("LLM_ANALYSIS_MAX_TOKENS", "1500"))
+LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "5"))  # ลด batch size สำหรับการวิเคราะห์ที่ละเอียด
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "5"))
+LLM_BASE_BACKOFF = float(os.getenv("LLM_BASE_BACKOFF", "2.0"))
 
 # =============================================================================
-# PROJECT DB (ประเทศ/โครงการ)
-# - แสดงบนการ์ด: “โครงการในประเทศนี้: ...” เท่านั้น
+# PROJECT DATABASE (ปรับให้ละเอียดขึ้น)
 # =============================================================================
-PROJECTS_BY_COUNTRY = {
-    "Thailand": [
-        "โครงการจี 1/61", "โครงการจี 2/61", "โครงการอาทิตย์", "Arthit",
-        "โครงการเอส 1", "S1",
-        "โครงการสัมปทาน 4", "Contract 4",
-        "โครงการพีทีทีอีพี 1", "PTTEP 1",
-        "โครงการบี 6/27",
-        "โครงการแอล 22/43",
-        "โครงการอี 5", "E5",
-        "โครงการจี 4/43",
-        "โครงการสินภูฮ่อม", "Sinphuhorm",
-        "โครงการบี 8/32", "B8/32", "9A", "9เอ", "โครงการบี 8/32 และ 9เอ",
-        "โครงการจี 4/48",
-        "โครงการจี 12/48",
-        "โครงการจี 1/65",
-        "โครงการจี 3/65",
-        "โครงการแอล 53/43", "โครงการแอล 54/43", "แอล 53/43", "แอล 54/43",
-    ],
-    "Myanmar": ["โครงการซอติก้า", "Zawtika", "โครงการยาดานา", "Yadana", "โครงการเมียนมา เอ็ม 3", "Myanmar M3"],
-    "Malaysia": [
-        "Malaysia SK309", "SK309", "Malaysia SK311", "SK311",
-        "Malaysia Block H", "Block H",
-        "Malaysia SK410B", "SK410B",
-        "Malaysia SK417", "SK417",
-        "Malaysia SK405B", "SK405B",
-        "Malaysia SK438", "SK438",
-        "Malaysia SK314A", "SK314A",
-        "Malaysia SK325", "SK325",
-        "Malaysia SB412", "SB412",
-        "Malaysia Block K", "Block K", "Gumusut-Kakap",
-    ],
-    "Vietnam": ["โครงการเวียดนาม 16-1", "Vietnam 16-1", "16-1", "Block B", "48/95", "52/97", "9-2"],
-    "Indonesia": ["โครงการนาทูน่า ซี เอ", "Natuna Sea A"],
-    "Kazakhstan": ["โครงการดุงกา", "Dunga"],
-    "Oman": ["Oman Block 61", "Block 61", "Oman Block 6", "PDO", "Oman Block 53", "Block 53", "Onshore Block 12", "Oman LNG", "Oman LNG Project"],
-    "UAE": ["Abu Dhabi Offshore 1", "Abu Dhabi Offshore 2", "Abu Dhabi Offshore 3", "Ghasha", "Ghasha Concession", "ADNOC Gas Processing", "AGP"],
-    "Algeria": ["433a", "416b", "Hassi Bir Rekaiz"],
-    "Mozambique": ["Mozambique Area 1", "Mozambique LNG", "Area 1"],
-    "Australia": ["PTTEP Australasia", "Australasia"],
-    "Mexico": ["Mexico Block 12", "Block 12", "Mexico Block 29", "Block 29"],
+PROJECTS_DETAILED = {
+    "Thailand": {
+        "projects": [
+            "โครงการจี 1/61", "โครงการจี 2/61", "โครงการอาทิตย์", "Arthit",
+            "โครงการเอส 1", "S1", "โครงการสัมปทาน 4", "Contract 4",
+            "โครงการพีทีทีอีพี 1", "PTTEP 1", "โครงการบี 6/27",
+            "โครงการแอล 22/43", "โครงการอี 5", "E5",
+            "โครงการจี 4/43", "โครงการสินภูฮ่อม", "Sinphuhorm",
+            "โครงการบี 8/32", "B8/32", "9A", "9เอ",
+            "โครงการจี 4/48", "โครงการจี 12/48",
+            "โครงการจี 1/65", "โครงการจี 3/65",
+            "โครงการแอล 53/43", "โครงการแอล 54/43"
+        ],
+        "keywords": [
+            "กระทรวงพลังงาน", "กรมธุรกิจพลังงาน", "กฟผ.", "การไฟฟ้าส่วนภูมิภาค",
+            "กองทุนน้ำมันเชื้อเพลิง", "คณะกรรมการกำกับกิจการพลังงาน",
+            "สำนักงานนโยบายและแผนพลังงาน", "ราคาก๊าซธรรมชาติ",
+            "แผนพัฒนากำลังผลิตไฟฟ้า", "PDP", "ค่า Ft", "อัตราค่าไฟฟ้า",
+            "โรงไฟฟ้า", "พลังงานทดแทน", "โซลาร์เซลล์", "พลังงานลม",
+            "พลังงานชีวมวล", "พลังงานความร้อนใต้พิภพ"
+        ],
+        "entities": [
+            "รัฐมนตรีพลังงาน", "อธิบดีกรมธุรกิจพลังงาน", "ผู้ว่าการการไฟฟ้าส่วนภูมิภาค",
+            "คณะกรรมการกกพ.", "บริษัท ปตท. จำกัด (มหาชน)", "บริษัท กฟผ. จำกัด (มหาชน)"
+        ]
+    },
+    # ... กำหนดรายละเอียดสำหรับประเทศอื่นๆในทำนองเดียวกัน
 }
 
-ALLOWED_COUNTRIES = set(PROJECTS_BY_COUNTRY.keys())
-
-
 # =============================================================================
-# FEEDS (เพิ่ม “ต่างประเทศ” แบบล็อกประเทศที่มีโครงการ)
+# FEEDS (ปรับให้เฉพาะเจาะจงมากขึ้น)
 # =============================================================================
 def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
     return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
 
-COUNTRY_EN_QUERY = "(" + " OR ".join([
-    "Thailand", "Myanmar", "Malaysia", "Vietnam", "Indonesia", "Kazakhstan",
-    "Oman", "United Arab Emirates", "UAE", "Algeria", "Mozambique", "Australia", "Mexico"
-]) + ")"
-
-ENERGY_EN_QUERY = "(" + " OR ".join([
-    "energy policy", "regulator", "power tariff", "electricity tariff", "direct PPA",
-    "LNG", "natural gas", "gas", "oil", "crude", "offshore", "drilling",
-    "small modular reactor", "SMR", "nuclear", "sanctions", "national security",
-    "project financing", "FID", "export terminal", "pipeline"
-]) + ")"
-
 FEEDS = [
-    ("GoogleNewsTH", "domestic", gnews_rss(
-        '(พลังงาน OR PDP OR "กกพ" OR ค่าไฟ OR "Direct PPA" OR ก๊าซ OR LNG OR นิวเคลียร์ OR SMR OR โดรน OR แท่นขุดเจาะ)',
+    ("GoogleNewsTH_EnergyOfficial", "official_thai", gnews_rss(
+        '(site:ratchakitcha.soc.go.th OR site:energy.go.th OR site:egat.co.th OR site:pptplc.com OR site:pttep.com) AND (พลังงาน OR ก๊าซ OR ไฟฟ้า OR น้ำมัน)',
         hl="th", gl="TH", ceid="TH:th"
     )),
-    ("GoogleNewsEN", "international", gnews_rss(
-        f"{COUNTRY_EN_QUERY} AND {ENERGY_EN_QUERY}",
+    ("GoogleNewsTH_FinanceEnergy", "finance_thai", gnews_rss(
+        '(site:bangkokbiznews.com OR site:thunhoon.com OR site:posttoday.com OR site:manager.co.th) AND (พลังงาน OR พลังงานไฟฟ้า OR โรงไฟฟ้า)',
+        hl="th", gl="TH", ceid="TH:th"
+    )),
+    ("GoogleNewsEN_EnergyPolicy", "policy_international", gnews_rss(
+        '(energy policy OR electricity tariff OR power regulation OR LNG OR natural gas) AND (Thailand OR Malaysia OR Vietnam OR Indonesia OR Middle East)',
         hl="en", gl="US", ceid="US:en"
     )),
-    ("Oilprice", "international", "https://oilprice.com/rss/main"),
-    ("YahooFinance", "international", "https://finance.yahoo.com/news/rssindex"),
+    ("Reuters_Energy", "international", "https://www.reutersagency.com/feed/?best-topics=energy-environment&post_type=best"),
+    ("Bloomberg_Energy", "international", "https://news.google.com/rss/search?q=site:bloomberg.com+energy+policy&hl=en&gl=US&ceid=US:en"),
 ]
 
+# =============================================================================
+# LLM ANALYZER CLASS
+# =============================================================================
+class LLMNewsAnalyzer:
+    def __init__(self, api_key: str, endpoint: str, model: str):
+        self.api_key = api_key
+        self.endpoint = endpoint
+        self.model = model
+        
+    def _call_api_with_retry(self, messages: List[Dict], max_tokens: int = 1500) -> str:
+        """เรียกใช้ Groq API พร้อม retry mechanism"""
+        if not self.api_key:
+            return ""
+            
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.2,  # ลด temperature เพื่อให้ผลลัพธ์มีความเป็นทางการมากขึ้น
+            "max_tokens": max_tokens,
+            "top_p": 0.95
+        }
+        
+        for attempt in range(LLM_MAX_RETRIES):
+            try:
+                response = requests.post(
+                    self.endpoint,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload,
+                    timeout=60
+                )
+                
+                if response.status_code == 429:
+                    wait_time = (LLM_BASE_BACKOFF ** (attempt + 1)) + random.uniform(0.0, 1.0)
+                    print(f"[LLM] Rate limited, waiting {wait_time:.1f}s (attempt {attempt + 1})")
+                    time.sleep(wait_time)
+                    continue
+                    
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"].strip()
+                
+            except requests.exceptions.RequestException as e:
+                if attempt == LLM_MAX_RETRIES - 1:
+                    print(f"[LLM] Error after {LLM_MAX_RETRIES} attempts: {e}")
+                    return ""
+                wait_time = (LLM_BASE_BACKOFF ** (attempt + 1))
+                time.sleep(wait_time)
+                
+        return ""
+    
+    def analyze_news_relevance(self, title: str, summary: str, full_text: str = "") -> Dict:
+        """
+        วิเคราะห์ข่าวด้วย LLM เพื่อประเมินความเกี่ยวข้องกับพลังงานและการลงทุน
+        """
+        if not self.api_key:
+            return self._get_fallback_analysis()
+            
+        system_prompt = """คุณเป็นผู้เชี่ยวชาญด้านการวิเคราะห์ข่าวพลังงานและการลงทุน
+        หน้าที่ของคุณคือวิเคราะห์ข่าวและตอบกลับเป็น JSON เท่านั้นตาม format ด้านล่าง:
+        
+        {
+            "is_relevant": boolean,  // ข่าวเกี่ยวข้องกับพลังงาน/การลงทุนด้านพลังงานหรือไม่
+            "relevance_score": 0-100,  // คะแนนความเกี่ยวข้อง (สูง = เกี่ยวข้องมาก)
+            "country": "ประเทศที่เกี่ยวข้อง",  // เช่น Thailand, Malaysia, Vietnam
+            "project_names": ["ชื่อโครงการที่เกี่ยวข้อง"],  // ชื่อโครงการพลังงานที่เกี่ยวข้อง
+            "topics": ["หัวข้อหลัก"],  // เช่น นโยบายพลังงาน, ราคาก๊าซ, การไฟฟ้า
+            "is_official_news": boolean,  // เป็นข่าวทางการจากหน่วยงานรัฐหรือไม่
+            "impact_level": "high|medium|low",  // ระดับผลกระทบต่อโครงการ
+            "summary_analysis": "สรุปการวิเคราะห์สั้นๆ"  // ไม่เกิน 2 ประโยค
+        }
+        
+        เกณฑ์การประเมิน:
+        1. ข่าวทางการ: ประกาศราชกิจจา, มติคณะรัฐมนตรี, ประกาศกระทรวง, การแถลงข่าวทางการ
+        2. ข่าวนโยบาย: นโยบายพลังงานใหม่, การปรับอัตราค่าไฟฟ้า, การเปลี่ยนแปลงกฎระเบียบ
+        3. ข่าวโครงการ: การอนุมัติโครงการ, การเปลี่ยนแปลงแผน, ความคืบหน้าการก่อสร้าง
+        4. ข่าวเศรษฐกิจ: ราคาก๊าซ/น้ำมัน, สัญญาซื้อขาย, การลงทุนใหม่
+        """
+        
+        user_content = f"""โปรดวิเคราะห์ข่าวต่อไปนี้:
+        
+        หัวข้อ: {title}
+        
+        เนื้อหาสรุป: {summary}
+        
+        {f'เนื้อหาเพิ่มเติม: {full_text[:1000]}' if full_text else ''}
+        
+        ระบุเฉพาะข้อมูลที่แน่ชัดจากเนื้อหาข่าวเท่านั้น ห้ามเดาหรือสรุปข้อมูลนอกเหนือจากที่ให้ไว้"""
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+        
+        result = self._call_api_with_retry(messages, LLM_ANALYSIS_MAX_TOKENS)
+        
+        if result:
+            try:
+                # แยก JSON ออกจากข้อความอื่นๆ
+                json_match = re.search(r'\{.*\}', result, re.DOTALL)
+                if json_match:
+                    analysis = json.loads(json_match.group())
+                    return self._validate_analysis(analysis)
+            except json.JSONDecodeError:
+                print(f"[LLM] Failed to parse JSON: {result[:200]}")
+                
+        return self._get_fallback_analysis()
+    
+    def _validate_analysis(self, analysis: Dict) -> Dict:
+        """ตรวจสอบและแก้ไขผลลัพธ์จาก LLM"""
+        validated = {
+            "is_relevant": bool(analysis.get("is_relevant", False)),
+            "relevance_score": min(100, max(0, int(analysis.get("relevance_score", 0)))),
+            "country": str(analysis.get("country", "")).strip(),
+            "project_names": [str(p).strip() for p in analysis.get("project_names", []) if p],
+            "topics": [str(t).strip() for t in analysis.get("topics", []) if t],
+            "is_official_news": bool(analysis.get("is_official_news", False)),
+            "impact_level": str(analysis.get("impact_level", "low")).lower(),
+            "summary_analysis": str(analysis.get("summary_analysis", "")).strip()[:200]
+        }
+        
+        # ตรวจสอบประเทศ
+        if validated["country"] and validated["country"] not in PROJECTS_DETAILED:
+            validated["country"] = ""
+            
+        return validated
+    
+    def _get_fallback_analysis(self) -> Dict:
+        """ใช้เมื่อ LLM ไม่สามารถวิเคราะห์ได้"""
+        return {
+            "is_relevant": False,
+            "relevance_score": 0,
+            "country": "",
+            "project_names": [],
+            "topics": [],
+            "is_official_news": False,
+            "impact_level": "low",
+            "summary_analysis": ""
+        }
 
 # =============================================================================
-# UTIL
+# CONTENT FETCHER (ดึงเนื้อหาจริงจาก URL)
 # =============================================================================
-def now_tz() -> datetime:
-    return datetime.now(TZ)
-
-def normalize_url(url: str) -> str:
-    url = (url or "").strip()
-    if not url:
-        return url
-    try:
-        u = urlparse(url)
-        return u._replace(fragment="").geturl()
-    except Exception:
-        return url
-
-def domain_of(url: str) -> str:
-    try:
-        return urlparse(url).netloc.replace("www.", "")
-    except Exception:
+class ContentFetcher:
+    @staticmethod
+    def fetch_article_content(url: str) -> Tuple[str, bool]:
+        """ดึงเนื้อหาจริงจาก URL และตรวจสอบว่าเป็นแหล่งข่าวทางการหรือไม่"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'th,en-US;q=0.7,en;q=0.3',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+            }
+            
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            
+            html_content = response.text
+            
+            # ตรวจสอบว่าเป็นเว็บทางการหรือไม่
+            is_official_source = ContentFetcher._check_official_source(url, html_content)
+            
+            # สกัดเนื้อหาหลัก
+            content = ContentFetcher._extract_main_content(html_content)
+            
+            return content[:3000], is_official_source  # จำกัดความยาว
+            
+        except Exception as e:
+            print(f"[Fetcher] Error fetching {url}: {e}")
+            return "", False
+    
+    @staticmethod
+    def _check_official_source(url: str, html: str) -> bool:
+        """ตรวจสอบว่าเป็นแหล่งข่าวทางการ"""
+        official_domains = [
+            'ratchakitcha.soc.go.th',
+            'energy.go.th',
+            'egat.co.th',
+            'pptplc.com',
+            'pttep.com',
+            'reuters.com',
+            'bloomberg.com',
+            'iea.org',
+            'worldbank.org'
+        ]
+        
+        domain = urlparse(url).netloc.lower()
+        return any(domain.endswith(official_domain) for official_domain in official_domains)
+    
+    @staticmethod
+    def _extract_main_content(html: str) -> str:
+        """สกัดเนื้อหาหลักจาก HTML"""
+        # ใช้ regex pattern ง่ายๆ สำหรับดึงเนื้อหา
+        patterns = [
+            r'<article[^>]*>(.*?)</article>',
+            r'<div[^>]*class=["\'][^"\']*article[^"\']*["\'][^>]*>(.*?)</div>',
+            r'<div[^>]*class=["\'][^"\']*content[^"\']*["\'][^>]*>(.*?)</div>',
+            r'<main[^>]*>(.*?)</main>',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
+            if match:
+                # ลบ tag HTML
+                content = re.sub(r'<[^>]+>', ' ', match.group(1))
+                content = re.sub(r'\s+', ' ', content)
+                return content.strip()
+        
         return ""
 
-def shorten_google_news_url(url: str) -> str:
-    """
-    ลดโอกาส LINE error: uri ต้อง <= 1000 chars
-    - ถ้ามี query url= ดึงปลายทาง
-    - ถ้าเป็น news.google.com/articles/... ลอง follow redirect 1 ครั้ง
-    """
-    url = normalize_url(url)
-    if not url:
-        return url
-    try:
-        u = urlparse(url)
-        if "news.google.com" in u.netloc:
-            qs = parse_qs(u.query)
-            if "url" in qs and qs["url"]:
-                return normalize_url(unquote(qs["url"][0]))
-
-            try:
-                r = requests.get(url, allow_redirects=True, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-                final = normalize_url(r.url)
-                if final and len(final) < len(url):
-                    return final
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return url
-
-def sha1(s: str) -> str:
-    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
-
-def read_sent_links() -> set:
-    sent = set()
-    for fn in os.listdir(SENT_DIR):
-        if not fn.endswith(".txt"):
-            continue
-        fp = os.path.join(SENT_DIR, fn)
+# =============================================================================
+# MAIN PROCESSING PIPELINE
+# =============================================================================
+class NewsProcessor:
+    def __init__(self):
+        self.llm_analyzer = LLMNewsAnalyzer(GROQ_API_KEY, GROQ_ENDPOINT, GROQ_MODEL)
+        self.content_fetcher = ContentFetcher()
+        self.sent_links = set()
+        
+    def process_feeds(self) -> List[Dict]:
+        """ประมวลผลข่าวทั้งหมด"""
+        all_news = []
+        
+        for feed_name, feed_type, feed_url in FEEDS:
+            print(f"[Processing] Feed: {feed_name}")
+            entries = self._fetch_feed_entries(feed_url)
+            
+            for entry in entries[:MAX_PER_FEED]:
+                news_item = self._process_news_entry(entry, feed_name, feed_type)
+                if news_item and self._should_include(news_item):
+                    all_news.append(news_item)
+        
+        # เรียงลำดับตามความเกี่ยวข้อง
+        all_news.sort(key=lambda x: (
+            -x.get('analysis', {}).get('relevance_score', 0),
+            -x.get('analysis', {}).get('is_official_news', False)
+        ))
+        
+        return all_news[:MAX_MESSAGES_PER_RUN]
+    
+    def _fetch_feed_entries(self, feed_url: str):
+        """ดึงข้อมูลจาก RSS feed"""
         try:
-            with open(fp, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        sent.add(line)
-        except Exception:
-            continue
-    return sent
-
-def append_sent_link(url: str):
-    url = normalize_url(url)
-    if not url:
-        return
-    fn = os.path.join(SENT_DIR, now_tz().strftime("%Y-%m-%d") + ".txt")
-    with open(fn, "a", encoding="utf-8") as f:
-        f.write(url + "\n")
-
-def in_time_window(published_dt: datetime, hours: int) -> bool:
-    if not published_dt:
-        return False
-    return published_dt >= (now_tz() - timedelta(hours=hours))
-
-def cut(s: str, n: int) -> str:
-    s = (s or "").strip()
-    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
-
-def norm(s: str) -> str:
-    s = (s or "").strip().lower()
-    s = re.sub(r"\s+", " ", s)
-    return s
-
-def canonical_title_key(title: str) -> str:
-    """
-    ใช้ตัดซ้ำแบบ near-duplicate (หัวข้อคล้ายกันมาก)
-    """
-    t = (title or "").lower().strip()
-    t = re.sub(r"\s+", " ", t)
-    t = t.replace("“", '"').replace("”", '"').replace("’", "'")
-    t = re.sub(r"[^\w\u0E00-\u0E7F\s\"'/.-]", "", t)  # เก็บไทย/อังกฤษ/ตัวเลข
-    t = re.sub(r"\s*-\s*[a-z0-9_.]+\s*$", "", t)      # ตัดท้ายชื่อสื่อ
-    return t[:140]
-
-
-# =============================================================================
-# RSS PARSE
-# =============================================================================
-def fetch_feed(name: str, section: str, url: str):
-    d = feedparser.parse(url)
-    entries = d.entries or []
-    print(f"[FEED] {name}/{section} entries={len(entries)} url={url[:120]}...")
-    return entries
-
-def parse_entry(e, feed_name: str, section: str):
-    title = (getattr(e, "title", "") or "").strip()
-    link = (getattr(e, "link", "") or "").strip()
-    summary = (getattr(e, "summary", "") or "").strip()
-    published = getattr(e, "published", None) or getattr(e, "updated", None)
-
-    try:
-        published_dt = dateutil_parser.parse(published) if published else None
-        if published_dt and published_dt.tzinfo is None:
-            published_dt = TZ.localize(published_dt)
-        if published_dt:
-            published_dt = published_dt.astimezone(TZ)
-    except Exception:
-        published_dt = None
-
-    canon = shorten_google_news_url(link)
-
-    return {
-        "title": title,
-        "url": normalize_url(link),
-        "canon_url": normalize_url(canon),
-        "summary": summary,
-        "published_dt": published_dt,
-        "feed": feed_name,
-        "section": section,
-        "source_domain": domain_of(link),
-    }
-
-def dedup_items(items):
-    """
-    ตัดซ้ำ 2 ชั้น:
-    - canonical url (กัน google redirect/amp)
-    - near-duplicate title (กัน title เหมือนแต่ url ต่างเล็กน้อย)
-    """
-    seen = set()
-    out = []
-    for it in items:
-        tkey = canonical_title_key(it.get("title", ""))
-        ukey = normalize_url(it.get("canon_url") or it.get("url") or "")
-        key_url = "U:" + sha1(ukey.lower())
-        key_title = "T:" + sha1(tkey)
-
-        if key_url in seen or key_title in seen:
-            continue
-
-        seen.add(key_url)
-        seen.add(key_title)
-        out.append(it)
-    return out
-
+            feed = feedparser.parse(feed_url)
+            return feed.entries
+        except Exception as e:
+            print(f"[Error] Failed to parse feed {feed_url}: {e}")
+            return []
+    
+    def _process_news_entry(self, entry, feed_name: str, feed_type: str) -> Optional[Dict]:
+        """ประมวลผลแต่ละข่าว"""
+        title = getattr(entry, 'title', '').strip()
+        url = getattr(entry, 'link', '').strip()
+        summary = getattr(entry, 'summary', '').strip()
+        
+        if not title or not url:
+            return None
+        
+        # ดึงเนื้อหาจริง
+        full_content, is_official_source = self.content_fetcher.fetch_article_content(url)
+        
+        # วิเคราะห์ด้วย LLM
+        if USE_LLM_ANALYSIS:
+            analysis = self.llm_analyzer.analyze_news_relevance(title, summary, full_content)
+        else:
+            analysis = self.llm_analyzer._get_fallback_analysis()
+        
+        # เพิ่ม flag ว่าเป็นแหล่งข่าวทางการ
+        analysis['is_official_source'] = is_official_source
+        
+        # ถ้าไม่เกี่ยวข้องข้าม
+        if not analysis['is_relevant'] or analysis['relevance_score'] < 40:
+            return None
+        
+        # สร้างรายการข่าว
+        return {
+            'title': title,
+            'url': url,
+            'summary': summary,
+            'analysis': analysis,
+            'feed_name': feed_name,
+            'feed_type': feed_type,
+            'timestamp': datetime.now(TZ)
+        }
+    
+    def _should_include(self, news_item: Dict) -> bool:
+        """ตรวจสอบว่าควรรวมข่าวนี้หรือไม่"""
+        analysis = news_item.get('analysis', {})
+        
+        # เกณฑ์การกรอง
+        criteria = [
+            analysis.get('relevance_score', 0) >= 50,  # คะแนนความเกี่ยวข้อง
+            analysis.get('is_official_news', False) or analysis.get('is_official_source', False),  # เป็นข่าวทางการ
+            len(analysis.get('project_names', [])) > 0 or analysis.get('impact_level') in ['high', 'medium'],  # มีโครงการหรือผลกระทบ
+        ]
+        
+        return any(criteria)
 
 # =============================================================================
-# COUNTRY DETECTION (whitelist only)
+# LINE MESSAGE BUILDER (ปรับปรุง)
 # =============================================================================
-COUNTRY_KEYWORDS = {
-    "Thailand": r"(thailand|ไทย|ประเทศไทย|กกพ|กฟผ|pdp|ค่าไฟ|direct ppa)",
-    "Myanmar": r"(myanmar|เมียนมา|moge|yangon|naypyidaw)",
-    "Malaysia": r"(malaysia|มาเลเซีย|petronas|sabah|sarawak|\bsk\s*3\d{2}[a-z]?\b|\bsk\s*4\d{2}[a-z]?\b)",
-    "Vietnam": r"(vietnam|เวียดนาม|petrovietnam|hanoi|ho chi minh|block b|48/95|52/97|9-2|16-1)",
-    "Indonesia": r"(indonesia|อินโดนีเซีย|jakarta|natuna)",
-    "Kazakhstan": r"(kazakhstan|คาซัคสถาน|astana|dunga)",
-    "Oman": r"(oman|โอมาน|muscat|\bpdo\b|\boq\b)",
-    "UAE": r"(uae|united arab emirates|abu dhabi|dubai|adnoc|ghasha)",
-    "Algeria": r"(algeria|แอลจีเรีย|hassi|bir rekaiz|433a|416b)",
-    "Mozambique": r"(mozambique|โมซัมบิก|maputo|rovuma|area 1)",
-    "Australia": r"(australia|ออสเตรเลีย|perth|australasia)",
-    "Mexico": r"(mexico|เม็กซิโก|pemex|block 12|block 29)",
-}
-COUNTRY_REGEX = {k: re.compile(v, re.IGNORECASE) for k, v in COUNTRY_KEYWORDS.items() if k in ALLOWED_COUNTRIES}
-
-def detect_country(title: str, summary: str) -> str:
-    text = norm(f"{title} {summary}")
-    for c, rgx in COUNTRY_REGEX.items():
-        if rgx.search(text):
-            return c
-    return ""
-
-
-# =============================================================================
-# LLM SUMMARY (บริบท + ผลกระทบ) – batch + retry 429
-# =============================================================================
-def call_groq_with_retry(messages, temperature=0.25, max_tokens=900):
-    if not GROQ_API_KEY:
-        raise RuntimeError("Missing GROQ_API_KEY")
-    payload = {"model": GROQ_MODEL, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-
-    for attempt in range(LLM_MAX_RETRIES_429 + 1):
-        r = requests.post(
-            GROQ_ENDPOINT,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=60,
-        )
-        if r.status_code == 429:
-            wait = (LLM_BASE_BACKOFF ** min(attempt + 1, 8)) + random.uniform(0.0, 0.8)
-            print(f"[LLM] 429 Too Many Requests -> backoff {wait:.1f}s (attempt {attempt+1})")
-            time.sleep(wait)
-            continue
-        r.raise_for_status()
-        data = r.json()
-        return (data["choices"][0]["message"]["content"] or "").strip()
-
-    raise RuntimeError("LLM rate-limited too long (429)")
-
-def llm_context_impact_batch(batch_items):
-    """
-    batch_items: [{id,title,summary,country,projects_hint}]
-    return id -> (context, impact)
-    """
-    # fallback without LLM
-    if (not USE_LLM_SUMMARY) or (not GROQ_API_KEY):
-        out = {}
-        for x in batch_items:
-            out[x["id"]] = (
-                "• บริบท: มีความเคลื่อนไหว/ประกาศ/อัปเดตด้านพลังงานที่เกี่ยวข้องกับนโยบายหรือโครงสร้างตลาด",
-                "• ผลกระทบ: อาจกระทบต้นทุน/ความเสี่ยง/แผนงานของโครงการในประเทศนี้ ควรติดตามอย่างใกล้ชิด",
-            )
-        return out
-
-    sys = (
-        "คุณเป็นผู้ช่วยสรุปข่าวพลังงานให้เข้าใจบริบทแบบสุภาพ กระชับ "
-        "ห้ามเดาประเทศอื่นนอกเหนือจากที่ระบุใน field country "
-        "และห้ามอ้างชื่อโครงการนอกเหนือจาก projects_hint"
-    )
-
-    user = f"""
-ทำสรุปข่าวแต่ละรายการเป็น 2 bullet:
-1) '• บริบท: ...' อธิบายว่าเกิดอะไรขึ้น/ใครทำอะไร/เรื่องนี้เกี่ยวกับอะไร (1 ประโยค)
-2) '• ผลกระทบ: ...' อธิบายผลต่อโครงการในประเทศนี้ (1 ประโยค) อ้างอิง projects_hint ได้
-
-ส่งกลับเป็น JSON เท่านั้น:
-{{"items":[{{"id":"1","context":"• บริบท: ...","impact":"• ผลกระทบ: ..."}}]}}
-
-ข้อมูล:
-{json.dumps({"items": batch_items}, ensure_ascii=False)}
-""".strip()
-
-    content = call_groq_with_retry(
-        [{"role": "system", "content": sys}, {"role": "user", "content": user}],
-        temperature=0.25,
-        max_tokens=LLM_MAX_TOKENS,
-    )
-
-    content = re.sub(r"^```json\s*", "", content, flags=re.I).strip()
-    content = re.sub(r"^```\s*", "", content, flags=re.I).strip()
-    content = re.sub(r"\s*```$", "", content).strip()
-
-    out = {}
-    try:
-        data = json.loads(content)
-        arr = data.get("items") or []
-        for x in arr:
-            _id = str(x.get("id", "")).strip()
-            c = (x.get("context") or "").strip()
-            imp = (x.get("impact") or "").strip()
-            if _id:
-                if not c.startswith("•"):
-                    c = "• " + c.lstrip("-• ").strip()
-                if not imp.startswith("•"):
-                    imp = "• " + imp.lstrip("-• ").strip()
-                out[_id] = (cut(c, 240), cut(imp, 260))
-    except Exception:
-        pass
-
-    for x in batch_items:
-        if x["id"] not in out:
-            out[x["id"]] = (
-                "• บริบท: ข่าวพลังงาน/นโยบาย/ตลาดมีการอัปเดตที่สำคัญ",
-                "• ผลกระทบ: อาจกระทบต้นทุน/ความเสี่ยง/แผนงานของโครงการในประเทศนี้ ควรติดตามอย่างใกล้ชิด",
-            )
-    return out
-
-
-# =============================================================================
-# LINE FLEX
-# =============================================================================
-def line_headers():
-    return {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}
-
-def send_line_message(message_obj):
-    if DRY_RUN:
-        print("=== DRY_RUN LINE PAYLOAD(meta) ===")
-        print(json.dumps({"messages": [{"type": "flex", "altText": message_obj.get("altText", "")}]}, ensure_ascii=False))
-        return True
-
-    url = "https://api.line.me/v2/bot/message/broadcast"
-    payload = {"messages": [message_obj]}
-    r = requests.post(url, headers=line_headers(), json=payload, timeout=30)
-    print(f"Send -> LINE status: {r.status_code}")
-    if r.status_code >= 400:
-        print("Response:", r.text[:2000])
-        return False
-    return True
-
-def flex_bubble(item):
-    title = cut(item.get("title") or "", 120)
-    published_dt = item.get("published_dt")
-    dt_str = published_dt.strftime("%d/%m/%Y %H:%M") if published_dt else ""
-    src = item.get("source_domain") or item.get("feed") or ""
-
-    country = item.get("country") or ""
-    hints = item.get("project_hints") or []
-    context = item.get("context") or ""
-    impact = item.get("impact") or ""
-
-    url = item.get("canon_url") or item.get("url") or ""
-    url = shorten_google_news_url(url)
-    if len(url) > 1000:
-        url = ""  # กัน LINE 400
-
-    body = [
-        {"type": "text", "text": title, "weight": "bold", "wrap": True, "size": "md"},
-        {"type": "text", "text": f"{dt_str}  |  {src}", "wrap": True, "size": "xs", "color": "#888888"},
-        {"type": "text", "text": f"ประเทศ: {country}", "wrap": True, "size": "sm"},
-    ]
-
-    # ✅ ตามที่ต้องการ: แสดง “เฉพาะโครงการในประเทศนี้”
-    if hints:
-        body.append({
-            "type": "text",
-            "text": f"โครงการในประเทศนี้: {cut(', '.join(hints), 260)}",
-            "wrap": True,
-            "size": "sm"
+class LineMessageBuilder:
+    @staticmethod
+    def create_flex_message(news_items: List[Dict]) -> Dict:
+        """สร้าง Flex Message สำหรับ LINE"""
+        bubbles = []
+        
+        for item in news_items:
+            bubble = LineMessageBuilder._create_news_bubble(item)
+            if bubble:
+                bubbles.append(bubble)
+        
+        if not bubbles:
+            return None
+        
+        return {
+            "type": "flex",
+            "altText": f"สรุปข่าวพลังงานทางการ {datetime.now(TZ).strftime('%d/%m/%Y')}",
+            "contents": {
+                "type": "carousel",
+                "contents": bubbles[:BUBBLES_PER_CAROUSEL]
+            }
+        }
+    
+    @staticmethod
+    def _create_news_bubble(news_item: Dict) -> Dict:
+        """สร้าง bubble สำหรับแต่ละข่าว"""
+        analysis = news_item.get('analysis', {})
+        
+        # กำหนดสีตามระดับผลกระทบ
+        color_map = {
+            'high': '#FF6B6B',
+            'medium': '#FFA726',
+            'low': '#42A5F5'
+        }
+        impact_color = color_map.get(analysis.get('impact_level', 'low'), '#42A5F5')
+        
+        # ส่วนหัว
+        header = {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": impact_color,
+            "paddingAll": "10px",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": "📰 ข่าวทางการ",
+                    "color": "#FFFFFF",
+                    "weight": "bold",
+                    "size": "sm"
+                } if analysis.get('is_official_news') else {
+                    "type": "text",
+                    "text": "📊 ข่าววิเคราะห์",
+                    "color": "#FFFFFF",
+                    "weight": "bold",
+                    "size": "sm"
+                }
+            ]
+        }
+        
+        # ส่วนเนื้อหา
+        body_contents = [
+            {
+                "type": "text",
+                "text": news_item['title'],
+                "weight": "bold",
+                "size": "lg",
+                "wrap": True,
+                "margin": "md"
+            },
+            {
+                "type": "text",
+                "text": f"ประเทศ: {analysis.get('country', 'N/A')}",
+                "size": "sm",
+                "color": "#666666",
+                "margin": "sm"
+            }
+        ]
+        
+        # เพิ่มรายการโครงการ
+        if analysis.get('project_names'):
+            projects_text = ", ".join(analysis['project_names'][:3])
+            body_contents.append({
+                "type": "text",
+                "text": f"โครงการ: {projects_text}",
+                "size": "sm",
+                "color": "#2E7D32",
+                "wrap": True,
+                "margin": "sm"
+            })
+        
+        # เพิ่มหัวข้อ
+        if analysis.get('topics'):
+            topics_text = ", ".join(analysis['topics'][:3])
+            body_contents.append({
+                "type": "text",
+                "text": f"หัวข้อ: {topics_text}",
+                "size": "sm",
+                "color": "#5D4037",
+                "wrap": True,
+                "margin": "sm"
+            })
+        
+        # เพิ่มการวิเคราะห์สรุป
+        if analysis.get('summary_analysis'):
+            body_contents.append({
+                "type": "text",
+                "text": analysis['summary_analysis'],
+                "size": "sm",
+                "wrap": True,
+                "margin": "md",
+                "color": "#424242"
+            })
+        
+        # เพิ่มคะแนนความเกี่ยวข้อง
+        body_contents.append({
+            "type": "box",
+            "layout": "baseline",
+            "margin": "md",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": "ความเกี่ยวข้อง:",
+                    "size": "sm",
+                    "color": "#666666",
+                    "flex": 2
+                },
+                {
+                    "type": "text",
+                    "text": f"{analysis.get('relevance_score', 0)}/100",
+                    "size": "sm",
+                    "color": impact_color,
+                    "weight": "bold",
+                    "flex": 1,
+                    "align": "end"
+                }
+            ]
         })
-
-    if context:
-        body.append({"type": "text", "text": cut(context, 240), "wrap": True, "size": "sm"})
-    if impact:
-        body.append({"type": "text", "text": cut(impact, 260), "wrap": True, "size": "sm"})
-
-    bubble = {"type": "bubble", "size": "mega", "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": body}}
-
-    if url:
-        bubble["footer"] = {
+        
+        body = {
+            "type": "box",
+            "layout": "vertical",
+            "contents": body_contents
+        }
+        
+        # ส่วนล่าง (ปุ่ม)
+        footer = {
             "type": "box",
             "layout": "vertical",
             "spacing": "sm",
-            "contents": [{"type": "button", "style": "primary", "height": "sm",
-                          "action": {"type": "uri", "label": "อ่านข่าว", "uri": url}}],
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "height": "sm",
+                    "action": {
+                        "type": "uri",
+                        "label": "อ่านข่าวเต็ม",
+                        "uri": news_item['url']
+                    }
+                }
+            ]
+        }
+        
+        return {
+            "type": "bubble",
+            "size": "kilo",
+            "header": header,
+            "body": body,
+            "footer": footer
         }
 
-    return bubble
-
-def flex_messages_from_bubbles(bubbles, alt_prefix="สรุปข่าวตามประเทศ/โครงการ"):
-    msgs = []
-    chunks = [bubbles[i:i + BUBBLES_PER_CAROUSEL] for i in range(0, len(bubbles), BUBBLES_PER_CAROUSEL)]
-    date_tag = now_tz().strftime("%d/%m/%Y")
-    for idx, ch in enumerate(chunks[:MAX_MESSAGES_PER_RUN], start=1):
-        msgs.append({
-            "type": "flex",
-            "altText": f"{alt_prefix} {date_tag} ({idx}/{len(chunks)})",
-            "contents": {"type": "carousel", "contents": ch},
-        })
-    return msgs
-
-
 # =============================================================================
-# MAIN
+# MAIN EXECUTION
 # =============================================================================
 def main():
-    sent = read_sent_links()
-
-    # 1) fetch + parse + time window
-    raw_items = []
-    for name, section, url in FEEDS:
-        entries = fetch_feed(name, section, url)
-        kept = 0
-        for e in entries[:MAX_PER_FEED]:
-            it = parse_entry(e, name, section)
-            if not it["title"] or not it["url"]:
-                continue
-            # ใช้ canon_url กันส่งซ้ำข้ามวัน/ข้าม feed
-            check_url = it.get("canon_url") or it.get("url")
-            if check_url in sent or it["url"] in sent:
-                continue
-            if it["published_dt"] and not in_time_window(it["published_dt"], WINDOW_HOURS):
-                continue
-            raw_items.append(it)
-            kept += 1
-        print(f"[FEED] kept_in_window={kept}")
-
-    print(f"จำนวนข่าวดิบทั้งหมด: {len(raw_items)}")
-
-    items = dedup_items(raw_items)
-    print(f"จำนวนข่าวหลังตัดซ้ำ: {len(items)}")
-
-    # 2) classify to country (whitelist only)
-    matched = []
-    for it in items:
-        c = detect_country(it.get("title", ""), it.get("summary", ""))
-        if REQUIRE_COUNTRY_WHITELIST and (not c or c not in ALLOWED_COUNTRIES):
-            continue
-        if not c:
-            continue
-
-        hints = PROJECTS_BY_COUNTRY.get(c, [])[:5]  # ปรับจำนวนได้ (แต่ระวังความยาวการ์ด)
-
-        it2 = dict(it)
-        it2["country"] = c
-        it2["project_hints"] = hints
-        matched.append(it2)
-
-    print(f"จำนวนข่าวที่เข้า whitelist ประเทศของโครงการ: {len(matched)}")
-    if not matched:
-        print("ไม่มีข่าวที่เข้า whitelist ประเทศของโครงการในลิสต์วันนี้")
+    print("=" * 60)
+    print("เริ่มระบบติดตามข่าวพลังงานด้วย LLM")
+    print("=" * 60)
+    
+    # ตรวจสอบ configuration
+    if not GROQ_API_KEY and USE_LLM_ANALYSIS:
+        print("[Warning] GROQ_API_KEY ไม่ได้กำหนดไว้ แต่ USE_LLM_ANALYSIS เปิดอยู่")
+        print("[Info] จะใช้การกรองแบบพื้นฐานแทน")
+    
+    # เริ่มต้น processor
+    processor = NewsProcessor()
+    
+    # ดึงและประมวลผลข่าว
+    print("\n[Status] กำลังดึงและวิเคราะห์ข่าว...")
+    relevant_news = processor.process_feeds()
+    
+    print(f"\n[Result] พบข่าวที่เกี่ยวข้องทั้งหมด: {len(relevant_news)} ข่าว")
+    
+    if not relevant_news:
+        print("[Info] ไม่พบข่าวที่เกี่ยวข้องในวันนี้")
         return
-
-    # 3) summary (บริบท + ผลกระทบ) batch
-    batch = []
-    for idx, it in enumerate(matched, start=1):
-        batch.append({
-            "id": str(idx),
-            "title": cut(it.get("title", ""), 180),
-            "summary": cut(re.sub(r"\s+", " ", it.get("summary", "") or ""), 650),
-            "country": it.get("country", ""),
-            "projects_hint": it.get("project_hints", [])[:5],
-        })
-
-    summaries = {}
-    for i in range(0, len(batch), LLM_BATCH_SIZE):
-        sub = batch[i:i + LLM_BATCH_SIZE]
-        out = llm_context_impact_batch(sub)
-        summaries.update(out)
-
-    for idx, it in enumerate(matched, start=1):
-        c, imp = summaries.get(str(idx), ("", ""))
-        it["context"] = c
-        it["impact"] = imp
-
-    # 4) Build & send LINE
-    bubbles = [flex_bubble(it) for it in matched]
-    messages = flex_messages_from_bubbles(bubbles)
-
-    ok_any = False
-    for msg in messages:
-        print("=== LINE PAYLOAD(meta) ===")
-        print(json.dumps({"messages": [{"type": "flex", "altText": msg["altText"]}]}, ensure_ascii=False))
-        ok = send_line_message(msg)
-        if ok:
-            ok_any = True
+    
+    # สร้างข้อความสำหรับ LINE
+    print("\n[Status] กำลังสร้างข้อความสำหรับ LINE...")
+    message_builder = LineMessageBuilder()
+    flex_message = message_builder.create_flex_message(relevant_news)
+    
+    if not flex_message:
+        print("[Error] ไม่สามารถสร้างข้อความได้")
+        return
+    
+    # ส่งไปยัง LINE
+    if DRY_RUN:
+        print("\n=== DRY RUN - Flex Message Preview ===")
+        print(json.dumps(flex_message, ensure_ascii=False, indent=2))
+    else:
+        print("\n[Status] กำลังส่งข้อความไปยัง LINE...")
+        success = send_line_message(flex_message)
+        if success:
+            print("[Success] ส่งข้อความสำเร็จ!")
         else:
-            break
-
-    # 5) mark sent links only if sent
-    if ok_any:
-        for it in matched:
-            append_sent_link(it.get("canon_url") or it.get("url") or "")
-
+            print("[Error] การส่งข้อความล้มเหลว")
 
 if __name__ == "__main__":
     main()
