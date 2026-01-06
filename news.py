@@ -34,8 +34,8 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
 GROQ_ENDPOINT = os.getenv("GROQ_ENDPOINT", "https://api.groq.com/openai/v1/chat/completions").strip()
 USE_LLM_SUMMARY = os.getenv("USE_LLM_SUMMARY", "1").strip().lower() in ["1", "true", "yes", "y"]
 
-WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "72"))
-MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "20"))  # ลดลงเพื่อคุณภาพ
+WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "48"))
+MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "25"))
 DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ["1", "true", "yes", "y"]
 MAX_MESSAGES_PER_RUN = int(os.getenv("MAX_MESSAGES_PER_RUN", "10"))
 BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))
@@ -43,126 +43,6 @@ BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))
 # Sent links tracking
 SENT_DIR = os.getenv("SENT_DIR", "sent_links")
 os.makedirs(SENT_DIR, exist_ok=True)
-
-# =============================================================================
-# URL VALIDATOR - เพิ่มคลาสตรวจสอบลิงก์
-# =============================================================================
-class URLValidator:
-    """ตรวจสอบและแก้ไขลิงก์ URL"""
-    
-    @staticmethod
-    def is_valid_url(url: str) -> bool:
-        """ตรวจสอบว่า URL ถูกต้องและใช้งานได้"""
-        if not url or not isinstance(url, str):
-            return False
-        
-        url = url.strip()
-        if not url:
-            return False
-        
-        # ตรวจสอบความยาว (LINE จำกัด 1000 ตัวอักษร)
-        if len(url) > 1000:
-            return False
-        
-        # ตรวจสอบรูปแบบ URL
-        try:
-            result = urlparse(url)
-            if not all([result.scheme, result.netloc]):
-                return False
-            
-            # ตรวจสอบ scheme
-            if result.scheme not in ['http', 'https']:
-                return False
-            
-            # ตรวจสอบ domain
-            if len(result.netloc) < 3:  # เช่น a.co ควรมีอย่างน้อย 3 ตัว
-                return False
-                
-            return True
-        except:
-            return False
-    
-    @staticmethod
-    def extract_actual_url(google_news_url: str) -> str:
-        """ดึง URL จริงจาก Google News URL"""
-        if not google_news_url:
-            return ""
-        
-        try:
-            # ถ้าเป็น Google News URL พยายามดึง URL จริง
-            if "news.google.com" in google_news_url:
-                # วิธีที่ 1: ดึงจาก query parameter
-                parsed = urlparse(google_news_url)
-                query_params = parse_qs(parsed.query)
-                
-                if 'url' in query_params:
-                    actual_url = unquote(query_params['url'][0])
-                    if URLValidator.is_valid_url(actual_url):
-                        return actual_url
-                
-                # วิธีที่ 2: ตาม redirect 1 ระดับ
-                try:
-                    headers = {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'text/html,application/xhtml+xml',
-                    }
-                    response = requests.get(
-                        google_news_url, 
-                        headers=headers, 
-                        timeout=5, 
-                        allow_redirects=False
-                    )
-                    
-                    if response.status_code in [301, 302, 303, 307, 308]:
-                        location = response.headers.get('Location')
-                        if location and URLValidator.is_valid_url(location):
-                            return location
-                except:
-                    pass
-        except:
-            pass
-        
-        return google_news_url
-    
-    @staticmethod
-    def shorten_url_if_needed(url: str) -> str:
-        """ย่อ URL ถ้ายาวเกินไป"""
-        if not url:
-            return ""
-        
-        # ถ้ายาวเกิน 800 ตัวอักษร ให้พยายามย่อ
-        if len(url) > 800:
-            try:
-                # พยายามดึงเฉพาะ path ที่สำคัญ
-                parsed = urlparse(url)
-                
-                # ถ้าเป็น Google News ให้ใช้วิธี extract
-                if "news.google.com" in parsed.netloc:
-                    actual_url = URLValidator.extract_actual_url(url)
-                    if actual_url and len(actual_url) < len(url):
-                        return actual_url
-                
-                # ลดความยาวของ query parameters
-                if parsed.query:
-                    # เก็บเฉพาะพารามิเตอร์ที่สำคัญ
-                    params = parse_qs(parsed.query)
-                    important_params = {}
-                    
-                    for key in ['id', 'p', 'article', 'story', 'url']:
-                        if key in params:
-                            important_params[key] = params[key][0]
-                    
-                    if important_params:
-                        # สร้าง query string ใหม่
-                        new_query = '&'.join([f"{k}={v}" for k, v in important_params.items()])
-                        new_url = parsed._replace(query=new_query, fragment="").geturl()
-                        
-                        if len(new_url) < len(url):
-                            return new_url
-            except:
-                pass
-        
-        return url
 
 # =============================================================================
 # TEXT CLEANER
@@ -175,7 +55,8 @@ class TextCleaner:
         "อ่านข่าวเต็ม", "อ่านต่อ", "คลิกเพื่ออ่านต่อ", "อ่านเพิ่มเติม",
         "ข่าวที่เกี่ยวข้อง", "แนะนำข่าว", "ติดตามข่าว", "แชร์ข่าวนี้",
         "Advertisement", "Promoted", "Sponsored", "โฆษณา",
-        "Click here to read more", "Read full story", "Continue reading"
+        "Click here to read more", "Read full story", "Continue reading",
+        "อ่านรายละเอียดเพิ่มเติม", "คลิกที่นี่", "ดูเพิ่มเติม"
     ]
     
     @staticmethod
@@ -230,6 +111,86 @@ class TextCleaner:
         return summary[:max_length]
 
 # =============================================================================
+# URL VALIDATOR
+# =============================================================================
+class URLValidator:
+    """ตรวจสอบและแก้ไขลิงก์ URL"""
+    
+    @staticmethod
+    def is_valid_url(url: str) -> bool:
+        """ตรวจสอบว่า URL ถูกต้องและใช้งานได้"""
+        if not url or not isinstance(url, str):
+            return False
+        
+        url = url.strip()
+        if not url:
+            return False
+        
+        # ตรวจสอบความยาว (LINE จำกัด 1000 ตัวอักษร)
+        if len(url) > 1000:
+            return False
+        
+        # ตรวจสอบรูปแบบ URL
+        try:
+            result = urlparse(url)
+            if not all([result.scheme, result.netloc]):
+                return False
+            
+            # ตรวจสอบ scheme
+            if result.scheme not in ['http', 'https']:
+                return False
+            
+            # ตรวจสอบ domain
+            if len(result.netloc) < 3:
+                return False
+                
+            return True
+        except:
+            return False
+    
+    @staticmethod
+    def extract_actual_url(google_news_url: str) -> str:
+        """ดึง URL จริงจาก Google News URL"""
+        if not google_news_url:
+            return ""
+        
+        try:
+            # ถ้าเป็น Google News URL พยายามดึง URL จริง
+            if "news.google.com" in google_news_url:
+                # วิธีที่ 1: ดึงจาก query parameter
+                parsed = urlparse(google_news_url)
+                query_params = parse_qs(parsed.query)
+                
+                if 'url' in query_params:
+                    actual_url = unquote(query_params['url'][0])
+                    if URLValidator.is_valid_url(actual_url):
+                        return actual_url
+                
+                # วิธีที่ 2: ตาม redirect 1 ระดับ
+                try:
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml',
+                    }
+                    response = requests.get(
+                        google_news_url, 
+                        headers=headers, 
+                        timeout=5, 
+                        allow_redirects=False
+                    )
+                    
+                    if response.status_code in [301, 302, 303, 307, 308]:
+                        location = response.headers.get('Location')
+                        if location and URLValidator.is_valid_url(location):
+                            return location
+                except:
+                    pass
+        except:
+            pass
+        
+        return google_news_url
+
+# =============================================================================
 # PROJECT DATABASE
 # =============================================================================
 PROJECTS_BY_COUNTRY = {
@@ -244,83 +205,205 @@ PROJECTS_BY_COUNTRY = {
         "โครงการจี 1/65", "โครงการจี 3/65",
         "โครงการแอล 53/43", "โครงการแอล 54/43"
     ],
-    # ... ประเทศอื่นๆ (เหมือนเดิม)
+    "Myanmar": ["โครงการซอติก้า", "Zawtika", "โครงการยาดานา", "Yadana", "โครงการเมียนมา เอ็ม 3", "Myanmar M3"],
+    "Malaysia": ["Malaysia SK309", "SK309", "Malaysia SK311", "SK311", "Malaysia Block H", "Block H"],
+    "Vietnam": ["โครงการเวียดนาม 16-1", "Vietnam 16-1", "16-1", "Block B", "48/95"],
+    "Indonesia": ["โครงการนาทูน่า ซี เอ", "Natuna Sea A"],
+    "Kazakhstan": ["โครงการดุงกา", "Dunga"],
+    "Oman": ["Oman Block 61", "Block 61", "Oman Block 6", "PDO"],
+    "UAE": ["Abu Dhabi Offshore 1", "Abu Dhabi Offshore 2", "Abu Dhabi Offshore 3"],
 }
 
 # =============================================================================
-# ENHANCED RSS FEEDS - เพิ่มแหล่งข่าวที่มีลิงก์คุณภาพ
+# SIMPLIFIED GOOGLE NEWS RSS FEEDS - ใช้ Google News RSS ที่เสถียร
 # =============================================================================
 def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
     """Generate Google News RSS URL"""
     return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
 
-# เลือกเฉพาะแหล่งข่าวที่มีคุณภาพและมีลิงก์ที่ใช้งานได้
-QUALITY_FEEDS = [
-    # ==================== แหล่งข่าวภาษาไทยคุณภาพสูง ====================
-    ("BangkokBizNews_Energy", "thai_business", 
-     "https://www.bangkokbiznews.com/tag/พลังงาน/rss"),
+# ใช้เฉพาะ Google News RSS ที่ทำงานได้แน่นอน
+FEEDS = [
+    # ==================== ข่าวพลังงานภาษาไทย ====================
+    ("Thai_Energy_General", "thai_energy", gnews_rss(
+        'พลังงาน OR ไฟฟ้า OR ก๊าซ OR LNG OR น้ำมัน OR โรงไฟฟ้า OR พลังงานทดแทน',
+        hl="th", gl="TH", ceid="TH:th"
+    )),
     
-    ("PostToday_Energy", "thai_business",
-     "https://www.posttoday.com/rss/src/พลังงาน"),
+    ("Thai_Energy_Policy", "thai_official", gnews_rss(
+        '(กระทรวงพลังงาน OR กรมธุรกิจพลังงาน OR กฟผ OR กกพ OR ค่าไฟ OR Direct PPA)',
+        hl="th", gl="TH", ceid="TH:th"
+    )),
     
-    ("Prachachat_Energy", "thai_business",
-     "https://www.prachachat.net/feed/tag/พลังงาน"),
+    ("Thai_Business_Energy", "thai_business", gnews_rss(
+        '(พลังงาน OR ไฟฟ้า OR ก๊าซ) (bangkokbiznews OR posttoday OR prachachat OR thansettakij OR mgronline)',
+        hl="th", gl="TH", ceid="TH:th"
+    )),
     
-    ("Thansettakij_Energy", "thai_business",
-     "https://www.thansettakij.com/rss/tag/พลังงาน"),
+    # ==================== ข่าวพลังงานภาษาอังกฤษ ====================
+    ("Global_Energy_News", "global_energy", gnews_rss(
+        'energy OR electricity OR power OR oil OR gas OR LNG OR renewable energy',
+        hl="en", gl="US", ceid="US:en"
+    )),
     
-    ("Manager_Energy", "thai_business",
-     "https://mgronline.com/rss/rssfeeds/พลังงาน.aspx"),
+    ("Energy_Policy", "energy_policy", gnews_rss(
+        'energy policy OR electricity tariff OR power regulation OR energy transition',
+        hl="en", gl="US", ceid="US:en"
+    )),
     
-    # ==================== แหล่งข่าวภาษาอังกฤษคุณภาพสูง ====================
-    ("Reuters_Energy", "international",
-     "https://www.reutersagency.com/feed/?taxonomy=best-sectors&post_type=best&sector=energy-environment"),
+    ("Oil_Gas_News", "oil_gas", gnews_rss(
+        'oil OR gas OR petroleum OR crude OR OPEC',
+        hl="en", gl="US", ceid="US:en"
+    )),
     
-    ("Bloomberg_Energy", "international",
-     "https://www.bloomberg.com/energy/feed"),
+    # ==================== ข่าวพลังงานตามประเทศ ====================
+    ("Vietnam_Energy", "vietnam_energy", gnews_rss(
+        '(energy OR electricity OR power) Vietnam',
+        hl="en", gl="VN", ceid="VN:en"
+    )),
     
-    ("OilPrice_Top", "energy_international",
-     "https://oilprice.com/feed/op-top-stories.xml"),
+    ("Malaysia_Energy", "malaysia_energy", gnews_rss(
+        '(energy OR Petronas OR oil OR gas) Malaysia',
+        hl="en", gl="MY", ceid="MY:en"
+    )),
     
-    ("S&P_Global_Energy", "energy_international",
-     "https://www.spglobal.com/_assets/platts/rss-feed/platts-oil.xml"),
+    ("Indonesia_Energy", "indonesia_energy", gnews_rss(
+        '(energy OR oil OR gas) Indonesia',
+        hl="en", gl="ID", ceid="ID:en"
+    )),
     
-    # ==================== แหล่งข่าวทางการ ====================
-    ("กรมธุรกิจพลังงาน", "thai_official",
-     "https://www.doeb.go.th/2014/th/rss"),
-    
-    ("EGAT_News", "thai_official",
-     "https://www.egat.co.th/home/rss-news/"),
+    ("MiddleEast_Energy", "middleeast_energy", gnews_rss(
+        '(energy OR oil OR gas) (UAE OR Saudi OR Qatar OR Oman)',
+        hl="en", gl="AE", ceid="AE:en"
+    )),
 ]
 
 # =============================================================================
-# ENHANCED RSS PARSER
+# COUNTRY DETECTION
 # =============================================================================
-class EnhancedRSSParser:
-    """Parser RSS ที่ดีขึ้น"""
+class CountryDetector:
+    """ตรวจจับประเทศจากเนื้อหาข่าว"""
+    
+    COUNTRY_PATTERNS = {
+        "Thailand": [
+            r'\bประเทศไทย\b', r'\bไทย\b', r'\bthailand\b', r'\bbangkok\b',
+            r'\bกระทรวงพลังงาน\b', r'\bกฟผ\b', r'\bกกพ\b', r'\bพีทีที\b',
+            r'\bกรุงเทพ\b', r'\bchiang mai\b'
+        ],
+        "Myanmar": [
+            r'\bเมียนมา\b', r'\bmyanmar\b', r'\byangon\b', r'\bย่างกุ้ง\b',
+            r'\bnaypyidaw\b', r'\bmoge\b'
+        ],
+        "Malaysia": [
+            r'\bมาเลเซีย\b', r'\bmalaysia\b', r'\bkuala lumpur\b',
+            r'\bpetronas\b', r'\bsabah\b', r'\bsarawak\b'
+        ],
+        "Vietnam": [
+            r'\bเวียดนาม\b', r'\bvietnam\b', r'\bhanoi\b', r'\bho chi minh\b',
+            r'\bpetrovietnam\b', r'\bda nang\b'
+        ],
+        "Indonesia": [
+            r'\bอินโดนีเซีย\b', r'\bindonesia\b', r'\bjakarta\b',
+            r'\bpertamina\b', r'\bbali\b', r'\bsumatra\b'
+        ],
+        "Kazakhstan": [
+            r'\bคาซัคสถาน\b', r'\bkazakhstan\b', r'\bastana\b',
+            r'\bkazmunaigas\b'
+        ],
+        "Oman": [
+            r'\bโอมาน\b', r'\boman\b', r'\bmuscat\b', r'\bpdo\b',
+            r'\boq\b'
+        ],
+        "UAE": [
+            r'\bสหรัฐอาหรับเอมิเรตส์\b', r'\buae\b', r'\babu dhabi\b',
+            r'\bdubai\b', r'\badnoc\b'
+        ],
+    }
+    
+    @classmethod
+    def detect_country(cls, text: str) -> str:
+        """ตรวจจับประเทศจากข้อความ"""
+        if not text:
+            return ""
+        
+        text_lower = text.lower()
+        
+        for country, patterns in cls.COUNTRY_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, text_lower, re.IGNORECASE):
+                    return country
+        
+        return ""
+
+# =============================================================================
+# KEYWORD FILTERS
+# =============================================================================
+class KeywordFilter:
+    OFFICIAL_KEYWORDS = [
+        'กระทรวงพลังงาน', 'กรมธุรกิจพลังงาน', 'กฟผ', 'การไฟฟ้า',
+        'คณะกรรมการกำกับกิจการพลังงาน', 'กกพ', 'สำนักงานนโยบายและแผนพลังงาน',
+        'รัฐมนตรีพลังงาน', 'ประกาศ', 'มติคณะรัฐมนตรี', 'ครม.', 'ราชกิจจานุเบกษา',
+        'minister', 'ministry', 'regulation', 'policy', 'tariff', 'approval',
+        'แถลงการณ์', 'ข้อกำหนด', 'กฎระเบียบ'
+    ]
+    
+    ENERGY_KEYWORDS = [
+        'พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ก๊าซ', 'LNG', 'น้ำมัน', 'เชื้อเพลิง',
+        'โรงไฟฟ้า', 'พลังงานทดแทน', 'โซลาร์', 'พลังงานลม', 'พลังงานชีวมวล',
+        'energy', 'electricity', 'power', 'gas', 'oil', 'fuel',
+        'power plant', 'renewable', 'solar', 'wind', 'biomass',
+        'ไฟฟ้าส่องสว่าง', 'ไฟฟ้าชุมชน', 'สายส่งไฟฟ้า'
+    ]
+    
+    @classmethod
+    def contains_official_keywords(cls, text: str) -> bool:
+        """Check if text contains official keywords"""
+        if not text:
+            return False
+        
+        text_lower = text.lower()
+        return any(keyword.lower() in text_lower for keyword in cls.OFFICIAL_KEYWORDS)
+    
+    @classmethod
+    def is_energy_related(cls, text: str) -> bool:
+        """Check if text is energy related"""
+        if not text:
+            return False
+        
+        text_lower = text.lower()
+        return any(keyword.lower() in text_lower for keyword in cls.ENERGY_KEYWORDS)
+
+# =============================================================================
+# SIMPLE RSS PARSER
+# =============================================================================
+class SimpleRSSParser:
+    """Parser RSS แบบง่ายๆ"""
     
     @staticmethod
-    def fetch_feed_with_fallback(feed_name: str, feed_url: str):
-        """ดึงข้อมูล RSS พร้อม fallback หาก URL ไม่ทำงาน"""
+    def fetch_feed(feed_name: str, feed_url: str):
+        """ดึงข้อมูล RSS"""
         try:
             print(f"[RSS] Fetching {feed_name}...")
             
-            # ตั้งค่า headers เพื่อป้องกันการบล็อก
+            # ตั้งค่า headers
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Accept': 'application/rss+xml, application/xml, text/xml',
-                'Accept-Language': 'en-US,en;q=0.9,th;q=0.8',
             }
             
             # ดึงข้อมูล RSS
             response = requests.get(feed_url, headers=headers, timeout=15)
-            response.raise_for_status()
+            
+            # ตรวจสอบ status code
+            if response.status_code != 200:
+                print(f"[RSS WARNING] {feed_name}: HTTP {response.status_code}")
+                # ลองดึงใหม่โดยไม่ใช้ headers
+                response = requests.get(feed_url, timeout=15)
+                if response.status_code != 200:
+                    print(f"[RSS ERROR] {feed_name}: Failed with HTTP {response.status_code}")
+                    return []
             
             # Parse RSS
             feed = feedparser.parse(response.content)
-            
-            if feed.bozo:  # มีปัญหาในการ parse
-                print(f"[RSS WARNING] {feed_name}: Parse issues")
             
             entries = feed.entries or []
             print(f"[RSS] {feed_name}: Found {len(entries)} entries")
@@ -330,36 +413,15 @@ class EnhancedRSSParser:
             print(f"[RSS ERROR] {feed_name}: Timeout")
             return []
         except requests.exceptions.RequestException as e:
-            print(f"[RSS ERROR] {feed_name}: {str(e)}")
-            # ลองใช้ Google News RSS แทน
-            return EnhancedRSSParser._fallback_to_google_news(feed_name)
+            print(f"[RSS ERROR] {feed_name}: Request error - {str(e)}")
+            return []
         except Exception as e:
             print(f"[RSS ERROR] {feed_name}: Unexpected error - {str(e)}")
             return []
     
     @staticmethod
-    def _fallback_to_google_news(feed_name: str):
-        """Fallback ไปใช้ Google News RSS"""
-        google_news_map = {
-            "BangkokBizNews_Energy": gnews_rss("พลังงาน site:bangkokbiznews.com", hl="th", gl="TH"),
-            "PostToday_Energy": gnews_rss("พลังงาน site:posttoday.com", hl="th", gl="TH"),
-            "Reuters_Energy": gnews_rss("energy OR oil OR gas site:reuters.com", hl="en", gl="US"),
-            "Bloomberg_Energy": gnews_rss("energy OR oil OR gas site:bloomberg.com", hl="en", gl="US"),
-        }
-        
-        if feed_name in google_news_map:
-            print(f"[RSS] Using Google News fallback for {feed_name}")
-            try:
-                feed = feedparser.parse(google_news_map[feed_name])
-                return feed.entries or []
-            except:
-                return []
-        
-        return []
-    
-    @staticmethod
-    def parse_entry_with_enhancement(entry, feed_name: str, feed_type: str):
-        """Parse entry พร้อมเพิ่มคุณภาพ"""
+    def parse_entry(entry, feed_name: str, feed_type: str):
+        """Parse entry"""
         # ดึงข้อมูลพื้นฐาน
         title = TextCleaner.clean_text(getattr(entry, "title", "") or "")
         link = (getattr(entry, "link", "") or "").strip()
@@ -382,94 +444,183 @@ class EnhancedRSSParser:
         except:
             published_dt = None
         
-        # แก้ไขและตรวจสอบ URL
-        original_url = link
+        # แก้ไข URL
         actual_url = URLValidator.extract_actual_url(link)
-        
-        # ถ้าได้ URL จริง ให้ใช้มัน
         if URLValidator.is_valid_url(actual_url):
             final_url = actual_url
-        elif URLValidator.is_valid_url(original_url):
-            final_url = original_url
         else:
-            # ถ้าไม่มี URL ที่ใช้งานได้ ให้พยายามสร้างจาก feed
-            final_url = EnhancedRSSParser._generate_fallback_url(feed_name, entry)
+            final_url = link
         
-        # ถ้าไม่มี URL เลย ให้ข้ามข่าวนี้
-        if not final_url or not URLValidator.is_valid_url(final_url):
-            print(f"[RSS] Skipping {title[:30]}... - No valid URL")
-            return None
-        
-        # ย่อ URL ถ้าจำเป็น
-        final_url = URLValidator.shorten_url_if_needed(final_url)
-        
-        # สร้าง summary ที่ดีขึ้น
+        # สร้าง summary
         enhanced_summary = TextCleaner.extract_meaningful_summary(summary)
-        if not enhanced_summary and hasattr(entry, 'content'):
-            # ลองดึงจาก content
-            content_text = ""
-            for content in entry.get('content', []):
-                if hasattr(content, 'value'):
-                    content_text += content.value + " "
-            enhanced_summary = TextCleaner.extract_meaningful_summary(content_text)
         
         return {
             "title": title[:120],
             "url": final_url,
-            "original_url": original_url,
-            "summary": enhanced_summary[:250],
+            "original_url": link,
+            "summary": enhanced_summary[:200],
             "published_dt": published_dt,
             "feed": feed_name,
             "section": feed_type,
             "has_valid_url": URLValidator.is_valid_url(final_url),
-            "url_length": len(final_url),
         }
-    
-    @staticmethod
-    def _generate_fallback_url(feed_name: str, entry):
-        """สร้าง URL fallback จากข้อมูลที่มี"""
-        # สำหรับบาง feed ที่มี guid ที่เป็น URL
-        guid = getattr(entry, "guid", "")
-        if guid and URLValidator.is_valid_url(guid):
-            return guid
-        
-        # สำหรับบาง feed ที่มี link ใน content
-        if hasattr(entry, 'links'):
-            for link in entry.links:
-                if hasattr(link, 'href') and URLValidator.is_valid_url(link.href):
-                    return link.href
-        
-        # สำหรับบาง feed ที่มี ID ที่สามารถสร้าง URL ได้
-        if hasattr(entry, 'id'):
-            entry_id = entry.id
-            feed_url_map = {
-                "BangkokBizNews_Energy": f"https://www.bangkokbiznews.com/news/{entry_id}",
-                "PostToday_Energy": f"https://www.posttoday.com/{entry_id}",
-            }
-            
-            if feed_name in feed_url_map:
-                return feed_url_map[feed_name]
-        
-        return ""
 
 # =============================================================================
-# MAIN NEWS PROCESSOR (ปรับปรุง)
+# SIMPLE LLM ANALYZER
 # =============================================================================
-class EnhancedNewsProcessor:
+class SimpleLLMAnalyzer:
+    """LLM Analyzer แบบง่ายๆ"""
+    
+    def __init__(self, api_key: str, model: str, endpoint: str):
+        self.api_key = api_key
+        self.model = model
+        self.endpoint = endpoint
+    
+    def analyze_news(self, title: str, summary: str) -> dict:
+        """วิเคราะห์ข่าวด้วย LLM"""
+        if not self.api_key:
+            return self._get_default_analysis()
+        
+        # ตรวจสอบว่าเนื้อหามีความหมายหรือไม่
+        combined_text = f"{title} {summary}"
+        if not TextCleaner.clean_text(combined_text):
+            return self._get_default_analysis()
+        
+        # สร้าง prompt ง่ายๆ
+        system_prompt = """คุณเป็นผู้ช่วยสรุปข่าวพลังงาน จงตอบเป็น JSON:
+        {
+            "summary_th": "สรุปภาษาไทย",
+            "is_official": true/false,
+            "country": "ประเทศ"
+        }"""
+        
+        user_prompt = f"""ข่าว: {title}
+        เนื้อหา: {summary}
+        สรุปเป็นภาษาไทย:"""
+        
+        try:
+            response = requests.post(
+                self.endpoint,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 300
+                },
+                timeout=20
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                content = data["choices"][0]["message"]["content"].strip()
+                
+                # พยายามแยก JSON
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    try:
+                        analysis = json.loads(json_match.group())
+                        return {
+                            "summary_th": TextCleaner.clean_text(str(analysis.get("summary_th", "")))[:150],
+                            "is_official": bool(analysis.get("is_official", False)),
+                            "country": str(analysis.get("country", "")).strip(),
+                        }
+                    except:
+                        pass
+                
+                # ถ้าไม่ใช่ JSON ให้ใช้เนื้อหาเป็น summary
+                return {
+                    "summary_th": TextCleaner.clean_text(content)[:150],
+                    "is_official": False,
+                    "country": "",
+                }
+            else:
+                print(f"[LLM] HTTP Error {response.status_code}")
+                
+        except Exception as e:
+            print(f"[LLM] Error: {str(e)}")
+        
+        return self._get_default_analysis()
+    
+    def _get_default_analysis(self):
+        """Default analysis"""
+        return {
+            "summary_th": "",
+            "is_official": False,
+            "country": "",
+        }
+
+# =============================================================================
+# MAIN NEWS PROCESSOR
+# =============================================================================
+class NewsProcessor:
     def __init__(self):
-        self.sent_links = read_sent_links()
-        self.llm_analyzer = None  # จะสร้างเมื่อต้องการ
-        self.rss_parser = EnhancedRSSParser()
+        self.sent_links = self.read_sent_links()
+        self.llm_analyzer = None
+        if USE_LLM_SUMMARY and GROQ_API_KEY:
+            self.llm_analyzer = SimpleLLMAnalyzer(GROQ_API_KEY, GROQ_MODEL, GROQ_ENDPOINT)
+        self.rss_parser = SimpleRSSParser()
+    
+    def read_sent_links(self):
+        """อ่านลิงก์ที่ส่งแล้ว"""
+        sent = set()
+        for fn in os.listdir(SENT_DIR):
+            if not fn.endswith(".txt"):
+                continue
+            fp = os.path.join(SENT_DIR, fn)
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            sent.add(line)
+            except Exception:
+                continue
+        return sent
+    
+    def append_sent_link(self, url: str):
+        """บันทึกลิงก์ที่ส่งแล้ว"""
+        url = self.normalize_url(url)
+        if not url:
+            return
+        fn = os.path.join(SENT_DIR, self.now_tz().strftime("%Y-%m-%d") + ".txt")
+        with open(fn, "a", encoding="utf-8") as f:
+            f.write(url + "\n")
+    
+    def normalize_url(self, url: str) -> str:
+        """ทำให้ URL เป็นมาตรฐาน"""
+        url = (url or "").strip()
+        if not url:
+            return url
+        try:
+            u = urlparse(url)
+            return u._replace(fragment="").geturl()
+        except Exception:
+            return url
+    
+    def now_tz(self) -> datetime:
+        return datetime.now(TZ)
+    
+    def in_time_window(self, published_dt: datetime, hours: int) -> bool:
+        if not published_dt:
+            return False
+        return published_dt >= (self.now_tz() - timedelta(hours=hours))
     
     def fetch_and_filter_news(self):
-        """ดึงและกรองข่าวจาก feeds"""
+        """ดึงและกรองข่าว"""
         all_news = []
         
-        for feed_name, feed_type, feed_url in QUALITY_FEEDS:
+        for feed_name, feed_type, feed_url in FEEDS:
             print(f"\n[Fetching] {feed_name}...")
             
             try:
-                entries = self.rss_parser.fetch_feed_with_fallback(feed_name, feed_url)
+                entries = self.rss_parser.fetch_feed(feed_name, feed_url)
                 processed_count = 0
                 
                 for entry in entries[:MAX_PER_FEED]:
@@ -477,71 +628,75 @@ class EnhancedNewsProcessor:
                     if news_item:
                         all_news.append(news_item)
                         processed_count += 1
-                        
-                        if processed_count <= 3:  # แสดง 3 ข่าวแรก
-                            print(f"  ✓ {news_item['title'][:50]}...")
                 
-                print(f"  Total processed: {processed_count} items")
+                print(f"  Processed: {processed_count} items")
                         
             except Exception as e:
-                print(f"  ✗ Error in {feed_name}: {str(e)}")
+                print(f"  Error in {feed_name}: {str(e)}")
         
         # กรองข่าวที่ไม่มี URL ที่ใช้งานได้
         all_news = [item for item in all_news if item.get('has_valid_url', False)]
         
-        # Sort by importance
+        # เรียงลำดับ
         all_news.sort(key=lambda x: (
             -x.get('is_official', 0),
             -(x.get('published_dt') or datetime.min).timestamp()
         ))
         
-        return all_news
+        return all_news[:MAX_MESSAGES_PER_RUN * BUBBLES_PER_CAROUSEL]
     
     def _process_entry(self, entry, feed_name: str, feed_type: str):
         """ประมวลผลแต่ละข่าว"""
-        item = self.rss_parser.parse_entry_with_enhancement(entry, feed_name, feed_type)
+        item = self.rss_parser.parse_entry(entry, feed_name, feed_type)
         if not item:
             return None
         
         # ตรวจสอบว่าเคยส่งแล้วหรือไม่
-        if item["url"] in self.sent_links:
+        normalized_url = self.normalize_url(item["url"])
+        if normalized_url in self.sent_links:
             return None
         
         # ตรวจสอบเวลา
-        if item["published_dt"] and not in_time_window(item["published_dt"], WINDOW_HOURS):
+        if item["published_dt"] and not self.in_time_window(item["published_dt"], WINDOW_HOURS):
             return None
         
         # ตรวจสอบว่าเป็นข่าวพลังงานหรือไม่
-        full_text = f"{item['title']} {item['summary']}".lower()
-        energy_keywords = [
-            'พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ก๊าซ', 'lng', 'น้ำมัน',
-            'energy', 'electricity', 'power', 'gas', 'oil',
-            'โรงไฟฟ้า', 'power plant', 'พลังงานทดแทน', 'renewable'
-        ]
-        
-        if not any(keyword in full_text for keyword in energy_keywords):
+        full_text = f"{item['title']} {item['summary']}"
+        if not KeywordFilter.is_energy_related(full_text):
             return None
         
         # ตรวจจับประเทศ
-        country = self._detect_country(full_text, feed_name)
+        country = CountryDetector.detect_country(full_text)
         if not country:
-            country = "Thailand" if feed_type in ['thai_business', 'thai_official'] else "International"
+            # Default ตาม feed type
+            if 'thai' in feed_type:
+                country = "Thailand"
+            elif feed_type in ['vietnam_energy', 'malaysia_energy', 'indonesia_energy', 'middleeast_energy']:
+                country = feed_type.replace('_energy', '').title()
+            else:
+                country = "International"
         
         # ตรวจสอบว่าเป็นข่าวทางการ
-        is_official = self._is_official_news(item, feed_type)
+        is_official = (
+            KeywordFilter.contains_official_keywords(full_text) or
+            feed_type in ['thai_official', 'energy_policy']
+        )
         
         # ดึงโครงการที่เกี่ยวข้อง
         project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
         
-        # ใช้ LLM ถ้าต้องการ
+        # ใช้ LLM
         llm_analysis = None
-        if USE_LLM_SUMMARY and GROQ_API_KEY:
-            if not self.llm_analyzer:
-                from .llm_analyzer import LLMAnalyzer  # Import when needed
-                self.llm_analyzer = LLMAnalyzer(GROQ_API_KEY, GROQ_MODEL, GROQ_ENDPOINT)
+        if self.llm_analyzer:
+            llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
             
-            if self.llm_analyzer:
-                llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
+            # อัปเดตข้อมูลจาก LLM
+            if llm_analysis.get('country') and llm_analysis['country'] in PROJECTS_BY_COUNTRY:
+                country = llm_analysis['country']
+                project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
+            
+            if llm_analysis.get('is_official'):
+                is_official = True
         
         # สร้างข่าว
         return {
@@ -554,62 +709,17 @@ class EnhancedNewsProcessor:
             'is_official': is_official,
             'llm_analysis': llm_analysis,
             'feed': feed_name,
-            'feed_type': feed_type,
             'has_valid_url': item.get('has_valid_url', True)
         }
-    
-    def _detect_country(self, text: str, feed_name: str) -> str:
-        """ตรวจจับประเทศ"""
-        text_lower = text.lower()
-        
-        country_patterns = {
-            "Thailand": ['ไทย', 'ประเทศไทย', 'thailand', 'bangkok'],
-            "Vietnam": ['เวียดนาม', 'vietnam', 'hanoi'],
-            "Malaysia": ['มาเลเซีย', 'malaysia', 'kuala lumpur'],
-            "Indonesia": ['อินโดนีเซีย', 'indonesia', 'jakarta'],
-            "Myanmar": ['เมียนมา', 'myanmar', 'yangon'],
-        }
-        
-        for country, patterns in country_patterns.items():
-            if any(pattern in text_lower for pattern in patterns):
-                return country
-        
-        # ถ้าไม่เจอจากเนื้อหา ให้ดูจาก feed name
-        for country in country_patterns.keys():
-            if country.lower() in feed_name.lower():
-                return country
-        
-        return ""
-    
-    def _is_official_news(self, item, feed_type: str) -> bool:
-        """ตรวจสอบว่าเป็นข่าวทางการ"""
-        # ตรวจสอบจาก feed type
-        if feed_type == 'thai_official':
-            return True
-        
-        # ตรวจสอบจาก URL
-        url = item.get('url', '')
-        official_domains = ['.go.th', '.gov', 'egat.co.th', 'doeb.go.th']
-        if any(domain in url for domain in official_domains):
-            return True
-        
-        # ตรวจสอบจากเนื้อหา
-        text = f"{item['title']} {item['summary']}".lower()
-        official_keywords = [
-            'กระทรวง', 'กรม', 'คณะกรรมการ', 'ประกาศ', 'ราชกิจจานุเบกษา',
-            'minister', 'ministry', 'regulation', 'official'
-        ]
-        
-        return any(keyword in text for keyword in official_keywords)
 
 # =============================================================================
-# ENHANCED LINE MESSAGE BUILDER
+# LINE MESSAGE BUILDER
 # =============================================================================
-class EnhancedLineMessageBuilder:
+class LineMessageBuilder:
     @staticmethod
     def create_flex_bubble(news_item):
         """สร้าง LINE Flex Bubble"""
-        title = cut(news_item.get('title', ''), 100)
+        title = LineMessageBuilder.cut_text(news_item.get('title', ''), 100)
         
         # Format timestamp
         pub_dt = news_item.get('published_dt')
@@ -642,12 +752,6 @@ class EnhancedLineMessageBuilder:
         metadata = []
         if time_str:
             metadata.append(time_str)
-        if news_item.get('feed'):
-            # ย่อชื่อ feed ถ้ายาวเกิน
-            feed_name = news_item['feed']
-            if len(feed_name) > 15:
-                feed_name = feed_name.split('_')[0]
-            metadata.append(feed_name)
         
         if metadata:
             contents.append({
@@ -678,7 +782,7 @@ class EnhancedLineMessageBuilder:
                 "margin": "xs"
             })
         
-        # เพิ่มสรุปจาก LLM
+        # เพิ่มสรุป
         if news_item.get('llm_analysis') and news_item['llm_analysis'].get('summary_th'):
             contents.append({
                 "type": "text",
@@ -689,7 +793,6 @@ class EnhancedLineMessageBuilder:
                 "color": "#424242"
             })
         elif news_item.get('summary'):
-            # ถ้าไม่มี LLM summary ให้ใช้ summary ดั้งเดิม
             contents.append({
                 "type": "text",
                 "text": news_item['summary'],
@@ -720,48 +823,33 @@ class EnhancedLineMessageBuilder:
             }
         }
         
-        # เพิ่มปุ่มอ่านข่าว ถ้ามี URL ที่ถูกต้อง
+        # เพิ่มปุ่มอ่านข่าว
         url = news_item.get('url')
-        if url and URLValidator.is_valid_url(url):
-            # ตรวจสอบว่า URL ไม่ยาวเกินไป
-            if len(url) <= 1000:
-                bubble["footer"] = {
-                    "type": "box",
-                    "layout": "vertical",
-                    "spacing": "sm",
-                    "contents": [
-                        {
-                            "type": "button",
-                            "style": "primary",
-                            "height": "sm",
-                            "action": {
-                                "type": "uri",
-                                "label": "อ่านข่าวเต็ม",
-                                "uri": url
-                            }
+        if url and URLValidator.is_valid_url(url) and len(url) <= 1000:
+            bubble["footer"] = {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "height": "sm",
+                        "action": {
+                            "type": "uri",
+                            "label": "อ่านข่าวเต็ม",
+                            "uri": url
                         }
-                    ]
-                }
-            else:
-                # ถ้า URL ยาวเกินไป ให้แสดงข้อความแจ้งแทน
-                contents.append({
-                    "type": "text",
-                    "text": "⚠️ ลิงก์ยาวเกินไป ไม่สามารถแสดงได้",
-                    "size": "xs",
-                    "color": "#F44336",
-                    "margin": "sm"
-                })
-        else:
-            # ถ้าไม่มี URL ที่ใช้งานได้
-            contents.append({
-                "type": "text",
-                "text": "ℹ️ ไม่มีลิงก์อ่านต่อ",
-                "size": "xs",
-                "color": "#9E9E9E",
-                "margin": "sm"
-            })
+                    }
+                ]
+            }
         
         return bubble
+    
+    @staticmethod
+    def cut_text(s: str, n: int) -> str:
+        s = (s or "").strip()
+        return s if len(s) <= n else s[: n - 1].rstrip() + "…"
     
     @staticmethod
     def create_carousel_message(news_items):
@@ -770,28 +858,13 @@ class EnhancedLineMessageBuilder:
             return None
         
         bubbles = []
-        valid_news_count = 0
-        
-        for item in news_items:
-            # ข้ามข่าวที่ไม่มี URL
-            if not item.get('has_valid_url', True):
-                continue
-                
-            bubble = EnhancedLineMessageBuilder.create_flex_bubble(item)
+        for item in news_items[:BUBBLES_PER_CAROUSEL]:
+            bubble = LineMessageBuilder.create_flex_bubble(item)
             if bubble:
                 bubbles.append(bubble)
-                valid_news_count += 1
-                
-                if valid_news_count >= BUBBLES_PER_CAROUSEL:
-                    break
         
         if not bubbles:
             return None
-        
-        # แจ้งจำนวนข่าวที่ไม่มีลิงก์
-        no_link_count = len(news_items) - valid_news_count
-        if no_link_count > 0:
-            print(f"[INFO] Skipped {no_link_count} news items without valid URLs")
         
         return {
             "type": "flex",
@@ -803,119 +876,7 @@ class EnhancedLineMessageBuilder:
         }
 
 # =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
-def now_tz() -> datetime:
-    return datetime.now(TZ)
-
-def normalize_url(url: str) -> str:
-    url = (url or "").strip()
-    if not url:
-        return url
-    try:
-        u = urlparse(url)
-        return u._replace(fragment="").geturl()
-    except Exception:
-        return url
-
-def sha1(s: str) -> str:
-    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
-
-def read_sent_links() -> set:
-    sent = set()
-    for fn in os.listdir(SENT_DIR):
-        if not fn.endswith(".txt"):
-            continue
-        fp = os.path.join(SENT_DIR, fn)
-        try:
-            with open(fp, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        sent.add(line)
-        except Exception:
-            continue
-    return sent
-
-def append_sent_link(url: str):
-    url = normalize_url(url)
-    if not url:
-        return
-    fn = os.path.join(SENT_DIR, now_tz().strftime("%Y-%m-%d") + ".txt")
-    with open(fn, "a", encoding="utf-8") as f:
-        f.write(url + "\n")
-
-def in_time_window(published_dt: datetime, hours: int) -> bool:
-    if not published_dt:
-        return False
-    return published_dt >= (now_tz() - timedelta(hours=hours))
-
-def cut(s: str, n: int) -> str:
-    s = (s or "").strip()
-    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
-
-# =============================================================================
-# MAIN FUNCTION
-# =============================================================================
-def main():
-    print("="*60)
-    print("ระบบติดตามข่าวพลังงาน - Enhanced with URL Fix")
-    print("="*60)
-    
-    # Configuration check
-    if not LINE_CHANNEL_ACCESS_TOKEN:
-        print("[ERROR] LINE_CHANNEL_ACCESS_TOKEN is required")
-        return
-    
-    print(f"\n[CONFIG] Use LLM: {'Yes' if USE_LLM_SUMMARY and GROQ_API_KEY else 'No'}")
-    print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
-    print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
-    print(f"[CONFIG] Feeds: {len(QUALITY_FEEDS)} quality sources")
-    
-    # Initialize components
-    processor = EnhancedNewsProcessor()
-    line_sender = LineSender(LINE_CHANNEL_ACCESS_TOKEN)
-    
-    # Step 1: Fetch and filter news
-    print("\n[1] กำลังดึงและกรองข่าวจากแหล่งคุณภาพ...")
-    news_items = processor.fetch_and_filter_news()
-    
-    if not news_items:
-        print("\n[INFO] ไม่พบข่าวใหม่ที่เกี่ยวข้อง")
-        return
-    
-    print(f"\n[2] พบข่าวที่เกี่ยวข้องทั้งหมด {len(news_items)} ข่าว")
-    
-    # นับข่าวที่มี URL ใช้งานได้
-    valid_url_count = sum(1 for item in news_items if item.get('has_valid_url', False))
-    print(f"   - ข่าวที่มีลิงก์อ่านต่อ: {valid_url_count} ข่าว")
-    print(f"   - ข่าวที่ไม่มัลิงก์: {len(news_items) - valid_url_count} ข่าว")
-    
-    # Step 3: Create LINE message (เฉพาะข่าวที่มี URL)
-    print("\n[3] กำลังสร้างข้อความ LINE (เฉพาะข่าวที่มีลิงก์)...")
-    line_message = EnhancedLineMessageBuilder.create_carousel_message(news_items)
-    
-    if not line_message:
-        print("[ERROR] ไม่สามารถสร้างข้อความได้ (ไม่มีข่าวที่มีลิงก์ที่ใช้งานได้)")
-        return
-    
-    # Step 4: Send message
-    print("\n[4] กำลังส่งข้อความ...")
-    success = line_sender.send_message(line_message)
-    
-    # Step 5: Mark as sent if successful
-    if success and not DRY_RUN:
-        for item in news_items:
-            if item.get('has_valid_url', False):
-                append_sent_link(item.get('url'))
-        print("\n[SUCCESS] อัปเดตฐานข้อมูลข่าวที่ส่งแล้ว")
-    
-    print("\n" + "="*60)
-    print("ดำเนินการเสร็จสิ้น")
-    print("="*60)
-
-# =============================================================================
-# LINE SENDER CLASS
+# LINE SENDER
 # =============================================================================
 class LineSender:
     def __init__(self, access_token):
@@ -966,6 +927,70 @@ class LineSender:
         except Exception as e:
             print(f"[LINE] Exception: {str(e)}")
             return False
+
+# =============================================================================
+# MAIN FUNCTION
+# =============================================================================
+def main():
+    print("="*60)
+    print("ระบบติดตามข่าวพลังงาน - Google News RSS Version")
+    print("="*60)
+    
+    # Configuration check
+    if not LINE_CHANNEL_ACCESS_TOKEN:
+        print("[ERROR] LINE_CHANNEL_ACCESS_TOKEN is required")
+        return
+    
+    print(f"\n[CONFIG] Use LLM: {'Yes' if USE_LLM_SUMMARY and GROQ_API_KEY else 'No'}")
+    print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
+    print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
+    print(f"[CONFIG] Feeds: {len(FEEDS)} Google News RSS sources")
+    
+    # Initialize components
+    processor = NewsProcessor()
+    line_sender = LineSender(LINE_CHANNEL_ACCESS_TOKEN)
+    
+    # Step 1: Fetch and filter news
+    print("\n[1] กำลังดึงและกรองข่าว...")
+    news_items = processor.fetch_and_filter_news()
+    
+    if not news_items:
+        print("\n[INFO] ไม่พบข่าวใหม่ที่เกี่ยวข้อง")
+        return
+    
+    print(f"\n[2] พบข่าวที่เกี่ยวข้องทั้งหมด {len(news_items)} ข่าว")
+    
+    # สถิติ
+    valid_url_count = sum(1 for item in news_items if item.get('has_valid_url', False))
+    official_count = sum(1 for item in news_items if item.get('is_official'))
+    llm_count = sum(1 for item in news_items if item.get('llm_analysis'))
+    
+    print(f"   - ข่าวที่มีลิงก์อ่านต่อ: {valid_url_count} ข่าว")
+    print(f"   - ข่าวทางการ: {official_count} ข่าว")
+    print(f"   - วิเคราะห์ด้วย AI: {llm_count} ข่าว")
+    
+    # Step 3: Create LINE message
+    print("\n[3] กำลังสร้างข้อความ LINE...")
+    line_message = LineMessageBuilder.create_carousel_message(news_items)
+    
+    if not line_message:
+        print("[ERROR] ไม่สามารถสร้างข้อความได้")
+        return
+    
+    # Step 4: Send message
+    print("\n[4] กำลังส่งข้อความ...")
+    success = line_sender.send_message(line_message)
+    
+    # Step 5: Mark as sent if successful
+    if success and not DRY_RUN:
+        for item in news_items:
+            if item.get('has_valid_url', False):
+                processor.append_sent_link(item.get('url'))
+        print("\n[SUCCESS] อัปเดตฐานข้อมูลข่าวที่ส่งแล้ว")
+    
+    print("\n" + "="*60)
+    print("ดำเนินการเสร็จสิ้น")
+    print("="*60)
 
 if __name__ == "__main__":
     main()
