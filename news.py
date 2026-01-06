@@ -215,115 +215,72 @@ PROJECTS_BY_COUNTRY = {
 }
 
 # =============================================================================
-# SIMPLIFIED GOOGLE NEWS RSS FEEDS - ใช้ Google News RSS ที่เสถียร
-# =============================================================================
-def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
-    """Generate Google News RSS URL"""
-    return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
-
-# ใช้เฉพาะ Google News RSS ที่ทำงานได้แน่นอน
-FEEDS = [
-    # ==================== ข่าวพลังงานภาษาไทย ====================
-    ("Thai_Energy_General", "thai_energy", gnews_rss(
-        'พลังงาน OR ไฟฟ้า OR ก๊าซ OR LNG OR น้ำมัน OR โรงไฟฟ้า OR พลังงานทดแทน',
-        hl="th", gl="TH", ceid="TH:th"
-    )),
-    
-    ("Thai_Energy_Policy", "thai_official", gnews_rss(
-        '(กระทรวงพลังงาน OR กรมธุรกิจพลังงาน OR กฟผ OR กกพ OR ค่าไฟ OR Direct PPA)',
-        hl="th", gl="TH", ceid="TH:th"
-    )),
-    
-    ("Thai_Business_Energy", "thai_business", gnews_rss(
-        '(พลังงาน OR ไฟฟ้า OR ก๊าซ) (bangkokbiznews OR posttoday OR prachachat OR thansettakij OR mgronline)',
-        hl="th", gl="TH", ceid="TH:th"
-    )),
-    
-    # ==================== ข่าวพลังงานภาษาอังกฤษ ====================
-    ("Global_Energy_News", "global_energy", gnews_rss(
-        'energy OR electricity OR power OR oil OR gas OR LNG OR renewable energy',
-        hl="en", gl="US", ceid="US:en"
-    )),
-    
-    ("Energy_Policy", "energy_policy", gnews_rss(
-        'energy policy OR electricity tariff OR power regulation OR energy transition',
-        hl="en", gl="US", ceid="US:en"
-    )),
-    
-    ("Oil_Gas_News", "oil_gas", gnews_rss(
-        'oil OR gas OR petroleum OR crude OR OPEC',
-        hl="en", gl="US", ceid="US:en"
-    )),
-    
-    # ==================== ข่าวพลังงานตามประเทศ ====================
-    ("Vietnam_Energy", "vietnam_energy", gnews_rss(
-        '(energy OR electricity OR power) Vietnam',
-        hl="en", gl="VN", ceid="VN:en"
-    )),
-    
-    ("Malaysia_Energy", "malaysia_energy", gnews_rss(
-        '(energy OR Petronas OR oil OR gas) Malaysia',
-        hl="en", gl="MY", ceid="MY:en"
-    )),
-    
-    ("Indonesia_Energy", "indonesia_energy", gnews_rss(
-        '(energy OR oil OR gas) Indonesia',
-        hl="en", gl="ID", ceid="ID:en"
-    )),
-    
-    ("MiddleEast_Energy", "middleeast_energy", gnews_rss(
-        '(energy OR oil OR gas) (UAE OR Saudi OR Qatar OR Oman)',
-        hl="en", gl="AE", ceid="AE:en"
-    )),
-]
-
-# =============================================================================
-# COUNTRY DETECTION
+# COUNTRY DETECTION - ดัดแปลงให้ตรวจจับเฉพาะประเทศใน PROJECTS_BY_COUNTRY
 # =============================================================================
 class CountryDetector:
-    """ตรวจจับประเทศจากเนื้อหาข่าว"""
+    """ตรวจจับประเทศจากเนื้อหาข่าว - เฉพาะประเทศที่มีโครงการ"""
     
-    COUNTRY_PATTERNS = {
-        "Thailand": [
-            r'\bประเทศไทย\b', r'\bไทย\b', r'\bthailand\b', r'\bbangkok\b',
-            r'\bกระทรวงพลังงาน\b', r'\bกฟผ\b', r'\bกกพ\b', r'\bพีทีที\b',
-            r'\bกรุงเทพ\b', r'\bchiang mai\b'
-        ],
-        "Myanmar": [
-            r'\bเมียนมา\b', r'\bmyanmar\b', r'\byangon\b', r'\bย่างกุ้ง\b',
-            r'\bnaypyidaw\b', r'\bmoge\b'
-        ],
-        "Malaysia": [
-            r'\bมาเลเซีย\b', r'\bmalaysia\b', r'\bkuala lumpur\b',
-            r'\bpetronas\b', r'\bsabah\b', r'\bsarawak\b'
-        ],
-        "Vietnam": [
-            r'\bเวียดนาม\b', r'\bvietnam\b', r'\bhanoi\b', r'\bho chi minh\b',
-            r'\bpetrovietnam\b', r'\bda nang\b'
-        ],
-        "Indonesia": [
-            r'\bอินโดนีเซีย\b', r'\bindonesia\b', r'\bjakarta\b',
-            r'\bpertamina\b', r'\bbali\b', r'\bsumatra\b'
-        ],
-        "Kazakhstan": [
-            r'\bคาซัคสถาน\b', r'\bkazakhstan\b', r'\bastana\b',
-            r'\bkazmunaigas\b'
-        ],
-        "Oman": [
-            r'\bโอมาน\b', r'\boman\b', r'\bmuscat\b', r'\bpdo\b',
-            r'\boq\b'
-        ],
-        "UAE": [
-            r'\bสหรัฐอาหรับเอมิเรตส์\b', r'\buae\b', r'\babu dhabi\b',
-            r'\bdubai\b', r'\badnoc\b'
-        ],
-    }
+    # เก็บเฉพาะประเทศที่มีใน PROJECTS_BY_COUNTRY
+    COUNTRY_PATTERNS = {}
+    
+    # สร้าง patterns จากประเทศใน PROJECTS_BY_COUNTRY
+    @classmethod
+    def initialize_patterns(cls):
+        """เตรียม patterns จากประเทศที่มีโครงการ"""
+        if cls.COUNTRY_PATTERNS:
+            return
+            
+        # Patterns สำหรับแต่ละประเทศ
+        country_patterns_base = {
+            "Thailand": [
+                r'\bประเทศไทย\b', r'\bไทย\b', r'\bthailand\b', r'\bbangkok\b',
+                r'\bกระทรวงพลังงาน\b', r'\bกฟผ\b', r'\bกกพ\b', r'\bพีทีที\b',
+                r'\bกรุงเทพ\b', r'\bchiang mai\b', r'\bสปป\b'
+            ],
+            "Myanmar": [
+                r'\bเมียนมา\b', r'\bmyanmar\b', r'\byangon\b', r'\bย่างกุ้ง\b',
+                r'\bnaypyidaw\b', r'\bmoge\b'
+            ],
+            "Malaysia": [
+                r'\bมาเลเซีย\b', r'\bmalaysia\b', r'\bkuala lumpur\b',
+                r'\bpetronas\b', r'\bsabah\b', r'\bsarawak\b'
+            ],
+            "Vietnam": [
+                r'\bเวียดนาม\b', r'\bvietnam\b', r'\bhanoi\b', r'\bho chi minh\b',
+                r'\bpetrovietnam\b', r'\bda nang\b'
+            ],
+            "Indonesia": [
+                r'\bอินโดนีเซีย\b', r'\bindonesia\b', r'\bjakarta\b',
+                r'\bpertamina\b', r'\bbali\b', r'\bsumatra\b'
+            ],
+            "Kazakhstan": [
+                r'\bคาซัคสถาน\b', r'\bkazakhstan\b', r'\bastana\b',
+                r'\bkazmunaigas\b'
+            ],
+            "Oman": [
+                r'\bโอมาน\b', r'\boman\b', r'\bmuscat\b', r'\bpdo\b',
+                r'\boq\b'
+            ],
+            "UAE": [
+                r'\bสหรัฐอาหรับเอมิเรตส์\b', r'\buae\b', r'\babu dhabi\b',
+                r'\bdubai\b', r'\badnoc\b'
+            ],
+        }
+        
+        # ใช้เฉพาะประเทศที่มีใน PROJECTS_BY_COUNTRY
+        for country in PROJECTS_BY_COUNTRY.keys():
+            if country in country_patterns_base:
+                cls.COUNTRY_PATTERNS[country] = country_patterns_base[country]
     
     @classmethod
     def detect_country(cls, text: str) -> str:
-        """ตรวจจับประเทศจากข้อความ"""
+        """ตรวจจับประเทศจากข้อความ - เฉพาะประเทศที่มีโครงการ"""
         if not text:
             return ""
+        
+        # เรียก initialize patterns
+        if not cls.COUNTRY_PATTERNS:
+            cls.initialize_patterns()
         
         text_lower = text.lower()
         
@@ -332,7 +289,7 @@ class CountryDetector:
                 if re.search(pattern, text_lower, re.IGNORECASE):
                     return country
         
-        return ""
+        return ""  # คืนค่าว่างถ้าไม่ใช่ประเทศที่ต้องการ
 
 # =============================================================================
 # KEYWORD FILTERS
@@ -371,6 +328,95 @@ class KeywordFilter:
         
         text_lower = text.lower()
         return any(keyword.lower() in text_lower for keyword in cls.ENERGY_KEYWORDS)
+    
+    @classmethod
+    def is_target_country_news(cls, text: str) -> bool:
+        """ตรวจสอบว่าเป็นข่าวประเทศที่เราต้องการหรือไม่"""
+        if not text:
+            return False
+        
+        text_lower = text.lower()
+        
+        # รายการคำที่บ่งชี้เป็นข่าวนานาชาติที่เราไม่ต้องการ
+        international_indicators = [
+            'global', 'world', 'international', 'united nations', 'un ',
+            'european union', 'eu ', 'climate summit', 'cop ',
+            'g20', 'g7', 'world bank', 'imf', 'opec+', 'international'
+        ]
+        
+        # ถ้ามีคำบ่งชี้ข่าวนานาชาติ ให้ข้าม
+        for indicator in international_indicators:
+            if indicator in text_lower:
+                return False
+        
+        return True
+
+# =============================================================================
+# SIMPLIFIED GOOGLE NEWS RSS FEEDS - ใช้เฉพาะประเทศที่มีโครงการ
+# =============================================================================
+def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
+    """Generate Google News RSS URL"""
+    return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
+
+# ใช้เฉพาะ feed ที่เกี่ยวข้องกับประเทศที่มีโครงการ
+FEEDS = [
+    # ==================== ข่าวพลังงานไทย ====================
+    ("Thai_Energy_General", "thai_energy", gnews_rss(
+        '(พลังงาน OR ไฟฟ้า OR ก๊าซ OR LNG OR น้ำมัน OR โรงไฟฟ้า OR พลังงานทดแทน) Thailand',
+        hl="th", gl="TH", ceid="TH:th"
+    )),
+    
+    ("Thai_Energy_Policy", "thai_official", gnews_rss(
+        '(กระทรวงพลังงาน OR กรมธุรกิจพลังงาน OR กฟผ OR กกพ OR ค่าไฟ OR Direct PPA) Thailand',
+        hl="th", gl="TH", ceid="TH:th"
+    )),
+    
+    ("Thai_Business_Energy", "thai_business", gnews_rss(
+        '(พลังงาน OR ไฟฟ้า OR ก๊าซ) (ประเทศไทย OR ไทย)',
+        hl="th", gl="TH", ceid="TH:th"
+    )),
+    
+    # ==================== ข่าวพลังงานเวียดนาม ====================
+    ("Vietnam_Energy", "vietnam_energy", gnews_rss(
+        '(energy OR electricity OR power OR oil OR gas OR LNG) Vietnam',
+        hl="en", gl="VN", ceid="VN:en"
+    )),
+    
+    # ==================== ข่าวพลังงานมาเลเซีย ====================
+    ("Malaysia_Energy", "malaysia_energy", gnews_rss(
+        '(energy OR electricity OR power OR oil OR gas OR Petronas) Malaysia',
+        hl="en", gl="MY", ceid="MY:en"
+    )),
+    
+    # ==================== ข่าวพลังงานอินโดนีเซีย ====================
+    ("Indonesia_Energy", "indonesia_energy", gnews_rss(
+        '(energy OR electricity OR power OR oil OR gas OR Pertamina) Indonesia',
+        hl="en", gl="ID", ceid="ID:en"
+    )),
+    
+    # ==================== ข่าวพลังงานเมียนมา ====================
+    ("Myanmar_Energy", "myanmar_energy", gnews_rss(
+        '(energy OR electricity OR power OR oil OR gas) Myanmar',
+        hl="en", gl="MM", ceid="MM:en"
+    )),
+    
+    # ==================== ข่าวพลังงานตะวันออกกลาง ====================
+    ("Oman_Energy", "oman_energy", gnews_rss(
+        '(energy OR oil OR gas) Oman',
+        hl="en", gl="OM", ceid="OM:en"
+    )),
+    
+    ("UAE_Energy", "uae_energy", gnews_rss(
+        '(energy OR oil OR gas) (UAE OR United Arab Emirates OR Abu Dhabi)',
+        hl="en", gl="AE", ceid="AE:en"
+    )),
+    
+    # ==================== ข่าวพลังงานคาซัคสถาน ====================
+    ("Kazakhstan_Energy", "kazakhstan_energy", gnews_rss(
+        '(energy OR oil OR gas) Kazakhstan',
+        hl="en", gl="KZ", ceid="KZ:en"
+    )),
+]
 
 # =============================================================================
 # SIMPLE RSS PARSER
@@ -491,7 +537,7 @@ class SimpleLLMAnalyzer:
         {
             "summary_th": "สรุปภาษาไทย",
             "is_official": true/false,
-            "country": "ประเทศ"
+            "country": "ประเทศ (ต้องเป็นหนึ่งใน: Thailand, Myanmar, Malaysia, Vietnam, Indonesia, Kazakhstan, Oman, UAE เท่านั้น)"
         }"""
         
         user_prompt = f"""ข่าว: {title}
@@ -526,10 +572,15 @@ class SimpleLLMAnalyzer:
                 if json_match:
                     try:
                         analysis = json.loads(json_match.group())
+                        # ตรวจสอบว่า country อยู่ในประเทศที่เราต้องการหรือไม่
+                        country = str(analysis.get("country", "")).strip()
+                        if country not in PROJECTS_BY_COUNTRY:
+                            country = ""
+                        
                         return {
                             "summary_th": TextCleaner.clean_text(str(analysis.get("summary_th", "")))[:150],
                             "is_official": bool(analysis.get("is_official", False)),
-                            "country": str(analysis.get("country", "")).strip(),
+                            "country": country,
                         }
                     except:
                         pass
@@ -555,6 +606,28 @@ class SimpleLLMAnalyzer:
             "is_official": False,
             "country": "",
         }
+
+# =============================================================================
+# NEWS FILTER
+# =============================================================================
+class NewsFilter:
+    """คลาสสำหรับกรองข่าวโดยเฉพาะ"""
+    
+    @staticmethod
+    def filter_by_target_countries(news_items: list) -> list:
+        """กรองข่าวเฉพาะประเทศที่มีโครงการ"""
+        filtered_news = []
+        
+        for item in news_items:
+            country = item.get('country', '')
+            
+            # ตรวจสอบว่าเป็นประเทศที่มีโครงการ
+            if country in PROJECTS_BY_COUNTRY:
+                filtered_news.append(item)
+            else:
+                print(f"[FILTER] ข้ามข่าว: {item.get('title', '')[:50]}... ประเทศ: {country}")
+        
+        return filtered_news
 
 # =============================================================================
 # MAIN NEWS PROCESSOR
@@ -646,7 +719,7 @@ class NewsProcessor:
         return all_news[:MAX_MESSAGES_PER_RUN * BUBBLES_PER_CAROUSEL]
     
     def _process_entry(self, entry, feed_name: str, feed_type: str):
-        """ประมวลผลแต่ละข่าว"""
+        """ประมวลผลแต่ละข่าว - กรองเฉพาะประเทศที่มีโครงการ"""
         item = self.rss_parser.parse_entry(entry, feed_name, feed_type)
         if not item:
             return None
@@ -665,16 +738,10 @@ class NewsProcessor:
         if not KeywordFilter.is_energy_related(full_text):
             return None
         
-        # ตรวจจับประเทศ
+        # ตรวจจับประเทศ (เฉพาะประเทศที่มีโครงการ)
         country = CountryDetector.detect_country(full_text)
-        if not country:
-            # Default ตาม feed type
-            if 'thai' in feed_type:
-                country = "Thailand"
-            elif feed_type in ['vietnam_energy', 'malaysia_energy', 'indonesia_energy', 'middleeast_energy']:
-                country = feed_type.replace('_energy', '').title()
-            else:
-                country = "International"
+        if not country:  # ถ้าไม่ใช่ประเทศที่มีโครงการ ให้ข้าม
+            return None
         
         # ตรวจสอบว่าเป็นข่าวทางการ
         is_official = (
@@ -685,12 +752,12 @@ class NewsProcessor:
         # ดึงโครงการที่เกี่ยวข้อง
         project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
         
-        # ใช้ LLM
+        # ใช้ LLM (ถ้ามี)
         llm_analysis = None
         if self.llm_analyzer:
             llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
             
-            # อัปเดตข้อมูลจาก LLM
+            # ถ้า LLM ตรวจจับประเทศได้ ให้ใช้ประเทศนั้น (ต้องเป็นประเทศที่มีโครงการ)
             if llm_analysis.get('country') and llm_analysis['country'] in PROJECTS_BY_COUNTRY:
                 country = llm_analysis['country']
                 project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
@@ -946,6 +1013,11 @@ def main():
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
     print(f"[CONFIG] Feeds: {len(FEEDS)} Google News RSS sources")
     
+    # Initialize CountryDetector patterns
+    CountryDetector.initialize_patterns()
+    target_countries = list(PROJECTS_BY_COUNTRY.keys())
+    print(f"[CONFIG] Target countries: {', '.join(target_countries)}")
+    
     # Initialize components
     processor = NewsProcessor()
     line_sender = LineSender(LINE_CHANNEL_ACCESS_TOKEN)
@@ -960,28 +1032,45 @@ def main():
     
     print(f"\n[2] พบข่าวที่เกี่ยวข้องทั้งหมด {len(news_items)} ข่าว")
     
+    # Step 3: กรองเฉพาะประเทศที่มีโครงการ
+    print("\n[3] กำลังกรองข่าวเฉพาะประเทศที่มีโครงการ...")
+    news_items = NewsFilter.filter_by_target_countries(news_items)
+    
+    if not news_items:
+        print("\n[INFO] ไม่พบข่าวใหม่จากประเทศที่มีโครงการ")
+        return
+    
+    print(f"\n[4] พบข่าวจากประเทศที่มีโครงการทั้งหมด {len(news_items)} ข่าว")
+    
     # สถิติ
     valid_url_count = sum(1 for item in news_items if item.get('has_valid_url', False))
     official_count = sum(1 for item in news_items if item.get('is_official'))
     llm_count = sum(1 for item in news_items if item.get('llm_analysis'))
     
+    # สถิติตามประเทศ
+    country_stats = {}
+    for item in news_items:
+        country = item.get('country', 'Unknown')
+        country_stats[country] = country_stats.get(country, 0) + 1
+    
     print(f"   - ข่าวที่มีลิงก์อ่านต่อ: {valid_url_count} ข่าว")
     print(f"   - ข่าวทางการ: {official_count} ข่าว")
     print(f"   - วิเคราะห์ด้วย AI: {llm_count} ข่าว")
+    print(f"   - ประเทศที่พบ: {', '.join([f'{k} ({v})' for k, v in country_stats.items()])}")
     
-    # Step 3: Create LINE message
-    print("\n[3] กำลังสร้างข้อความ LINE...")
+    # Step 5: Create LINE message
+    print("\n[5] กำลังสร้างข้อความ LINE...")
     line_message = LineMessageBuilder.create_carousel_message(news_items)
     
     if not line_message:
         print("[ERROR] ไม่สามารถสร้างข้อความได้")
         return
     
-    # Step 4: Send message
-    print("\n[4] กำลังส่งข้อความ...")
+    # Step 6: Send message
+    print("\n[6] กำลังส่งข้อความ...")
     success = line_sender.send_message(line_message)
     
-    # Step 5: Mark as sent if successful
+    # Step 7: Mark as sent if successful
     if success and not DRY_RUN:
         for item in news_items:
             if item.get('has_valid_url', False):
