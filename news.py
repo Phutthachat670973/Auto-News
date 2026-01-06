@@ -36,7 +36,7 @@ USE_LLM_SUMMARY = os.getenv("USE_LLM_SUMMARY", "1").strip().lower() in ["1", "tr
 
 WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "48"))
 MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "30"))
-DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ["1", "true", "yes", "y"])
+DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ["1", "true", "yes", "y"]
 MAX_MESSAGES_PER_RUN = int(os.getenv("MAX_MESSAGES_PER_RUN", "10"))
 BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))
 
@@ -215,7 +215,7 @@ def append_sent_link(url: str):
     url = normalize_url(url)
     if not url:
         return
-    fn = os.path.join(SENT_DIR, now_tz().strftime("%Y-%m-%d") + ".txt")
+    fn = os.path.join(SENT_DIR, now_tz().strftime("%Y-%m-d") + ".txt")
     with open(fn, "a", encoding="utf-8") as f:
         f.write(url + "\n")
 
