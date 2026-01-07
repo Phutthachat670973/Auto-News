@@ -39,6 +39,16 @@ MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "30"))
 DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ["1", "true", "yes", "y"]
 BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))
 
+# สร้างตัวแปรสำหรับเลือกเว็บข่าวที่ต้องการ
+# รูปแบบ: "reuters.com,bloomberg.com,bangkokpost.com,thansettakij.com"
+ALLOWED_NEWS_SOURCES = os.getenv("ALLOWED_NEWS_SOURCES", "").strip()
+if ALLOWED_NEWS_SOURCES:
+    ALLOWED_NEWS_SOURCES_LIST = [s.strip().lower() for s in ALLOWED_NEWS_SOURCES.split(",") if s.strip()]
+    print(f"[CONFIG] เลือกเฉพาะเว็บข่าว: {ALLOWED_NEWS_SOURCES_LIST}")
+else:
+    ALLOWED_NEWS_SOURCES_LIST = []
+    print("[CONFIG] รับข่าวจากทุกเว็บข่าว")
+
 # Sent links tracking
 SENT_DIR = os.getenv("SENT_DIR", "sent_links")
 os.makedirs(SENT_DIR, exist_ok=True)
@@ -134,7 +144,7 @@ class KeywordFilter:
         return ""
 
 # =============================================================================
-# FEEDS
+# FEEDS - เพิ่มเว็บตรง
 # =============================================================================
 def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
     return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
@@ -148,6 +158,11 @@ FEEDS = [
         '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia) -car -automotive',
         hl="en", gl="US", ceid="US:en"
     )),
+    # ✅ เพิ่ม feed จากเว็บโดยตรง
+    ("EnergyNewsCenter", "direct", "https://www.energynewscenter.com/feed/"),
+    # ลองเพิ่ม RSS feed URLs อื่นๆ ที่เป็นไปได้
+    ("EnergyNewsCenter RSS2", "direct", "https://www.energynewscenter.com/rss/"),
+    ("EnergyNewsCenter RSS3", "direct", "https://www.energynewscenter.com/feed/rss/"),
 ]
 
 # =============================================================================
@@ -165,6 +180,36 @@ def normalize_url(url: str) -> str:
         return u._replace(fragment="").geturl()
     except Exception:
         return url
+
+def extract_domain(url: str) -> str:
+    """Extract domain name from URL"""
+    url = normalize_url(url)
+    if not url:
+        return ""
+    try:
+        domain = urlparse(url).netloc.lower()
+        # Remove www. prefix
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain
+    except Exception:
+        return ""
+
+def is_allowed_source(url: str) -> bool:
+    """ตรวจสอบว่า URL นี้มาจากเว็บข่าวที่เราอนุญาตหรือไม่"""
+    if not ALLOWED_NEWS_SOURCES_LIST:  # ถ้าไม่ได้กำหนด allowed sources = ยอมรับทั้งหมด
+        return True
+    
+    domain = extract_domain(url)
+    if not domain:
+        return False
+    
+    # ตรวจสอบว่า domain อยู่ในรายการที่อนุญาต
+    for allowed_source in ALLOWED_NEWS_SOURCES_LIST:
+        if allowed_source in domain:  # ใช้ partial match เช่น "reuters" จะ match "reuters.com"
+            return True
+    
+    return False
 
 def shorten_google_news_url(url: str) -> str:
     """Extract actual URL from Google News redirect"""
@@ -240,23 +285,35 @@ def create_simple_summary(text: str, max_length: int = 150) -> str:
 # RSS PARSING
 # =============================================================================
 def fetch_feed(name: str, section: str, url: str):
-    d = feedparser.parse(url)
-    entries = d.entries or []
-    print(f"[FEED] {name}: {len(entries)} entries")
-    return entries
+    """ดึง RSS feed จาก URL"""
+    print(f"[FEED] ดึงข้อมูลจาก {name} ({url})...")
+    try:
+        d = feedparser.parse(url)
+        entries = d.entries or []
+        print(f"[FEED] {name}: พบ {len(entries)} entries")
+        
+        # แสดงตัวอย่าง entries (สำหรับ debug)
+        if entries and len(entries) > 0:
+            print(f"[FEED] ตัวอย่างข่าวแรก: {entries[0].title[:50]}...")
+        
+        return entries
+    except Exception as e:
+        print(f"[FEED] {name}: เกิดข้อผิดพลาด - {str(e)}")
+        return []
 
 def parse_entry(e, feed_name: str, section: str):
     title = (getattr(e, "title", "") or "").strip()
     link = (getattr(e, "link", "") or "").strip()
     summary = (getattr(e, "summary", "") or "").strip()
     published = getattr(e, "published", None) or getattr(e, "updated", None)
-    
-    # Get source from Google News feed
-    source_name = ""
-    if hasattr(e, 'source') and hasattr(e.source, 'title'):
-        source_name = e.source.title
-    elif hasattr(e, 'source') and isinstance(e.source, dict) and 'title' in e.source:
-        source_name = e.source['title']
+
+    # สำหรับเว็บโดยตรงอาจใช้ published_parsed
+    if not published and hasattr(e, 'published_parsed'):
+        try:
+            import time as time_module
+            published = time_module.strftime('%Y-%m-%dT%H:%M:%SZ', e.published_parsed)
+        except:
+            pass
 
     try:
         published_dt = dateutil_parser.parse(published) if published else None
@@ -274,7 +331,6 @@ def parse_entry(e, feed_name: str, section: str):
         "url": normalize_url(link),
         "canon_url": normalize_url(canon),
         "summary": summary,
-        "source_name": source_name.strip() if source_name else "",
         "published_dt": published_dt,
         "feed": feed_name,
         "section": section,
@@ -376,18 +432,59 @@ class NewsProcessor:
     def __init__(self):
         self.sent_links = read_sent_links()
         self.llm_analyzer = LLMAnalyzer(GROQ_API_KEY, GROQ_MODEL, GROQ_ENDPOINT) if GROQ_API_KEY else None
+        
+        # สร้าง dictionary สำหรับเก็บชื่อเว็บข่าว
+        self.news_sources = {
+            'reuters.com': 'Reuters',
+            'bloomberg.com': 'Bloomberg',
+            'bangkokpost.com': 'Bangkok Post',
+            'thansettakij.com': 'ฐานเศรษฐกิจ',
+            'posttoday.com': 'Post Today',
+            'prachachat.net': 'ประชาชาติธุรกิจ',
+            'mgronline.com': 'ผู้จัดการออนไลน์',
+            'komchadluek.net': 'คมชัดลึก',
+            'nationthailand.com': 'The Nation Thailand',
+            'naewna.com': 'แนวหน้า',
+            'dailynews.co.th': 'เดลินิวส์',
+            'thairath.co.th': 'ไทยรัฐ',
+            'khaosod.co.th': 'ข่าวสด',
+            'matichon.co.th': 'มติชน',
+            'sanook.com': 'สนุกดอทคอม',
+            'kapook.com': 'กะปุก',
+            'manager.co.th': 'ผู้จัดการ',
+            # ✅ เพิ่มแหล่งข่าวพลังงานโดยเฉพาะ
+            'energynewscenter.com': 'Energy News Center',  # เพิ่มเว็บตรง
+            # เพิ่มแหล่งข่าวอื่นๆ ตามต้องการ
+        }
+    
+    def get_source_name(self, url: str) -> str:
+        """ดึงชื่อเว็บข่าวจาก URL"""
+        domain = extract_domain(url)
+        if not domain:
+            return domain
+        
+        # ตรวจสอบว่า domain ตรงกับแหล่งข่าวที่เรารู้จักหรือไม่
+        for source_domain, source_name in self.news_sources.items():
+            if source_domain in domain:
+                return source_name
+        
+        # หากไม่เจอ ให้ใช้ domain เป็นชื่อ
+        return domain
     
     def fetch_and_filter_news(self):
         """Fetch and filter news from all feeds"""
         all_news = []
         
         for feed_name, feed_type, feed_url in FEEDS:
-            print(f"\n[Fetching] {feed_name}...")
+            print(f"\n[Fetching] {feed_name} ({feed_type})...")
             
             try:
                 entries = fetch_feed(feed_name, feed_type, feed_url)
                 
-                for entry in entries[:MAX_PER_FEED]:
+                # สำหรับเว็บตรง ไม่ต้องกรอง MAX_PER_FEED มากเกินไป
+                limit = 20 if feed_type == "direct" else MAX_PER_FEED
+                
+                for entry in entries[:limit]:
                     news_item = self._process_entry(entry, feed_name, feed_type)
                     if news_item:
                         all_news.append(news_item)
@@ -417,17 +514,33 @@ class NewsProcessor:
         if item["published_dt"] and not in_time_window(item["published_dt"], WINDOW_HOURS):
             return None
         
+        # สำหรับเว็บตรง (direct) ไม่ต้องตรวจสอบ ALLOWED_NEWS_SOURCES
+        # เพราะเราต้องการข่าวจากเว็บตรงทุกข่าว
+        if feed_type != "direct":
+            # ตรวจสอบว่า URL นี้มาจากเว็บข่าวที่อนุญาตหรือไม่
+            display_url = item["canon_url"] or item["url"]
+            if not is_allowed_source(display_url):
+                # print(f"  ✗ ข้ามข่าวจาก {extract_domain(display_url)} (ไม่อยู่ในรายการที่อนุญาต)")
+                return None
+        
         # Combine text for analysis
         full_text = f"{item['title']} {item['summary']}"
         
         # Step 1: Keyword filtering
+        # สำหรับเว็บพลังงานโดยตรง อาจไม่ต้องกรองเข้มงวด
         if not KeywordFilter.is_energy_related(full_text):
-            return None
+            # ถ้าเป็นเว็บพลังงานโดยตรง ให้ผ่อนปรนการกรอง
+            if feed_type != "direct":
+                return None
         
-        # Step 2: Detect country
+        # Step 2: Detect country (แต่เว็บพลังงานอาจไม่จำเป็นต้องมีประเทศเสมอ)
         country = KeywordFilter.detect_country(full_text)
         if not country:
-            return None
+            # สำหรับเว็บพลังงานโดยตรง ให้ใช้ Thailand เป็น default
+            if feed_type == "direct":
+                country = "Thailand"
+            else:
+                return None
         
         # Step 3: LLM analysis (สำหรับสรุปข่าวเท่านั้น)
         llm_summary = ""
@@ -445,18 +558,24 @@ class NewsProcessor:
         # Get project hints for this country
         project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
         
+        # ดึงชื่อเว็บข่าว
+        display_url = item["canon_url"] or item["url"]
+        source_name = self.get_source_name(display_url)
+        
         # Build final news item
         return {
             'title': item['title'][:100],
             'url': item['url'],
             'canon_url': item['canon_url'],
-            'source_name': item['source_name'][:50],  # ตัดไม่ให้ยาวเกิน
+            'source_name': source_name,
+            'domain': extract_domain(display_url),
             'summary': item['summary'][:200],
             'published_dt': item['published_dt'],
             'country': country,
             'project_hints': project_hints,
             'llm_summary': llm_summary,
             'feed': feed_name,
+            'feed_type': feed_type,
             'simple_summary': create_simple_summary(full_text, 100)
         }
 
@@ -501,35 +620,25 @@ class LineMessageBuilder:
                 "margin": "sm"
             })
         
-        # ✅ **เพิ่มชื่อเว็บข่าวจาก Google News ในบรรทัดใหม่**
+        # ✅ **เพิ่มชื่อเว็บข่าวในบรรทัดใหม่**
         if news_item.get('source_name'):
-            # แสดงชื่อเว็บข่าวเต็ม หากไม่มีให้แสดง "-"
-            source_display = cut(news_item['source_name'], 30)
+            # ใช้ชื่อเว็บข่าวจาก dictionary ของเรา
             contents.append({
                 "type": "text",
-                "text": f"📰 {source_display}",
+                "text": f"📰 {news_item['source_name']}",
                 "size": "xs",
                 "color": "#666666",
                 "margin": "sm"
             })
-        else:
-            # หากไม่มี source_name ให้แสดง canonical URL domain
-            canon_url = news_item.get('canon_url') or news_item.get('url', '')
-            if canon_url:
-                try:
-                    domain = urlparse(canon_url).netloc
-                    if domain.startswith('www.'):
-                        domain = domain[4:]
-                    if domain:
-                        contents.append({
-                            "type": "text",
-                            "text": f"🌐 {cut(domain, 30)}",
-                            "size": "xs",
-                            "color": "#666666",
-                            "margin": "sm"
-                        })
-                except:
-                    pass
+        elif news_item.get('domain'):
+            # ถ้าไม่มีชื่อเว็บข่าว ให้ใช้ domain
+            contents.append({
+                "type": "text",
+                "text": f"🌐 {cut(news_item['domain'], 30)}",
+                "size": "xs",
+                "color": "#666666",
+                "margin": "sm"
+            })
         
         # Add country
         contents.append({
@@ -718,6 +827,9 @@ def main():
     print(f"\n[CONFIG] Use LLM: {'Yes' if USE_LLM_SUMMARY and GROQ_API_KEY else 'No (simple summary)'}")
     print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
+    print(f"[CONFIG] Allowed news sources: {ALLOWED_NEWS_SOURCES_LIST if ALLOWED_NEWS_SOURCES_LIST else 'All sources'}")
+    print(f"[CONFIG] จำนวน feed ทั้งหมด: {len(FEEDS)}")
+    print(f"[CONFIG] Feed รายการ: {[f[0] for f in FEEDS]}")
     
     # Initialize components
     processor = NewsProcessor()
@@ -735,10 +847,19 @@ def main():
     
     # Count statistics
     llm_summary_count = sum(1 for item in news_items if item.get('llm_summary'))
-    source_count = sum(1 for item in news_items if item.get('source_name'))
+    direct_count = sum(1 for item in news_items if item.get('feed_type') == 'direct')
+    
+    # นับจำนวนข่าวแยกตามแหล่งข่าว
+    source_counts = {}
+    for item in news_items:
+        source = item.get('source_name') or item.get('domain', 'Unknown')
+        source_counts[source] = source_counts.get(source, 0) + 1
     
     print(f"   - สรุปด้วย AI: {llm_summary_count} ข่าว")
-    print(f"   - มีแหล่งข่าวจาก Google News: {source_count} ข่าว")
+    print(f"   - ข่าวจากเว็บตรง: {direct_count} ข่าว")
+    print(f"   - แหล่งข่าวที่พบ:")
+    for source, count in sorted(source_counts.items()):
+        print(f"     • {source}: {count} ข่าว")
     
     # Step 2: Create LINE message
     print("\n[3] กำลังสร้างข้อความ LINE...")
