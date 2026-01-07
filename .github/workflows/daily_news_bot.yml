@@ -1,9 +1,8 @@
-name: Daily Energy News Bot
+name: Daily News Bot
 
 on:
   schedule:
-    - cron: "0 23 * * *"  # 06:00 ไทย = 23:00 UTC (เช้า)
-    - cron: "0 10 * * *"  # 17:00 ไทย = 10:00 UTC (เย็น)
+    - cron: "0 23 * * *"  # 06:00 ไทย = 23:00 UTC
   workflow_dispatch:
 
 permissions:
@@ -26,35 +25,54 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests feedparser python-dateutil pytz
+          pip install -r requirement.txt
 
-      - name: Check if energy_news_monitor.py exists
-        run: |
-          if [ ! -f "energy_news_monitor.py" ]; then
-            echo "ERROR: energy_news_monitor.py not found in repository!"
-            echo "Please make sure the Python file is in your repository."
-            exit 1
-          fi
+      - name: Syntax check
+        run: python -m py_compile news.py
 
-      - name: Run Energy News Monitor
+      - name: Run news.py
         env:
-          LINE_CHANNEL_ACCESS_TOKEN: "${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}"
-          GROQ_API_KEY: "${{ secrets.GROQ_API_KEY }}"
-          WTI_API_KEY: "${{ secrets.WTI_API_KEY }}"
-          TZ: "Asia/Bangkok"
-          WINDOW_HOURS: "48"
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL_NAME: llama-3.1-8b-instant
+
+          GOOGLE_NEWS_QUERY: 'energy OR LNG OR oil OR "electricity tariff" OR nuclear OR sanctions OR geopolitics'
+          GOOGLE_NEWS_HL: "en"
+          GOOGLE_NEWS_GL: "US"
+          GOOGLE_NEWS_CEID: "US:en"
+
+          SELECT_LIMIT: "40"
+          SEND_LIMIT: "10"
+
+          MAX_RETRIES: "10"
+          SLEEP_MIN: "6"
+          SLEEP_MAX: "10"
+
+          THEME_BATCH_SIZE: "6"
+          SUMMARY_CLIP: "220"
+          MAX_PROMPT_CHARS: "17000"
+
+          SCORE_THEME_MIN: "60"
+          SCORE_STRICT: "70"
+          SCORE_RELAXED: "50"
+          BONUS_HIT: "10"
+
+          SEED_NEWS_FILE: "seed_news.txt"
+          PROJECT_LIST_FILE: "project_list.txt"
+          PARTNER_LIST_FILE: "partner_list.txt"
+
+          DEFAULT_HERO_URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
+          TRACK_DIR: "sent_links"
           DRY_RUN: "false"
-          WTI_ENABLED: "true"
-          WTI_SEND_DAILY: "true"
 
         run: |
-          python -u energy_news_monitor.py
+          python -u news.py
 
-      - name: Commit cache and history files
+      - name: Commit and push sent_links
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sent_links/ wti_cache.json wti_history.json || true
-          git commit -m "Update cache and sent links for $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
+          git add sent_links/ || true
+          git commit -m "Update sent links for $(date +'%Y-%m-%d')" || echo "No changes to commit"
           git push || echo "Push skipped"
