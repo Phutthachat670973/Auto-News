@@ -166,20 +166,6 @@ def normalize_url(url: str) -> str:
     except Exception:
         return url
 
-def extract_domain(url: str) -> str:
-    """Extract domain name from URL"""
-    url = normalize_url(url)
-    if not url:
-        return ""
-    try:
-        domain = urlparse(url).netloc
-        # Remove www. prefix
-        if domain.startswith("www."):
-            domain = domain[4:]
-        return domain
-    except Exception:
-        return ""
-
 def shorten_google_news_url(url: str) -> str:
     """Extract actual URL from Google News redirect"""
     url = normalize_url(url)
@@ -264,6 +250,13 @@ def parse_entry(e, feed_name: str, section: str):
     link = (getattr(e, "link", "") or "").strip()
     summary = (getattr(e, "summary", "") or "").strip()
     published = getattr(e, "published", None) or getattr(e, "updated", None)
+    
+    # Get source from Google News feed
+    source_name = ""
+    if hasattr(e, 'source') and hasattr(e.source, 'title'):
+        source_name = e.source.title
+    elif hasattr(e, 'source') and isinstance(e.source, dict) and 'title' in e.source:
+        source_name = e.source['title']
 
     try:
         published_dt = dateutil_parser.parse(published) if published else None
@@ -281,6 +274,7 @@ def parse_entry(e, feed_name: str, section: str):
         "url": normalize_url(link),
         "canon_url": normalize_url(canon),
         "summary": summary,
+        "source_name": source_name.strip() if source_name else "",
         "published_dt": published_dt,
         "feed": feed_name,
         "section": section,
@@ -451,16 +445,12 @@ class NewsProcessor:
         # Get project hints for this country
         project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
         
-        # Extract domain for display
-        display_url = item["canon_url"] or item["url"]
-        domain = extract_domain(display_url)
-        
         # Build final news item
         return {
             'title': item['title'][:100],
             'url': item['url'],
             'canon_url': item['canon_url'],
-            'domain': domain,
+            'source_name': item['source_name'][:50],  # ตัดไม่ให้ยาวเกิน
             'summary': item['summary'][:200],
             'published_dt': item['published_dt'],
             'country': country,
@@ -511,15 +501,35 @@ class LineMessageBuilder:
                 "margin": "sm"
             })
         
-        # ✅ **เพิ่มเว็บข่าวในบรรทัดใหม่**
-        if news_item.get('domain'):
+        # ✅ **เพิ่มชื่อเว็บข่าวจาก Google News ในบรรทัดใหม่**
+        if news_item.get('source_name'):
+            # แสดงชื่อเว็บข่าวเต็ม หากไม่มีให้แสดง "-"
+            source_display = cut(news_item['source_name'], 30)
             contents.append({
                 "type": "text",
-                "text": cut(news_item['domain'], 40),  # ตัดไม่ให้ยาวเกิน
+                "text": f"📰 {source_display}",
                 "size": "xs",
                 "color": "#666666",
                 "margin": "sm"
             })
+        else:
+            # หากไม่มี source_name ให้แสดง canonical URL domain
+            canon_url = news_item.get('canon_url') or news_item.get('url', '')
+            if canon_url:
+                try:
+                    domain = urlparse(canon_url).netloc
+                    if domain.startswith('www.'):
+                        domain = domain[4:]
+                    if domain:
+                        contents.append({
+                            "type": "text",
+                            "text": f"🌐 {cut(domain, 30)}",
+                            "size": "xs",
+                            "color": "#666666",
+                            "margin": "sm"
+                        })
+                except:
+                    pass
         
         # Add country
         contents.append({
@@ -649,15 +659,20 @@ class LineSender:
             for i, bubble in enumerate(contents):
                 body_contents = bubble.get('body', {}).get('contents', [])
                 title = ""
+                source = ""
                 
                 for content in body_contents:
                     if content.get('type') == 'text':
                         text = content.get('text', '')
                         if len(text) > 10 and not title:
                             title = text[:60]
+                        elif '📰' in text or '🌐' in text:
+                            source = text
                             break
                 
                 print(f"{i+1}. {title}")
+                if source:
+                    print(f"   Source: {source}")
             
             print(f"\nTotal: {len(contents)} news items")
             return True
@@ -720,8 +735,10 @@ def main():
     
     # Count statistics
     llm_summary_count = sum(1 for item in news_items if item.get('llm_summary'))
+    source_count = sum(1 for item in news_items if item.get('source_name'))
     
     print(f"   - สรุปด้วย AI: {llm_summary_count} ข่าว")
+    print(f"   - มีแหล่งข่าวจาก Google News: {source_count} ข่าว")
     
     # Step 2: Create LINE message
     print("\n[3] กำลังสร้างข้อความ LINE...")
