@@ -32,15 +32,22 @@ if not LINE_CHANNEL_ACCESS_TOKEN:
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
 GROQ_ENDPOINT = os.getenv("GROQ_ENDPOINT", "https://api.groq.com/openai/v1/chat/completions").strip()
-USE_LLM_SUMMARY = os.getenv("USE_LLM_SUMMARY", "0").strip().lower() in ["1", "true", "yes", "y"]
+USE_LLM_SUMMARY = os.getenv("USE_LLM_SUMMARY", "1").strip().lower() in ["1", "true", "yes", "y"]
 
-WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "72"))
-MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "50"))
+WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "48"))
+MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "30"))
 DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ["1", "true", "yes", "y"]
 BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))
 
-# ใช้เฉพาะ Energy News Center
-USE_ENERGY_NEWS_CENTER_ONLY = os.getenv("USE_ENERGY_NEWS_CENTER_ONLY", "1").strip().lower() in ["1", "true", "yes", "y"]
+# สร้างตัวแปรสำหรับเลือกเว็บข่าวที่ต้องการ
+# รูปแบบ: "reuters.com,bloomberg.com,bangkokpost.com,thansettakij.com"
+ALLOWED_NEWS_SOURCES = os.getenv("ALLOWED_NEWS_SOURCES", "").strip()
+if ALLOWED_NEWS_SOURCES:
+    ALLOWED_NEWS_SOURCES_LIST = [s.strip().lower() for s in ALLOWED_NEWS_SOURCES.split(",") if s.strip()]
+    print(f"[CONFIG] เลือกเฉพาะเว็บข่าว: {ALLOWED_NEWS_SOURCES_LIST}")
+else:
+    ALLOWED_NEWS_SOURCES_LIST = []
+    print("[CONFIG] รับข่าวจากทุกเว็บข่าว")
 
 # Sent links tracking
 SENT_DIR = os.getenv("SENT_DIR", "sent_links")
@@ -71,7 +78,7 @@ PROJECTS_BY_COUNTRY = {
 }
 
 # =============================================================================
-# KEYWORD FILTERS
+# KEYWORD FILTERS (เรียบง่ายขึ้น)
 # =============================================================================
 class KeywordFilter:
     # คำหลักที่เกี่ยวข้องกับพลังงาน
@@ -137,94 +144,26 @@ class KeywordFilter:
         return ""
 
 # =============================================================================
-# RSS FEED FOR ENERGY NEWS CENTER
+# FEEDS - เพิ่มเว็บตรง
 # =============================================================================
 def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
-    """Google News RSS function (เก็บไว้สำหรับใช้ในกรณีจำเป็น)"""
     return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
 
 FEEDS = [
-    # ✅ ใช้เฉพาะ Energy News Center เท่านั้น
+    ("GoogleNewsTH", "thai", gnews_rss(
+        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "สัมปทาน") -"รถยนต์" -"ตลาดรถ"',
+        hl="th", gl="TH", ceid="TH:th"
+    )),
+    ("GoogleNewsEN", "international", gnews_rss(
+        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia) -car -automotive',
+        hl="en", gl="US", ceid="US:en"
+    )),
+    # ✅ เพิ่ม feed จากเว็บโดยตรง
     ("EnergyNewsCenter", "direct", "https://www.energynewscenter.com/feed/"),
-    
-    # ❌ ปิด Google News ชั่วคราว (comment ไว้)
-    # ("GoogleNewsTH", "thai", gnews_rss(
-    #     '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "สัมปทาน") -"รถยนต์" -"ตลาดรถ"',
-    #     hl="th", gl="TH", ceid="TH:th"
-    # )),
-    # ("GoogleNewsEN", "international", gnews_rss(
-    #     '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia) -car -automotive',
-    #     hl="en", gl="US", ceid="US:en"
-    # )),
+    # ลองเพิ่ม RSS feed URLs อื่นๆ ที่เป็นไปได้
+    ("EnergyNewsCenter RSS2", "direct", "https://www.energynewscenter.com/rss/"),
+    ("EnergyNewsCenter RSS3", "direct", "https://www.energynewscenter.com/feed/rss/"),
 ]
-
-def fetch_energynewscenter_feed():
-    """ดึงข้อมูลจาก Energy News Center โดยเฉพาะ"""
-    print(f"[FEED] ดึงข้อมูลจาก Energy News Center...")
-    
-    # URLs ที่อาจจะใช้ได้จาก Energy News Center
-    possible_urls = [
-        "https://www.energynewscenter.com/feed/",
-        "https://www.energynewscenter.com/rss/",
-        "https://www.energynewscenter.com/feed/rss/",
-        "https://www.energynewscenter.com/feed/atom/",
-    ]
-    
-    all_entries = []
-    
-    for url in possible_urls:
-        try:
-            print(f"[FEED] ลองดึงจาก: {url}")
-            
-            # เพิ่ม headers เพื่อป้องกัน blocking
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/rss+xml, application/xml, text/xml, */*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.energynewscenter.com/',
-            }
-            
-            response = requests.get(url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                d = feedparser.parse(response.content)
-                entries = d.entries or []
-                
-                print(f"[FEED] พบ {len(entries)} entries จาก {url}")
-                
-                if entries:
-                    # แสดงตัวอย่าง
-                    for i, entry in enumerate(entries[:3]):
-                        print(f"  {i+1}. {entry.title[:80]}...")
-                    
-                    all_entries.extend(entries)
-                    break  # หยุดเมื่อเจอ feed ที่ใช้งานได้
-                else:
-                    print(f"[FEED] ไม่พบ entries ใน {url}")
-            else:
-                print(f"[FEED] HTTP {response.status_code} จาก {url}")
-                
-        except requests.exceptions.Timeout:
-            print(f"[FEED] Timeout ในการดึง {url}")
-        except Exception as e:
-            print(f"[FEED] Error จาก {url}: {str(e)}")
-    
-    # หากไม่เจอจาก RSS feed URLs โดยตรง ให้ลองใช้ alternative
-    if not all_entries:
-        print("[FEED] ลองใช้วิธี alternative: Google News RSS สำหรับ energynewscenter.com")
-        google_rss_url = gnews_rss(
-            'site:energynewscenter.com (energy OR power OR electricity OR gas OR oil)',
-            hl="en", gl="US", ceid="US:en"
-        )
-        try:
-            d = feedparser.parse(google_rss_url)
-            entries = d.entries or []
-            all_entries.extend(entries)
-            print(f"[FEED] ได้ {len(entries)} entries จาก Google News RSS")
-        except Exception as e:
-            print(f"[FEED] Error จาก Google News RSS: {str(e)}")
-    
-    return all_entries
 
 # =============================================================================
 # UTILITIES
@@ -255,6 +194,37 @@ def extract_domain(url: str) -> str:
         return domain
     except Exception:
         return ""
+
+def is_allowed_source(url: str) -> bool:
+    """ตรวจสอบว่า URL นี้มาจากเว็บข่าวที่เราอนุญาตหรือไม่"""
+    if not ALLOWED_NEWS_SOURCES_LIST:  # ถ้าไม่ได้กำหนด allowed sources = ยอมรับทั้งหมด
+        return True
+    
+    domain = extract_domain(url)
+    if not domain:
+        return False
+    
+    # ตรวจสอบว่า domain อยู่ในรายการที่อนุญาต
+    for allowed_source in ALLOWED_NEWS_SOURCES_LIST:
+        if allowed_source in domain:  # ใช้ partial match เช่น "reuters" จะ match "reuters.com"
+            return True
+    
+    return False
+
+def shorten_google_news_url(url: str) -> str:
+    """Extract actual URL from Google News redirect"""
+    url = normalize_url(url)
+    if not url:
+        return url
+    try:
+        u = urlparse(url)
+        if "news.google.com" in u.netloc:
+            qs = parse_qs(u.query)
+            if "url" in qs and qs["url"]:
+                return normalize_url(unquote(qs["url"][0]))
+    except Exception:
+        pass
+    return url
 
 def read_sent_links() -> set:
     sent = set()
@@ -311,59 +281,26 @@ def create_simple_summary(text: str, max_length: int = 150) -> str:
         return text[:max_length-1] + "…"
     return text
 
-def create_test_news_items():
-    """สร้างข่าวตัวอย่างสำหรับการทดสอบ"""
-    return [
-        {
-            'title': 'พลังงานทดแทนในประเทศไทยเติบโตอย่างต่อเนื่อง',
-            'url': 'https://www.energynewscenter.com/thai-renewable-energy-growth',
-            'canon_url': 'https://www.energynewscenter.com/thai-renewable-energy-growth',
-            'source_name': 'Energy News Center',
-            'domain': 'energynewscenter.com',
-            'summary': 'ประเทศไทยกำลังขยายการใช้พลังงานทดแทน โดยเฉพาะโซลาร์และพลังงานลม เพื่อลดการพึ่งพาก๊าซธรรมชาติ',
-            'published_dt': now_tz(),
-            'country': 'Thailand',
-            'project_hints': ['โครงการจี 1/61', 'โครงการอาทิตย์'],
-            'llm_summary': 'ข่าวเกี่ยวกับการเติบโตของพลังงานทดแทนในประเทศไทย',
-            'feed': 'EnergyNewsCenter',
-            'feed_type': 'direct',
-            'simple_summary': 'ประเทศไทยกำลังขยายการใช้พลังงานทดแทนเพื่อลดการพึ่งพาก๊าซธรรมชาติ'
-        },
-        {
-            'title': 'New Solar Power Plant Opens in Vietnam',
-            'url': 'https://www.energynewscenter.com/vietnam-solar-plant',
-            'canon_url': 'https://www.energynewscenter.com/vietnam-solar-plant',
-            'source_name': 'Energy News Center',
-            'domain': 'energynewscenter.com',
-            'summary': 'A new 100 MW solar power plant has commenced operations in southern Vietnam, contributing to the country\'s renewable energy targets.',
-            'published_dt': now_tz() - timedelta(hours=2),
-            'country': 'Vietnam',
-            'project_hints': ['โครงการเวียดนาม 16-1', 'Block B'],
-            'llm_summary': 'เวียดนามเปิดโรงไฟฟ้าพลังงานแสงอาทิตย์ใหม่ขนาด 100 เมกะวัตต์',
-            'feed': 'EnergyNewsCenter',
-            'feed_type': 'direct',
-            'simple_summary': 'เวียดนามเปิดโรงไฟฟ้าพลังงานแสงอาทิตย์ใหม่ขนาด 100 เมกะวัตต์'
-        },
-        {
-            'title': 'ราคาก๊าซธรรมชาติในตลาดโลกมีแนวโน้มลดลง',
-            'url': 'https://www.energynewscenter.com/global-gas-price-trend',
-            'canon_url': 'https://www.energynewscenter.com/global-gas-price-trend',
-            'source_name': 'Energy News Center',
-            'domain': 'energynewscenter.com',
-            'summary': 'ราคาก๊าซธรรมชาติในตลาดโลกมีแนวโน้มลดลงจากปัจจัยอุปสงค์ที่ลดลงและสต็อกที่เพิ่มขึ้น',
-            'published_dt': now_tz() - timedelta(hours=5),
-            'country': 'Thailand',
-            'project_hints': ['โครงการจี 2/61', 'โครงการสัมปทาน 4'],
-            'llm_summary': 'ราคาก๊าซธรรมชาติในตลาดโลกมีแนวโน้มลดลง',
-            'feed': 'EnergyNewsCenter',
-            'feed_type': 'direct',
-            'simple_summary': 'ราคาก๊าซธรรมชาติในตลาดโลกมีแนวโน้มลดลงจากปัจจัยอุปสงค์ที่ลดลง'
-        }
-    ]
-
 # =============================================================================
 # RSS PARSING
 # =============================================================================
+def fetch_feed(name: str, section: str, url: str):
+    """ดึง RSS feed จาก URL"""
+    print(f"[FEED] ดึงข้อมูลจาก {name} ({url})...")
+    try:
+        d = feedparser.parse(url)
+        entries = d.entries or []
+        print(f"[FEED] {name}: พบ {len(entries)} entries")
+        
+        # แสดงตัวอย่าง entries (สำหรับ debug)
+        if entries and len(entries) > 0:
+            print(f"[FEED] ตัวอย่างข่าวแรก: {entries[0].title[:50]}...")
+        
+        return entries
+    except Exception as e:
+        print(f"[FEED] {name}: เกิดข้อผิดพลาด - {str(e)}")
+        return []
+
 def parse_entry(e, feed_name: str, section: str):
     title = (getattr(e, "title", "") or "").strip()
     link = (getattr(e, "link", "") or "").strip()
@@ -387,10 +324,12 @@ def parse_entry(e, feed_name: str, section: str):
     except Exception:
         published_dt = None
 
+    canon = shorten_google_news_url(link)
+
     return {
         "title": title,
         "url": normalize_url(link),
-        "canon_url": normalize_url(link),
+        "canon_url": normalize_url(canon),
         "summary": summary,
         "published_dt": published_dt,
         "feed": feed_name,
@@ -398,7 +337,7 @@ def parse_entry(e, feed_name: str, section: str):
     }
 
 # =============================================================================
-# LLM ANALYZER
+# LLM ANALYZER (เรียบง่ายขึ้น)
 # =============================================================================
 class LLMAnalyzer:
     def __init__(self, api_key: str, model: str, endpoint: str):
@@ -496,11 +435,26 @@ class NewsProcessor:
         
         # สร้าง dictionary สำหรับเก็บชื่อเว็บข่าว
         self.news_sources = {
-            'energynewscenter.com': 'Energy News Center',
-            # แหล่งข่าวอื่นๆ (ปิดใช้งานชั่วคราว)
-            # 'reuters.com': 'Reuters',
-            # 'bloomberg.com': 'Bloomberg',
-            # 'bangkokpost.com': 'Bangkok Post',
+            'reuters.com': 'Reuters',
+            'bloomberg.com': 'Bloomberg',
+            'bangkokpost.com': 'Bangkok Post',
+            'thansettakij.com': 'ฐานเศรษฐกิจ',
+            'posttoday.com': 'Post Today',
+            'prachachat.net': 'ประชาชาติธุรกิจ',
+            'mgronline.com': 'ผู้จัดการออนไลน์',
+            'komchadluek.net': 'คมชัดลึก',
+            'nationthailand.com': 'The Nation Thailand',
+            'naewna.com': 'แนวหน้า',
+            'dailynews.co.th': 'เดลินิวส์',
+            'thairath.co.th': 'ไทยรัฐ',
+            'khaosod.co.th': 'ข่าวสด',
+            'matichon.co.th': 'มติชน',
+            'sanook.com': 'สนุกดอทคอม',
+            'kapook.com': 'กะปุก',
+            'manager.co.th': 'ผู้จัดการ',
+            # ✅ เพิ่มแหล่งข่าวพลังงานโดยเฉพาะ
+            'energynewscenter.com': 'Energy News Center',  # เพิ่มเว็บตรง
+            # เพิ่มแหล่งข่าวอื่นๆ ตามต้องการ
         }
     
     def get_source_name(self, url: str) -> str:
@@ -518,160 +472,112 @@ class NewsProcessor:
         return domain
     
     def fetch_and_filter_news(self):
-        """Fetch and filter news from Energy News Center only"""
+        """Fetch and filter news from all feeds"""
         all_news = []
         
-        # ใช้เฉพาะ Energy News Center
-        print("\n[Fetching] Energy News Center (เว็บตรง)...")
-        
-        try:
-            entries = fetch_energynewscenter_feed()
+        for feed_name, feed_type, feed_url in FEEDS:
+            print(f"\n[Fetching] {feed_name} ({feed_type})...")
             
-            if not entries:
-                print("[WARNING] ไม่พบข่าวจาก Energy News Center")
-                return all_news
-            
-            print(f"[INFO] พบ entries ทั้งหมด {len(entries)} รายการ")
-            
-            # ดึงข้อมูลทั้งหมดที่หาได้ (ไม่จำกัดจำนวนมากเกินไป)
-            for entry in entries[:MAX_PER_FEED]:  # จำกัดตาม MAX_PER_FEED
-                news_item = self._process_entry_energynewscenter(entry)
-                if news_item:
-                    all_news.append(news_item)
-                    print(f"  ✓ {news_item['title'][:60]}...")
-                    
-        except Exception as e:
-            print(f"  ✗ Error: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            try:
+                entries = fetch_feed(feed_name, feed_type, feed_url)
+                
+                # สำหรับเว็บตรง ไม่ต้องกรอง MAX_PER_FEED มากเกินไป
+                limit = 20 if feed_type == "direct" else MAX_PER_FEED
+                
+                for entry in entries[:limit]:
+                    news_item = self._process_entry(entry, feed_name, feed_type)
+                    if news_item:
+                        all_news.append(news_item)
+                        print(f"  ✓ {news_item['title'][:50]}...")
+                        
+            except Exception as e:
+                print(f"  ✗ Error: {str(e)}")
         
         # Sort by date (ใหม่ที่สุดก่อน)
         all_news.sort(key=lambda x: -((x.get('published_dt') or datetime.min).timestamp()))
         
-        print(f"\n[RESULT] ได้ข่าวที่กรองแล้วทั้งหมด {len(all_news)} ข่าว")
-        
         return all_news
     
-    def _process_entry_energynewscenter(self, entry):
-        """Process entry from Energy News Center specifically"""
-        try:
-            # Parse entry
-            title = (getattr(entry, "title", "") or "").strip()
-            link = (getattr(entry, "link", "") or "").strip()
-            summary = (getattr(entry, "summary", "") or "").strip()
-            
-            # ใช้ published หรือ updated
-            published = getattr(entry, "published", None) or getattr(entry, "updated", None)
-            
-            # สำหรับเว็บ Energy News Center โดยตรง
-            if not published and hasattr(entry, 'published_parsed'):
-                try:
-                    import time as time_module
-                    published = time_module.strftime('%Y-%m-%dT%H:%M:%SZ', entry.published_parsed)
-                except:
-                    pass
-            
-            # Parse datetime
-            try:
-                published_dt = dateutil_parser.parse(published) if published else None
-                if published_dt and published_dt.tzinfo is None:
-                    published_dt = TZ.localize(published_dt)
-                if published_dt:
-                    published_dt = published_dt.astimezone(TZ)
-            except Exception:
-                published_dt = None
-            
-            # ตรวจสอบ URL
-            if not link:
-                print(f"  ✗ ข้าม: ไม่มีลิงก์")
-                return None
-            
-            # ตรวจสอบว่าเป็น Energy News Center หรือไม่ (แต่ไม่ strict มาก)
-            if "energynewscenter.com" not in link.lower():
-                print(f"  ⚠️  ลิงก์ไม่ใช่ energynewscenter.com: {link[:50]}...")
-                # ไม่ต้อง reject ทันที อาจเป็นลิงก์อื่นที่เกี่ยวข้อง
-            
-            # Basic validation
-            if not title:
-                print(f"  ✗ ข้าม: ไม่มี title")
-                return None
-            
-            # Check if already sent
-            canon_url = normalize_url(link)
-            if canon_url in self.sent_links:
-                print(f"  ✗ ข้าม: ส่งไปแล้ว ({title[:40]}...)")
-                return None
-            
-            # Check time window (เฉพาะข่าวใหม่)
-            if published_dt and not in_time_window(published_dt, WINDOW_HOURS):
-                print(f"  ✗ ข้าม: ข่าวเก่าเกินไป ({published_dt})")
-                return None
-            
-            # ตรวจสอบเนื้อหาเกี่ยวกับพลังงาน
-            full_text = f"{title} {summary}".lower()
-            
-            # ตรวจสอบคำหลักเกี่ยวกับพลังงาน (สำหรับ Energy News Center อาจไม่จำเป็นเข้มงวด)
-            energy_keywords = ['energy', 'power', 'electricity', 'gas', 'oil', 'renewable', 
-                              'พลังงาน', 'ไฟฟ้า', 'ก๊าซ', 'น้ำมัน', 'โรงไฟฟ้า', 'พลังงานทดแทน']
-            
-            is_energy_related = any(keyword in full_text for keyword in energy_keywords)
-            
-            if not is_energy_related:
-                print(f"  ✗ ข้าม: ไม่เกี่ยวข้องกับพลังงาน ({title[:50]}...)")
-                return None
-            
-            # Detect country
-            country = KeywordFilter.detect_country(full_text)
-            if not country:
-                country = "Thailand"  # Default สำหรับ Energy News Center
-            
-            # LLM analysis (ถ้าเปิดใช้งาน)
-            llm_summary = ""
-            if USE_LLM_SUMMARY and self.llm_analyzer:
-                try:
-                    llm_analysis = self.llm_analyzer.analyze_news(title, summary)
-                    
-                    # ใช้ LLM country ถ้าตรวจพบ
-                    if llm_analysis['country'] and llm_analysis['country'] in PROJECTS_BY_COUNTRY:
-                        country = llm_analysis['country']
-                    
-                    # ใช้ summary จาก LLM
-                    if llm_analysis.get('summary_th'):
-                        llm_summary = llm_analysis['summary_th']
-                        
-                except Exception as e:
-                    print(f"  ⚠️ LLM analysis error: {str(e)}")
-            
-            # Get project hints for this country
-            project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
-            
-            # ดึงชื่อเว็บข่าว
-            source_name = self.get_source_name(link)
-            if not source_name:
-                source_name = 'Energy News Center'
-            
-            # สร้าง news item
-            return {
-                'title': title[:100],
-                'url': link,
-                'canon_url': canon_url,
-                'source_name': source_name,
-                'domain': extract_domain(link) or 'energynewscenter.com',
-                'summary': summary[:200],
-                'published_dt': published_dt,
-                'country': country,
-                'project_hints': project_hints,
-                'llm_summary': llm_summary,
-                'feed': 'EnergyNewsCenter',
-                'feed_type': 'direct',
-                'simple_summary': create_simple_summary(f"{title} {summary}", 100)
-            }
-            
-        except Exception as e:
-            print(f"  ✗ Error processing entry: {str(e)}")
-            import traceback
-            traceback.print_exc()
+    def _process_entry(self, entry, feed_name: str, feed_type: str):
+        """Process individual news entry"""
+        item = parse_entry(entry, feed_name, feed_type)
+        
+        # Basic validation
+        if not item["title"] or not item["url"]:
             return None
+        
+        # Check if already sent
+        if item["canon_url"] in self.sent_links or item["url"] in self.sent_links:
+            return None
+        
+        # Check time window
+        if item["published_dt"] and not in_time_window(item["published_dt"], WINDOW_HOURS):
+            return None
+        
+        # สำหรับเว็บตรง (direct) ไม่ต้องตรวจสอบ ALLOWED_NEWS_SOURCES
+        # เพราะเราต้องการข่าวจากเว็บตรงทุกข่าว
+        if feed_type != "direct":
+            # ตรวจสอบว่า URL นี้มาจากเว็บข่าวที่อนุญาตหรือไม่
+            display_url = item["canon_url"] or item["url"]
+            if not is_allowed_source(display_url):
+                # print(f"  ✗ ข้ามข่าวจาก {extract_domain(display_url)} (ไม่อยู่ในรายการที่อนุญาต)")
+                return None
+        
+        # Combine text for analysis
+        full_text = f"{item['title']} {item['summary']}"
+        
+        # Step 1: Keyword filtering
+        # สำหรับเว็บพลังงานโดยตรง อาจไม่ต้องกรองเข้มงวด
+        if not KeywordFilter.is_energy_related(full_text):
+            # ถ้าเป็นเว็บพลังงานโดยตรง ให้ผ่อนปรนการกรอง
+            if feed_type != "direct":
+                return None
+        
+        # Step 2: Detect country (แต่เว็บพลังงานอาจไม่จำเป็นต้องมีประเทศเสมอ)
+        country = KeywordFilter.detect_country(full_text)
+        if not country:
+            # สำหรับเว็บพลังงานโดยตรง ให้ใช้ Thailand เป็น default
+            if feed_type == "direct":
+                country = "Thailand"
+            else:
+                return None
+        
+        # Step 3: LLM analysis (สำหรับสรุปข่าวเท่านั้น)
+        llm_summary = ""
+        if USE_LLM_SUMMARY and self.llm_analyzer:
+            llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
+            
+            # ใช้ LLM country ถ้าตรวจพบ
+            if llm_analysis['country'] and llm_analysis['country'] in PROJECTS_BY_COUNTRY:
+                country = llm_analysis['country']
+            
+            # ใช้ summary จาก LLM
+            if llm_analysis.get('summary_th'):
+                llm_summary = llm_analysis['summary_th']
+        
+        # Get project hints for this country
+        project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
+        
+        # ดึงชื่อเว็บข่าว
+        display_url = item["canon_url"] or item["url"]
+        source_name = self.get_source_name(display_url)
+        
+        # Build final news item
+        return {
+            'title': item['title'][:100],
+            'url': item['url'],
+            'canon_url': item['canon_url'],
+            'source_name': source_name,
+            'domain': extract_domain(display_url),
+            'summary': item['summary'][:200],
+            'published_dt': item['published_dt'],
+            'country': country,
+            'project_hints': project_hints,
+            'llm_summary': llm_summary,
+            'feed': feed_name,
+            'feed_type': feed_type,
+            'simple_summary': create_simple_summary(full_text, 100)
+        }
 
 # =============================================================================
 # LINE MESSAGE BUILDER
@@ -702,6 +608,8 @@ class LineMessageBuilder:
         metadata_parts = []
         if time_str:
             metadata_parts.append(time_str)
+        if news_item.get('feed'):
+            metadata_parts.append(news_item['feed'])
         
         if metadata_parts:
             contents.append({
@@ -904,7 +812,7 @@ class LineSender:
 # =============================================================================
 def main():
     print("="*60)
-    print("ระบบติดตามข่าวพลังงาน - Energy News Center เท่านั้น")
+    print("ระบบติดตามข่าวพลังงาน")
     print("="*60)
     
     # Configuration check
@@ -912,39 +820,46 @@ def main():
         print("[ERROR] LINE_CHANNEL_ACCESS_TOKEN is required")
         return
     
-    print(f"\n[CONFIG] โหมด: Energy News Center เท่านั้น")
+    if USE_LLM_SUMMARY and not GROQ_API_KEY:
+        print("[WARNING] LLM summary enabled but no GROQ_API_KEY provided")
+        print("[INFO] Will use simple summary for all news")
+    
+    print(f"\n[CONFIG] Use LLM: {'Yes' if USE_LLM_SUMMARY and GROQ_API_KEY else 'No (simple summary)'}")
     print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
-    print(f"[CONFIG] Use LLM: {'Yes' if USE_LLM_SUMMARY and GROQ_API_KEY else 'No (simple summary)'}")
+    print(f"[CONFIG] Allowed news sources: {ALLOWED_NEWS_SOURCES_LIST if ALLOWED_NEWS_SOURCES_LIST else 'All sources'}")
+    print(f"[CONFIG] จำนวน feed ทั้งหมด: {len(FEEDS)}")
+    print(f"[CONFIG] Feed รายการ: {[f[0] for f in FEEDS]}")
     
     # Initialize components
     processor = NewsProcessor()
     line_sender = LineSender(LINE_CHANNEL_ACCESS_TOKEN)
     
     # Step 1: Fetch and filter news
-    print("\n[1] กำลังดึงข่าวจาก Energy News Center...")
+    print("\n[1] กำลังดึงและกรองข่าว...")
     news_items = processor.fetch_and_filter_news()
     
     if not news_items:
-        print("\n[INFO] ไม่พบข่าวใหม่จาก Energy News Center")
-        
-        # ถ้าเป็น Dry run อาจลองวิธีอื่น
-        if DRY_RUN:
-            print("\n[DEBUG] สร้างตัวอย่างข่าวสำหรับทดสอบ...")
-            news_items = create_test_news_items()
-            print(f"[DEBUG] สร้างตัวอย่างข่าวสำเร็จ: {len(news_items)} ข่าว")
-        else:
-            return
+        print("\n[INFO] ไม่พบข่าวใหม่ที่เกี่ยวข้อง")
+        return
     
     print(f"\n[2] พบข่าวที่เกี่ยวข้องทั้งหมด {len(news_items)} ข่าว")
     
-    # แสดงรายละเอียดข่าว
-    for i, item in enumerate(news_items[:5]):  # แสดงเฉพาะ 5 ข่าวแรก
-        pub_time = item['published_dt'].strftime("%H:%M") if item.get('published_dt') else "N/A"
-        print(f"  {i+1}. [{pub_time}] {item['title'][:70]}...")
+    # Count statistics
+    llm_summary_count = sum(1 for item in news_items if item.get('llm_summary'))
+    direct_count = sum(1 for item in news_items if item.get('feed_type') == 'direct')
     
-    if len(news_items) > 5:
-        print(f"  ... และอีก {len(news_items) - 5} ข่าว")
+    # นับจำนวนข่าวแยกตามแหล่งข่าว
+    source_counts = {}
+    for item in news_items:
+        source = item.get('source_name') or item.get('domain', 'Unknown')
+        source_counts[source] = source_counts.get(source, 0) + 1
+    
+    print(f"   - สรุปด้วย AI: {llm_summary_count} ข่าว")
+    print(f"   - ข่าวจากเว็บตรง: {direct_count} ข่าว")
+    print(f"   - แหล่งข่าวที่พบ:")
+    for source, count in sorted(source_counts.items()):
+        print(f"     • {source}: {count} ข่าว")
     
     # Step 2: Create LINE message
     print("\n[3] กำลังสร้างข้อความ LINE...")
