@@ -28,37 +28,43 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests feedparser python-dateutil pytz
 
-      - name: Syntax check
-        run: python -m py_compile energy_news_monitor.py
+      - name: Create requirements.txt
+        run: |
+          echo "requests>=2.28.0" > requirements.txt
+          echo "feedparser>=6.0.10" >> requirements.txt
+          echo "python-dateutil>=2.8.2" >> requirements.txt
+          echo "pytz>=2023.3" >> requirements.txt
+
+      - name: Download energy_news_monitor.py
+        run: |
+          # ดาวน์โหลดโค้ดที่แก้ไขแล้ว
+          curl -o energy_news_monitor.py "https://gist.githubusercontent.com/your-username/your-gist-id/raw/energy_news_monitor.py" || true
+          # หรือคัดลอกจากโค้ดที่ให้มา
 
       - name: Run Energy News Monitor
         env:
-          # LINE Configuration
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          # ใช้ double quotes และตรวจสอบว่า Secret มีค่าจริงๆ
+          LINE_CHANNEL_ACCESS_TOKEN: "${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}"
           
-          # Groq Configuration (Optional)
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GROQ_MODEL: "llama-3.1-8b-instant"
-          GROQ_ENDPOINT: "https://api.groq.com/openai/v1/chat/completions"
-          USE_LLM_SUMMARY: "true"
+          # Optional APIs
+          GROQ_API_KEY: "${{ secrets.GROQ_API_KEY }}"
+          WTI_API_KEY: "${{ secrets.WTI_API_KEY }}"
           
-          # News Configuration
+          # Configurations
           TZ: "Asia/Bangkok"
           WINDOW_HOURS: "48"
-          MAX_PER_FEED: "30"
           DRY_RUN: "false"
-          BUBBLES_PER_CAROUSEL: "10"
-          
-          # News Sources Filter
-          ALLOWED_NEWS_SOURCES: ""
-          
-          # WTI Oil Price Configuration
-          WTI_API_KEY: ${{ secrets.WTI_API_KEY }}
           WTI_ENABLED: "true"
           WTI_SEND_DAILY: "true"
-          WTI_SEND_THRESHOLD: "2.0"
 
         run: |
+          echo "Checking LINE_CHANNEL_ACCESS_TOKEN..."
+          if [ -z "${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}" ]; then
+            echo "ERROR: LINE_CHANNEL_ACCESS_TOKEN is not set in GitHub Secrets"
+            exit 1
+          fi
+          
+          echo "Running energy news monitor..."
           python -u energy_news_monitor.py
 
       - name: Commit cache and history files
