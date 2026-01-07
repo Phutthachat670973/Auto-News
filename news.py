@@ -166,6 +166,20 @@ def normalize_url(url: str) -> str:
     except Exception:
         return url
 
+def extract_domain(url: str) -> str:
+    """Extract domain name from URL"""
+    url = normalize_url(url)
+    if not url:
+        return ""
+    try:
+        domain = urlparse(url).netloc
+        # Remove www. prefix
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain
+    except Exception:
+        return ""
+
 def shorten_google_news_url(url: str) -> str:
     """Extract actual URL from Google News redirect"""
     url = normalize_url(url)
@@ -437,11 +451,16 @@ class NewsProcessor:
         # Get project hints for this country
         project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
         
+        # Extract domain for display
+        display_url = item["canon_url"] or item["url"]
+        domain = extract_domain(display_url)
+        
         # Build final news item
         return {
             'title': item['title'][:100],
             'url': item['url'],
             'canon_url': item['canon_url'],
+            'domain': domain,
             'summary': item['summary'][:200],
             'published_dt': item['published_dt'],
             'country': country,
@@ -476,17 +495,19 @@ class LineMessageBuilder:
             }
         ]
         
-        # Add metadata (เวลาและแหล่งข่าว)
-        metadata = []
+        # Add metadata (เวลา, แหล่งข่าว, และเว็บไซต์)
+        metadata_parts = []
         if time_str:
-            metadata.append(time_str)
+            metadata_parts.append(time_str)
         if news_item.get('feed'):
-            metadata.append(news_item['feed'])
+            metadata_parts.append(news_item['feed'])
+        if news_item.get('domain'):
+            metadata_parts.append(news_item['domain'])
         
-        if metadata:
+        if metadata_parts:
             contents.append({
                 "type": "text",
-                "text": " | ".join(metadata),
+                "text": " | ".join(metadata_parts),
                 "size": "xs",
                 "color": "#888888",
                 "margin": "sm"
@@ -689,7 +710,7 @@ def main():
     
     print(f"\n[2] พบข่าวที่เกี่ยวข้องทั้งหมด {len(news_items)} ข่าว")
     
-    # Count statistics - ลบ official_count ออก
+    # Count statistics
     llm_summary_count = sum(1 for item in news_items if item.get('llm_summary'))
     
     print(f"   - สรุปด้วย AI: {llm_summary_count} ข่าว")
