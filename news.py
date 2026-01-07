@@ -37,7 +37,6 @@ USE_LLM_SUMMARY = os.getenv("USE_LLM_SUMMARY", "1").strip().lower() in ["1", "tr
 WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "48"))
 MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "30"))
 DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ["1", "true", "yes", "y"]
-MAX_MESSAGES_PER_RUN = int(os.getenv("MAX_MESSAGES_PER_RUN", "10"))
 BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))
 
 # Sent links tracking
@@ -69,22 +68,9 @@ PROJECTS_BY_COUNTRY = {
 }
 
 # =============================================================================
-# KEYWORD FILTERS
+# KEYWORD FILTERS (เรียบง่ายขึ้น)
 # =============================================================================
 class KeywordFilter:
-    # Official sources and keywords
-    OFFICIAL_SOURCES = [
-        'ratchakitcha.soc.go.th', 'energy.go.th', 'egat.co.th', 
-        'pptplc.com', 'pttep.com', 'reuters.com', 'bloomberg.com'
-    ]
-    
-    OFFICIAL_KEYWORDS = [
-        'กระทรวงพลังงาน', 'กรมธุรกิจพลังงาน', 'กฟผ', 'การไฟฟ้า',
-        'คณะกรรมการกำกับกิจการพลังงาน', 'กกพ', 'สำนักงานนโยบายและแผนพลังงาน',
-        'รัฐมนตรีพลังงาน', 'ประกาศ', 'มติคณะรัฐมนตรี', 'ครม.', 'ราชกิจจานุเบกษา',
-        'minister', 'ministry', 'regulation', 'policy', 'tariff', 'approval'
-    ]
-    
     # คำหลักที่เกี่ยวข้องกับพลังงาน
     ENERGY_KEYWORDS = [
         'พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ค่าไฟฟ้า', 'อัตราค่าไฟฟ้า',
@@ -109,24 +95,6 @@ class KeywordFilter:
         'car', 'automotive', 'vehicle', 'automobile'
     ]
     
-    PROJECT_KEYWORDS = [
-        'โครงการ', 'สัมปทาน', 'บล็อก', 'block', 'สัญญา', 'อนุมัติ',
-        'ก่อสร้าง', 'ดำเนินการ', 'พัฒนา', 'สำรวจ', 'ขุดเจาะ',
-        'project', 'concession', 'contract', 'approval', 'construction'
-    ]
-    
-    @classmethod
-    def is_official_source(cls, url: str) -> bool:
-        """Check if URL is from official source"""
-        domain = urlparse(url).netloc.lower()
-        return any(official in domain for official in cls.OFFICIAL_SOURCES)
-    
-    @classmethod
-    def contains_official_keywords(cls, text: str) -> bool:
-        """Check if text contains official keywords"""
-        text_lower = text.lower()
-        return any(keyword.lower() in text_lower for keyword in cls.OFFICIAL_KEYWORDS)
-    
     @classmethod
     def is_energy_related(cls, text: str) -> bool:
         """Check if text is energy related"""
@@ -142,12 +110,6 @@ class KeywordFilter:
         
         # ตรวจสอบว่ามีคำที่เกี่ยวข้องกับพลังงาน
         return any(keyword.lower() in text_lower for keyword in cls.ENERGY_KEYWORDS)
-    
-    @classmethod
-    def contains_project_reference(cls, text: str) -> bool:
-        """Check if text contains project references"""
-        text_lower = text.lower()
-        return any(keyword.lower() in text_lower for keyword in cls.PROJECT_KEYWORDS)
     
     @classmethod
     def detect_country(cls, text: str) -> str:
@@ -218,9 +180,6 @@ def shorten_google_news_url(url: str) -> str:
     except Exception:
         pass
     return url
-
-def sha1(s: str) -> str:
-    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
 
 def read_sent_links() -> set:
     sent = set()
@@ -462,16 +421,7 @@ class NewsProcessor:
         if not country:
             return None
         
-        # Step 3: Check if official (แต่ไม่แสดง badge)
-        is_official = (
-            KeywordFilter.is_official_source(item['url']) or 
-            KeywordFilter.contains_official_keywords(full_text)
-        )
-        
-        # Step 4: Check project references
-        has_project_ref = KeywordFilter.contains_project_reference(full_text)
-        
-        # Step 5: LLM analysis (สำหรับสรุปข่าวเท่านั้น)
+        # Step 3: LLM analysis (สำหรับสรุปข่าวเท่านั้น)
         llm_summary = ""
         if USE_LLM_SUMMARY and self.llm_analyzer:
             llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
@@ -496,20 +446,18 @@ class NewsProcessor:
             'published_dt': item['published_dt'],
             'country': country,
             'project_hints': project_hints,
-            'is_official': is_official,  # เก็บข้อมูลแต่ไม่แสดง badge
-            'has_project_ref': has_project_ref,
-            'llm_summary': llm_summary,  # เก็บเฉพาะ summary
+            'llm_summary': llm_summary,
             'feed': feed_name,
             'simple_summary': create_simple_summary(full_text, 100)
         }
 
 # =============================================================================
-# LINE MESSAGE BUILDER (แบบเรียบง่าย ไม่มี badge)
+# LINE MESSAGE BUILDER
 # =============================================================================
 class LineMessageBuilder:
     @staticmethod
     def create_flex_bubble(news_item):
-        """Create a LINE Flex Bubble for a news item (แบบเรียบง่าย)"""
+        """Create a LINE Flex Bubble for a news item"""
         title = cut(news_item.get('title', ''), 80)
         
         # Format timestamp
@@ -592,8 +540,6 @@ class LineMessageBuilder:
                 "margin": "md",
                 "color": "#424242"
             })
-        
-        # ❌ **ไม่เพิ่ม badge อะไรทั้งสิ้น**
         
         # Create bubble
         bubble = {
@@ -743,11 +689,9 @@ def main():
     
     print(f"\n[2] พบข่าวที่เกี่ยวข้องทั้งหมด {len(news_items)} ข่าว")
     
-    # Count statistics
-    official_count = sum(1 for item in news_items if item.get('is_official'))
+    # Count statistics - ลบ official_count ออก
     llm_summary_count = sum(1 for item in news_items if item.get('llm_summary'))
     
-    print(f"   - ข่าวทางการ: {official_count} ข่าว")
     print(f"   - สรุปด้วย AI: {llm_summary_count} ข่าว")
     
     # Step 2: Create LINE message
