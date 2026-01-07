@@ -1,4 +1,8 @@
-# -*- coding: utf-8 -*-
+# =============================================================================
+# ENERGY NEWS & WTI OIL PRICE MONITOR
+# =============================================================================
+# Version: 2.0 - Includes WTI Oil Price Tracking
+# =============================================================================
 
 import os
 import re
@@ -20,37 +24,49 @@ except Exception:
     pass
 
 # =============================================================================
-# ENV / CONFIG
+# CONFIGURATION (Hardcoded - For GitHub Actions)
 # =============================================================================
-TZ = pytz.timezone(os.getenv("TZ", "Asia/Bangkok"))
 
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise RuntimeError("Missing LINE_CHANNEL_ACCESS_TOKEN")
+# LINE Configuration
+LINE_CHANNEL_ACCESS_TOKEN = "YOUR_LINE_CHANNEL_ACCESS_TOKEN"  # ใส่ใน GitHub Secrets
 
-# Groq Configuration
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
-GROQ_ENDPOINT = os.getenv("GROQ_ENDPOINT", "https://api.groq.com/openai/v1/chat/completions").strip()
-USE_LLM_SUMMARY = os.getenv("USE_LLM_SUMMARY", "1").strip().lower() in ["1", "true", "yes", "y"]
+# Groq Configuration (Optional)
+GROQ_API_KEY = ""  # ใส่ใน GitHub Secrets ถ้าต้องการใช้
+GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+USE_LLM_SUMMARY = True
 
-WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "48"))
-MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "30"))
-DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ["1", "true", "yes", "y"]
-BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))
+# News Configuration
+TZ = pytz.timezone("Asia/Bangkok")
+WINDOW_HOURS = 48
+MAX_PER_FEED = 30
+DRY_RUN = False
+BUBBLES_PER_CAROUSEL = 10
 
-# สร้างตัวแปรสำหรับเลือกเว็บข่าวที่ต้องการ
-# รูปแบบ: "reuters.com,bloomberg.com,bangkokpost.com,thansettakij.com"
-ALLOWED_NEWS_SOURCES = os.getenv("ALLOWED_NEWS_SOURCES", "").strip()
-if ALLOWED_NEWS_SOURCES:
-    ALLOWED_NEWS_SOURCES_LIST = [s.strip().lower() for s in ALLOWED_NEWS_SOURCES.split(",") if s.strip()]
-    print(f"[CONFIG] เลือกเฉพาะเว็บข่าว: {ALLOWED_NEWS_SOURCES_LIST}")
-else:
-    ALLOWED_NEWS_SOURCES_LIST = []
-    print("[CONFIG] รับข่าวจากทุกเว็บข่าว")
+# News Sources Filter
+ALLOWED_NEWS_SOURCES = ""  # รูปแบบ: "reuters.com,bloomberg.com"
+ALLOWED_NEWS_SOURCES_LIST = [s.strip().lower() for s in ALLOWED_NEWS_SOURCES.split(",") if s.strip()] if ALLOWED_NEWS_SOURCES else []
+
+# WTI Oil Price Configuration
+WTI_API_KEY = "YOUR_ALPHA_VANTAGE_API_KEY"  # ใส่ใน GitHub Secrets
+WTI_ENABLED = True
+WTI_SEND_DAILY = True  # ส่งรายวันทุกครั้ง
+WTI_SEND_THRESHOLD = 2.0  # เปอร์เซ็นต์เปลี่ยนแปลงที่แจ้งเตือน (ถ้าไม่ใช้ daily mode)
+
+# WTI API Config
+WTI_CONFIG = {
+    "daily_url": "https://www.alphavantage.co/query",
+    "function_daily": "TIME_SERIES_DAILY",
+    "function_weekly": "TIME_SERIES_WEEKLY",
+    "symbol": "CL=F",  # WTI crude oil futures
+    "outputsize": "compact",  # compact (100 days)
+    "cache_file": "wti_cache.json",
+    "history_file": "wti_history.json",
+    "cache_duration_hours": 6
+}
 
 # Sent links tracking
-SENT_DIR = os.getenv("SENT_DIR", "sent_links")
+SENT_DIR = "sent_links"
 os.makedirs(SENT_DIR, exist_ok=True)
 
 # =============================================================================
@@ -78,7 +94,7 @@ PROJECTS_BY_COUNTRY = {
 }
 
 # =============================================================================
-# KEYWORD FILTERS (เรียบง่ายขึ้น)
+# KEYWORD FILTERS
 # =============================================================================
 class KeywordFilter:
     # คำหลักที่เกี่ยวข้องกับพลังงาน
@@ -113,7 +129,6 @@ class KeywordFilter:
         # ตรวจสอบว่าไม่มีคำที่ต้องหลีกเลี่ยง
         for exclude in cls.EXCLUDE_KEYWORDS:
             if exclude.lower() in text_lower:
-                # ถ้ามีคำที่ต้องหลีกเลี่ยง ตรวจสอบว่ามีคำพลังงานร่วมด้วยหรือไม่
                 has_energy = any(keyword.lower() in text_lower for keyword in cls.ENERGY_KEYWORDS)
                 if not has_energy:
                     return False
@@ -144,26 +159,296 @@ class KeywordFilter:
         return ""
 
 # =============================================================================
-# FEEDS - เพิ่มเว็บตรง
+# WTI OIL PRICE TRACKER
 # =============================================================================
-def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
-    return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
-
-FEEDS = [
-    ("GoogleNewsTH", "thai", gnews_rss(
-        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "สัมปทาน") -"รถยนต์" -"ตลาดรถ"',
-        hl="th", gl="TH", ceid="TH:th"
-    )),
-    ("GoogleNewsEN", "international", gnews_rss(
-        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia) -car -automotive',
-        hl="en", gl="US", ceid="US:en"
-    )),
-    # ✅ เพิ่ม feed จากเว็บโดยตรง
-    ("EnergyNewsCenter", "direct", "https://www.energynewscenter.com/feed/"),
-    # ลองเพิ่ม RSS feed URLs อื่นๆ ที่เป็นไปได้
-    ("EnergyNewsCenter RSS2", "direct", "https://www.energynewscenter.com/rss/"),
-    ("EnergyNewsCenter RSS3", "direct", "https://www.energynewscenter.com/feed/rss/"),
-]
+class WTITracker:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.cache_file = WTI_CONFIG["cache_file"]
+        self.history_file = WTI_CONFIG["history_file"]
+    
+    def get_daily_price(self):
+        """ดึงราคาปัจจุบันของ WTI (รายวัน)"""
+        print("[WTI] ดึงข้อมูลราคาปัจจุบัน...")
+        
+        # ตรวจสอบ cache ก่อน
+        cached_data = self._read_cache()
+        if cached_data and self._is_cache_valid(cached_data):
+            print(f"[WTI] ใช้ข้อมูลจาก cache: {cached_data.get('latest_price', {}).get('price', 0)} USD")
+            return cached_data
+        
+        # ดึงข้อมูลใหม่จาก API
+        if not self.api_key:
+            print("[WTI] ไม่มี API key สำหรับดึงราคาน้ำมัน")
+            return None
+        
+        try:
+            params = {
+                "function": WTI_CONFIG["function_daily"],
+                "symbol": WTI_CONFIG["symbol"],
+                "outputsize": WTI_CONFIG["outputsize"],
+                "apikey": self.api_key
+            }
+            
+            print(f"[WTI] เรียก API: {WTI_CONFIG['function_daily']}")
+            response = requests.get(
+                WTI_CONFIG["daily_url"],
+                params=params,
+                timeout=15
+            )
+            
+            if response.status_code != 200:
+                print(f"[WTI] API Error: {response.status_code}")
+                return None
+            
+            data = response.json()
+            
+            # ตรวจสอบข้อผิดพลาดจาก API
+            if "Error Message" in data:
+                print(f"[WTI] API Error: {data['Error Message']}")
+                return None
+            
+            if "Note" in data:  # Rate limit note
+                print(f"[WTI] Note: {data['Note']}")
+            
+            # ตรวจสอบโครงข้อมูล
+            if "Time Series (Daily)" not in data:
+                print("[WTI] ไม่พบข้อมูลราคารายวันใน response")
+                return None
+            
+            time_series = data["Time Series (Daily)"]
+            meta_data = data.get("Meta Data", {})
+            
+            # ประมวลผลข้อมูล
+            processed_data = self._process_daily_data(time_series, meta_data)
+            
+            if processed_data:
+                # บันทึก cache
+                self._write_cache(processed_data)
+                # บันทึกประวัติ
+                self._save_to_history(processed_data)
+                
+                print(f"[WTI] ดึงข้อมูลสำเร็จ: {len(time_series)} วัน")
+                print(f"[WTI] ราคาล่าสุด: {processed_data['latest_price']['price']} USD")
+                print(f"[WTI] การเปลี่ยนแปลง: {processed_data['latest_price']['change_percent']:.2f}%")
+            
+            return processed_data
+            
+        except requests.exceptions.Timeout:
+            print("[WTI] API request timeout")
+            return None
+        except Exception as e:
+            print(f"[WTI] Error fetching price: {str(e)}")
+            return None
+    
+    def _process_daily_data(self, time_series, meta_data):
+        """ประมวลผลข้อมูลรายวัน"""
+        if not time_series:
+            return None
+        
+        # แปลงวันที่เป็น list และเรียงลำดับ
+        dates = sorted(time_series.keys(), reverse=True)
+        
+        # ข้อมูลล่าสุด
+        latest_date = dates[0]
+        latest_data = time_series[latest_date]
+        
+        # ข้อมูลเมื่อวาน (ถ้ามี)
+        previous_price = None
+        if len(dates) > 1:
+            previous_date = dates[1]
+            previous_data = time_series[previous_date]
+            previous_price = float(previous_data["4. close"])
+        
+        current_price = float(latest_data["4. close"])
+        
+        # คำนวณการเปลี่ยนแปลง
+        change = 0
+        change_percent = 0
+        if previous_price:
+            change = current_price - previous_price
+            change_percent = (change / previous_price) * 100
+        
+        # สร้างข้อมูล 30 วันล่าสุดสำหรับกราฟ
+        monthly_data = []
+        for date_str in dates[:30]:  # 30 วันล่าสุด
+            day_data = time_series[date_str]
+            monthly_data.append({
+                "date": date_str,
+                "open": float(day_data["1. open"]),
+                "high": float(day_data["2. high"]),
+                "low": float(day_data["3. low"]),
+                "close": float(day_data["4. close"]),
+                "volume": int(day_data["5. volume"])
+            })
+        
+        # คำนวณสถิติ
+        closes_30d = [d["close"] for d in monthly_data]
+        min_30d = min(closes_30d) if closes_30d else 0
+        max_30d = max(closes_30d) if closes_30d else 0
+        avg_30d = sum(closes_30d) / len(closes_30d) if closes_30d else 0
+        
+        # สร้างข้อมูล response
+        result = {
+            "meta": {
+                "symbol": meta_data.get("2. Symbol", WTI_CONFIG["symbol"]),
+                "last_refreshed": meta_data.get("3. Last Refreshed", latest_date),
+                "timezone": meta_data.get("5. Time Zone", "US/Eastern")
+            },
+            "latest_price": {
+                "date": latest_date,
+                "price": current_price,
+                "change": change,
+                "change_percent": change_percent,
+                "open": float(latest_data["1. open"]),
+                "high": float(latest_data["2. high"]),
+                "low": float(latest_data["3. low"]),
+                "volume": int(latest_data["5. volume"])
+            },
+            "monthly_data": monthly_data[:30],
+            "statistics": {
+                "30d_min": min_30d,
+                "30d_max": max_30d,
+                "30d_avg": avg_30d,
+                "30d_change": ((current_price - closes_30d[-1]) / closes_30d[-1] * 100) if closes_30d else 0
+            },
+            "timestamp": now_tz().isoformat(),
+            "data_points": len(time_series)
+        }
+        
+        return result
+    
+    def _read_cache(self):
+        """อ่านข้อมูลจาก cache"""
+        try:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if "latest_price" in data:
+                        return data
+        except Exception:
+            pass
+        return None
+    
+    def _write_cache(self, data):
+        """เขียนข้อมูลลง cache"""
+        try:
+            with open(self.cache_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    
+    def _save_to_history(self, data):
+        """บันทึกลงประวัติ"""
+        try:
+            history = self._read_history()
+            
+            entry = {
+                "timestamp": data["timestamp"],
+                "price": data["latest_price"]["price"],
+                "change_percent": data["latest_price"]["change_percent"],
+                "date": data["latest_price"]["date"]
+            }
+            
+            history.append(entry)
+            
+            # เก็บเฉพาะ 90 วันล่าสุด
+            if len(history) > 90:
+                history = history[-90:]
+            
+            with open(self.history_file, 'w', encoding='utf-8') as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+                
+        except Exception:
+            pass
+    
+    def _read_history(self):
+        """อ่านประวัติ"""
+        try:
+            if os.path.exists(self.history_file):
+                with open(self.history_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return []
+    
+    def _is_cache_valid(self, cached_data):
+        """ตรวจสอบว่า cache ยังใช้ได้หรือไม่"""
+        try:
+            cache_time = datetime.fromisoformat(cached_data.get("timestamp", ""))
+            time_diff = now_tz() - cache_time
+            return time_diff.total_seconds() < (WTI_CONFIG["cache_duration_hours"] * 3600)
+        except Exception:
+            return False
+    
+    def format_daily_message(self, price_data):
+        """จัดรูปแบบข้อความราคาน้ำมันรายวัน"""
+        if not price_data:
+            return None
+        
+        latest = price_data["latest_price"]
+        stats = price_data["statistics"]
+        
+        price = latest["price"]
+        change = latest["change"]
+        change_percent = latest["change_percent"]
+        
+        # กำหนดสีและอีโมจิ
+        if change > 0:
+            emoji = "📈"
+            color = "#4CAF50"
+            trend = "ขึ้น"
+            change_text = f"+{change:.2f} USD (+{change_percent:.2f}%)"
+        elif change < 0:
+            emoji = "📉"
+            color = "#F44336"
+            trend = "ลง"
+            change_text = f"{change:.2f} USD ({change_percent:.2f}%)"
+        else:
+            emoji = "➡️"
+            color = "#9E9E9E"
+            trend = "คงที่"
+            change_text = "ไม่เปลี่ยนแปลง"
+        
+        # สร้างข้อความ
+        message_lines = [
+            f"{emoji} **ราคาน้ำมันดิบ WTI**",
+            "",
+            f"💰 **ราคาปัจจุบัน:** {price:.2f} USD/บาร์เรล",
+            f"📊 **การเปลี่ยนแปลง:** {change_text}",
+            f"📅 **วันที่:** {latest['date']}",
+            "",
+            "📈 **สถิติ 30 วัน:**",
+            f"   สูงสุด: {stats['30d_max']:.2f} USD",
+            f"   ต่ำสุด: {stats['30d_min']:.2f} USD",
+            f"   เฉลี่ย: {stats['30d_avg']:.2f} USD",
+            "",
+            f"⏰ อัปเดตล่าสุด: {now_tz().strftime('%d/%m/%Y %H:%M')} น."
+        ]
+        
+        message = "\n".join(message_lines)
+        
+        return {
+            "text": message,
+            "color": color,
+            "emoji": emoji,
+            "trend": trend,
+            "raw_data": price_data,
+            "is_daily": True
+        }
+    
+    def should_send_alert(self, price_data):
+        """ตรวจสอบว่าควรส่งการแจ้งเตือนหรือไม่"""
+        if not price_data:
+            return False
+        
+        # ถ้าเปิดโหมดส่งรายวัน ให้ส่งทุกครั้งที่มีข้อมูลใหม่
+        if WTI_SEND_DAILY:
+            return True
+        
+        # ตรวจสอบ threshold
+        change_percent = abs(price_data["latest_price"]["change_percent"])
+        return change_percent >= WTI_SEND_THRESHOLD
 
 # =============================================================================
 # UTILITIES
@@ -188,7 +473,6 @@ def extract_domain(url: str) -> str:
         return ""
     try:
         domain = urlparse(url).netloc.lower()
-        # Remove www. prefix
         if domain.startswith("www."):
             domain = domain[4:]
         return domain
@@ -197,16 +481,15 @@ def extract_domain(url: str) -> str:
 
 def is_allowed_source(url: str) -> bool:
     """ตรวจสอบว่า URL นี้มาจากเว็บข่าวที่เราอนุญาตหรือไม่"""
-    if not ALLOWED_NEWS_SOURCES_LIST:  # ถ้าไม่ได้กำหนด allowed sources = ยอมรับทั้งหมด
+    if not ALLOWED_NEWS_SOURCES_LIST:
         return True
     
     domain = extract_domain(url)
     if not domain:
         return False
     
-    # ตรวจสอบว่า domain อยู่ในรายการที่อนุญาต
     for allowed_source in ALLOWED_NEWS_SOURCES_LIST:
-        if allowed_source in domain:  # ใช้ partial match เช่น "reuters" จะ match "reuters.com"
+        if allowed_source in domain:
             return True
     
     return False
@@ -260,15 +543,12 @@ def cut(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1].rstrip() + "…"
 
 def create_simple_summary(text: str, max_length: int = 150) -> str:
-    """Create a simple summary from text if LLM is not available"""
+    """Create a simple summary from text"""
     text = (text or "").strip()
     if not text:
         return ""
     
-    # Remove extra whitespace and newlines
     text = ' '.join(text.split())
-    
-    # Find first sentence or truncate
     sentences = re.split(r'[.!?]', text)
     if sentences and len(sentences[0]) > 10:
         summary = sentences[0].strip()
@@ -276,10 +556,29 @@ def create_simple_summary(text: str, max_length: int = 150) -> str:
             summary = summary[:max_length-1] + "…"
         return summary + "."
     
-    # Fallback: simple truncation
     if len(text) > max_length:
         return text[:max_length-1] + "…"
     return text
+
+# =============================================================================
+# FEEDS CONFIGURATION
+# =============================================================================
+def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
+    return f"https://news.google.com/rss/search?q={requests.utils.quote(q)}&hl={hl}&gl={gl}&ceid={ceid}"
+
+FEEDS = [
+    ("GoogleNewsTH", "thai", gnews_rss(
+        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "สัมปทาน") -"รถยนต์" -"ตลาดรถ"',
+        hl="th", gl="TH", ceid="TH:th"
+    )),
+    ("GoogleNewsEN", "international", gnews_rss(
+        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia) -car -automotive',
+        hl="en", gl="US", ceid="US:en"
+    )),
+    ("EnergyNewsCenter", "direct", "https://www.energynewscenter.com/feed/"),
+    ("EnergyNewsCenter RSS2", "direct", "https://www.energynewscenter.com/rss/"),
+    ("EnergyNewsCenter RSS3", "direct", "https://www.energynewscenter.com/feed/rss/"),
+]
 
 # =============================================================================
 # RSS PARSING
@@ -291,11 +590,6 @@ def fetch_feed(name: str, section: str, url: str):
         d = feedparser.parse(url)
         entries = d.entries or []
         print(f"[FEED] {name}: พบ {len(entries)} entries")
-        
-        # แสดงตัวอย่าง entries (สำหรับ debug)
-        if entries and len(entries) > 0:
-            print(f"[FEED] ตัวอย่างข่าวแรก: {entries[0].title[:50]}...")
-        
         return entries
     except Exception as e:
         print(f"[FEED] {name}: เกิดข้อผิดพลาด - {str(e)}")
@@ -307,7 +601,6 @@ def parse_entry(e, feed_name: str, section: str):
     summary = (getattr(e, "summary", "") or "").strip()
     published = getattr(e, "published", None) or getattr(e, "updated", None)
 
-    # สำหรับเว็บโดยตรงอาจใช้ published_parsed
     if not published and hasattr(e, 'published_parsed'):
         try:
             import time as time_module
@@ -337,7 +630,7 @@ def parse_entry(e, feed_name: str, section: str):
     }
 
 # =============================================================================
-# LLM ANALYZER (เรียบง่ายขึ้น)
+# LLM ANALYZER
 # =============================================================================
 class LLMAnalyzer:
     def __init__(self, api_key: str, model: str, endpoint: str):
@@ -393,12 +686,9 @@ class LLMAnalyzer:
             data = response.json()
             content = data["choices"][0]["message"]["content"].strip()
             
-            # Extract JSON from response
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
                 analysis = json.loads(json_match.group())
-                
-                # Validate and clean up
                 return {
                     "relevant": bool(analysis.get("relevant", True)),
                     "country": str(analysis.get("country", "")).strip(),
@@ -433,7 +723,17 @@ class NewsProcessor:
         self.sent_links = read_sent_links()
         self.llm_analyzer = LLMAnalyzer(GROQ_API_KEY, GROQ_MODEL, GROQ_ENDPOINT) if GROQ_API_KEY else None
         
-        # สร้าง dictionary สำหรับเก็บชื่อเว็บข่าว
+        # WTI Tracker
+        self.wti_tracker = None
+        if WTI_ENABLED and WTI_API_KEY:
+            self.wti_tracker = WTITracker(WTI_API_KEY)
+            print(f"[WTI] เปิดใช้งานติดตามราคาน้ำมัน")
+        else:
+            print(f"[WTI] ปิดใช้งานติดตามราคาน้ำมัน")
+        
+        self.wti_cache_file = "last_wti_sent.json"
+        
+        # News sources dictionary
         self.news_sources = {
             'reuters.com': 'Reuters',
             'bloomberg.com': 'Bloomberg',
@@ -452,9 +752,7 @@ class NewsProcessor:
             'sanook.com': 'สนุกดอทคอม',
             'kapook.com': 'กะปุก',
             'manager.co.th': 'ผู้จัดการ',
-            # ✅ เพิ่มแหล่งข่าวพลังงานโดยเฉพาะ
-            'energynewscenter.com': 'Energy News Center',  # เพิ่มเว็บตรง
-            # เพิ่มแหล่งข่าวอื่นๆ ตามต้องการ
+            'energynewscenter.com': 'Energy News Center',
         }
     
     def get_source_name(self, url: str) -> str:
@@ -463,13 +761,36 @@ class NewsProcessor:
         if not domain:
             return domain
         
-        # ตรวจสอบว่า domain ตรงกับแหล่งข่าวที่เรารู้จักหรือไม่
         for source_domain, source_name in self.news_sources.items():
             if source_domain in domain:
                 return source_name
         
-        # หากไม่เจอ ให้ใช้ domain เป็นชื่อ
         return domain
+    
+    def check_wti_price(self):
+        """ตรวจสอบราคาน้ำมัน WTI"""
+        if not self.wti_tracker:
+            print("[WTI] ปิดใช้งานติดตามราคาน้ำมัน")
+            return None
+        
+        print("\n[WTI] กำลังตรวจสอบราคาน้ำมัน WTI...")
+        
+        price_data = self.wti_tracker.get_daily_price()
+        if not price_data:
+            print("[WTI] ไม่สามารถดึงข้อมูลราคาได้")
+            return None
+        
+        should_send = self.wti_tracker.should_send_alert(price_data)
+        
+        if should_send:
+            change_percent = price_data["latest_price"]["change_percent"]
+            print(f"[WTI] พบข้อมูลใหม่: {change_percent:.2f}%")
+            
+            formatted_message = self.wti_tracker.format_daily_message(price_data)
+            return formatted_message
+        else:
+            print(f"[WTI] ไม่ส่งแจ้งเตือน (threshold: {WTI_SEND_THRESHOLD}%)")
+            return None
     
     def fetch_and_filter_news(self):
         """Fetch and filter news from all feeds"""
@@ -480,8 +801,6 @@ class NewsProcessor:
             
             try:
                 entries = fetch_feed(feed_name, feed_type, feed_url)
-                
-                # สำหรับเว็บตรง ไม่ต้องกรอง MAX_PER_FEED มากเกินไป
                 limit = 20 if feed_type == "direct" else MAX_PER_FEED
                 
                 for entry in entries[:limit]:
@@ -493,76 +812,55 @@ class NewsProcessor:
             except Exception as e:
                 print(f"  ✗ Error: {str(e)}")
         
-        # Sort by date (ใหม่ที่สุดก่อน)
         all_news.sort(key=lambda x: -((x.get('published_dt') or datetime.min).timestamp()))
-        
         return all_news
     
     def _process_entry(self, entry, feed_name: str, feed_type: str):
         """Process individual news entry"""
         item = parse_entry(entry, feed_name, feed_type)
         
-        # Basic validation
         if not item["title"] or not item["url"]:
             return None
         
-        # Check if already sent
         if item["canon_url"] in self.sent_links or item["url"] in self.sent_links:
             return None
         
-        # Check time window
         if item["published_dt"] and not in_time_window(item["published_dt"], WINDOW_HOURS):
             return None
         
-        # สำหรับเว็บตรง (direct) ไม่ต้องตรวจสอบ ALLOWED_NEWS_SOURCES
-        # เพราะเราต้องการข่าวจากเว็บตรงทุกข่าว
         if feed_type != "direct":
-            # ตรวจสอบว่า URL นี้มาจากเว็บข่าวที่อนุญาตหรือไม่
             display_url = item["canon_url"] or item["url"]
             if not is_allowed_source(display_url):
-                # print(f"  ✗ ข้ามข่าวจาก {extract_domain(display_url)} (ไม่อยู่ในรายการที่อนุญาต)")
                 return None
         
-        # Combine text for analysis
         full_text = f"{item['title']} {item['summary']}"
         
-        # Step 1: Keyword filtering
-        # สำหรับเว็บพลังงานโดยตรง อาจไม่ต้องกรองเข้มงวด
         if not KeywordFilter.is_energy_related(full_text):
-            # ถ้าเป็นเว็บพลังงานโดยตรง ให้ผ่อนปรนการกรอง
             if feed_type != "direct":
                 return None
         
-        # Step 2: Detect country (แต่เว็บพลังงานอาจไม่จำเป็นต้องมีประเทศเสมอ)
         country = KeywordFilter.detect_country(full_text)
         if not country:
-            # สำหรับเว็บพลังงานโดยตรง ให้ใช้ Thailand เป็น default
             if feed_type == "direct":
                 country = "Thailand"
             else:
                 return None
         
-        # Step 3: LLM analysis (สำหรับสรุปข่าวเท่านั้น)
         llm_summary = ""
         if USE_LLM_SUMMARY and self.llm_analyzer:
             llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
             
-            # ใช้ LLM country ถ้าตรวจพบ
             if llm_analysis['country'] and llm_analysis['country'] in PROJECTS_BY_COUNTRY:
                 country = llm_analysis['country']
             
-            # ใช้ summary จาก LLM
             if llm_analysis.get('summary_th'):
                 llm_summary = llm_analysis['summary_th']
         
-        # Get project hints for this country
         project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
         
-        # ดึงชื่อเว็บข่าว
         display_url = item["canon_url"] or item["url"]
         source_name = self.get_source_name(display_url)
         
-        # Build final news item
         return {
             'title': item['title'][:100],
             'url': item['url'],
@@ -588,11 +886,9 @@ class LineMessageBuilder:
         """Create a LINE Flex Bubble for a news item"""
         title = cut(news_item.get('title', ''), 80)
         
-        # Format timestamp
         pub_dt = news_item.get('published_dt')
         time_str = pub_dt.strftime("%d/%m/%Y %H:%M") if pub_dt else ""
         
-        # Build bubble contents
         contents = [
             {
                 "type": "text",
@@ -604,7 +900,6 @@ class LineMessageBuilder:
             }
         ]
         
-        # Add metadata - เวลาและแหล่งข่าว
         metadata_parts = []
         if time_str:
             metadata_parts.append(time_str)
@@ -620,9 +915,7 @@ class LineMessageBuilder:
                 "margin": "sm"
             })
         
-        # ✅ **เพิ่มชื่อเว็บข่าวในบรรทัดใหม่**
         if news_item.get('source_name'):
-            # ใช้ชื่อเว็บข่าวจาก dictionary ของเรา
             contents.append({
                 "type": "text",
                 "text": f"📰 {news_item['source_name']}",
@@ -631,7 +924,6 @@ class LineMessageBuilder:
                 "margin": "sm"
             })
         elif news_item.get('domain'):
-            # ถ้าไม่มีชื่อเว็บข่าว ให้ใช้ domain
             contents.append({
                 "type": "text",
                 "text": f"🌐 {cut(news_item['domain'], 30)}",
@@ -640,7 +932,6 @@ class LineMessageBuilder:
                 "margin": "sm"
             })
         
-        # Add country
         contents.append({
             "type": "text",
             "text": f"ประเทศ: {news_item.get('country', 'N/A')}",
@@ -649,7 +940,6 @@ class LineMessageBuilder:
             "color": "#666666"
         })
         
-        # Add project hints
         if news_item.get('project_hints'):
             hints_text = ", ".join(news_item['project_hints'][:2])
             contents.append({
@@ -661,24 +951,18 @@ class LineMessageBuilder:
                 "margin": "xs"
             })
         
-        # ✅ **เพิ่มสรุปข่าวแบบเรียบง่าย**
         summary_text = ""
         
-        # 1. พยายามใช้สรุปจาก LLM ก่อน
         if news_item.get('llm_summary'):
             summary_text = news_item['llm_summary']
-        # 2. ถ้าไม่มีจาก LLM ให้ใช้ simple summary
         elif news_item.get('simple_summary'):
             summary_text = news_item['simple_summary']
-        # 3. Fallback ใช้ summary จาก RSS
         elif news_item.get('summary'):
             summary_text = create_simple_summary(news_item['summary'], 120)
         
-        # ถ้ายังไม่มีสรุป ให้สร้างจาก title
         if not summary_text or len(summary_text.strip()) < 10:
             summary_text = f"{news_item.get('title', 'ข่าวพลังงาน')[:60]}..."
         
-        # เพิ่มบล็อกสรุป (แบบเรียบง่าย)
         if summary_text:
             contents.append({
                 "type": "text",
@@ -689,7 +973,6 @@ class LineMessageBuilder:
                 "color": "#424242"
             })
         
-        # Create bubble
         bubble = {
             "type": "bubble",
             "size": "kilo",
@@ -701,7 +984,6 @@ class LineMessageBuilder:
             }
         }
         
-        # Add button if URL exists
         url = news_item.get('canon_url') or news_item.get('url')
         if url and len(url) < 1000:
             bubble["footer"] = {
@@ -725,9 +1007,109 @@ class LineMessageBuilder:
         return bubble
     
     @staticmethod
-    def create_carousel_message(news_items):
-        """Create LINE carousel message from news items"""
+    def create_wti_bubble(wti_message):
+        """Create a LINE Flex Bubble for WTI oil price"""
+        if not wti_message:
+            return None
+        
+        lines = wti_message["text"].split("\n")
+        
+        contents = []
+        
+        contents.append({
+            "type": "text",
+            "text": lines[0],
+            "weight": "bold",
+            "size": "lg",
+            "color": wti_message["color"],
+            "margin": "md"
+        })
+        
+        current_section = []
+        for line in lines[1:]:
+            if line.strip():
+                if line.startswith("📈") or line.startswith("⏰"):
+                    if current_section:
+                        contents.append({
+                            "type": "text",
+                            "text": "\n".join(current_section),
+                            "size": "sm",
+                            "margin": "md",
+                            "wrap": True
+                        })
+                        current_section = []
+                    
+                    current_section.append(line)
+                else:
+                    current_section.append(line)
+        
+        if current_section:
+            contents.append({
+                "type": "text",
+                "text": "\n".join(current_section),
+                "size": "sm",
+                "margin": "md",
+                "wrap": True
+            })
+        
+        contents.append({
+            "type": "text",
+            "text": "📊 ข้อมูลจาก Alpha Vantage API",
+            "size": "xs",
+            "color": "#666666",
+            "margin": "md"
+        })
+        
+        bubble = {
+            "type": "bubble",
+            "size": "mega",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": contents,
+                "paddingAll": "12px"
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "height": "sm",
+                        "action": {
+                            "type": "uri",
+                            "label": "ดูกราฟราคา",
+                            "uri": "https://www.tradingview.com/symbols/CL1!/"
+                        }
+                    },
+                    {
+                        "type": "button",
+                        "style": "link",
+                        "height": "sm",
+                        "action": {
+                            "type": "uri",
+                            "label": "ข้อมูลเพิ่มเติม",
+                            "uri": "https://www.marketwatch.com/investing/future/crude%20oil%20-%20electronic"
+                        }
+                    }
+                ]
+            }
+        }
+        
+        return bubble
+    
+    @staticmethod
+    def create_combined_message(news_items, wti_message=None):
+        """Create combined message with news and WTI price"""
         bubbles = []
+        
+        if wti_message:
+            wti_bubble = LineMessageBuilder.create_wti_bubble(wti_message)
+            if wti_bubble:
+                bubbles.append(wti_bubble)
+                print(f"[WTI] เพิ่มข้อมูลราคาน้ำมันในข้อความ")
         
         for item in news_items[:BUBBLES_PER_CAROUSEL]:
             bubble = LineMessageBuilder.create_flex_bubble(item)
@@ -737,9 +1119,16 @@ class LineMessageBuilder:
         if not bubbles:
             return None
         
+        if wti_message and news_items:
+            alt_text = f"ข่าวพลังงานและราคาน้ำมัน WTI ({len(bubbles)} รายการ)"
+        elif wti_message:
+            alt_text = f"ราคาน้ำมัน WTI อัปเดต {datetime.now(TZ).strftime('%d/%m/%Y')}"
+        else:
+            alt_text = f"สรุปข่าวพลังงาน {datetime.now(TZ).strftime('%d/%m/%Y')} ({len(bubbles)} ข่าว)"
+        
         return {
             "type": "flex",
-            "altText": f"สรุปข่าวพลังงาน {datetime.now(TZ).strftime('%d/%m/%Y')} ({len(bubbles)} ข่าว)",
+            "altText": alt_text,
             "contents": {
                 "type": "carousel",
                 "contents": bubbles
@@ -812,76 +1201,135 @@ class LineSender:
 # =============================================================================
 def main():
     print("="*60)
-    print("ระบบติดตามข่าวพลังงาน")
+    print("ระบบติดตามข่าวพลังงานและราคาน้ำมัน WTI")
     print("="*60)
     
     # Configuration check
-    if not LINE_CHANNEL_ACCESS_TOKEN:
-        print("[ERROR] LINE_CHANNEL_ACCESS_TOKEN is required")
+    if not LINE_CHANNEL_ACCESS_TOKEN or LINE_CHANNEL_ACCESS_TOKEN == "YOUR_LINE_CHANNEL_ACCESS_TOKEN":
+        print("[ERROR] กรุณาตั้งค่า LINE_CHANNEL_ACCESS_TOKEN ใน GitHub Secrets")
+        print("[ERROR] ไปที่ Repository -> Settings -> Secrets and variables -> Actions")
+        print("[ERROR] เพิ่ม Secrets ชื่อ: LINE_CHANNEL_ACCESS_TOKEN")
         return
     
-    if USE_LLM_SUMMARY and not GROQ_API_KEY:
-        print("[WARNING] LLM summary enabled but no GROQ_API_KEY provided")
-        print("[INFO] Will use simple summary for all news")
+    if WTI_ENABLED and (not WTI_API_KEY or WTI_API_KEY == "YOUR_ALPHA_VANTAGE_API_KEY"):
+        print("[WARNING] กรุณาตั้งค่า WTI_API_KEY ใน GitHub Secrets เพื่อติดตามราคาน้ำมัน")
+        print("[WARNING] ไปที่ Repository -> Settings -> Secrets and variables -> Actions")
+        print("[WARNING] เพิ่ม Secrets ชื่อ: WTI_API_KEY")
+        print("[WARNING] ข้ามการติดตามราคาน้ำมัน WTI")
     
     print(f"\n[CONFIG] Use LLM: {'Yes' if USE_LLM_SUMMARY and GROQ_API_KEY else 'No (simple summary)'}")
     print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
+    print(f"[CONFIG] WTI Enabled: {'Yes' if WTI_ENABLED else 'No'}")
+    print(f"[CONFIG] WTI Daily Send: {'Yes' if WTI_SEND_DAILY else 'No (threshold: ' + str(WTI_SEND_THRESHOLD) + '%)'}")
     print(f"[CONFIG] Allowed news sources: {ALLOWED_NEWS_SOURCES_LIST if ALLOWED_NEWS_SOURCES_LIST else 'All sources'}")
-    print(f"[CONFIG] จำนวน feed ทั้งหมด: {len(FEEDS)}")
-    print(f"[CONFIG] Feed รายการ: {[f[0] for f in FEEDS]}")
     
     # Initialize components
     processor = NewsProcessor()
     line_sender = LineSender(LINE_CHANNEL_ACCESS_TOKEN)
     
-    # Step 1: Fetch and filter news
-    print("\n[1] กำลังดึงและกรองข่าว...")
+    # Step 1: Check WTI oil price
+    wti_message = None
+    if WTI_ENABLED:
+        print("\n[1] กำลังตรวจสอบราคาน้ำมัน WTI...")
+        wti_message = processor.check_wti_price()
+        
+        if wti_message:
+            price = wti_message['raw_data']['latest_price']['price']
+            change = wti_message['raw_data']['latest_price']['change_percent']
+            print(f"[WTI] พบข้อมูล: {price:.2f} USD ({change:+.2f}%)")
+        else:
+            print("[WTI] ไม่มีข้อมูลใหม่ที่ต้องแจ้งเตือน")
+    else:
+        print("\n[1] ข้ามการตรวจสอบราคาน้ำมัน WTI (ปิดใช้งาน)")
+    
+    # Step 2: Fetch and filter news
+    print("\n[2] กำลังดึงและกรองข่าวพลังงาน...")
     news_items = processor.fetch_and_filter_news()
     
-    if not news_items:
-        print("\n[INFO] ไม่พบข่าวใหม่ที่เกี่ยวข้อง")
+    if not news_items and not wti_message:
+        print("\n[INFO] ไม่พบข่าวใหม่หรือข้อมูลราคาน้ำมัน")
         return
     
-    print(f"\n[2] พบข่าวที่เกี่ยวข้องทั้งหมด {len(news_items)} ข่าว")
-    
-    # Count statistics
-    llm_summary_count = sum(1 for item in news_items if item.get('llm_summary'))
-    direct_count = sum(1 for item in news_items if item.get('feed_type') == 'direct')
-    
-    # นับจำนวนข่าวแยกตามแหล่งข่าว
-    source_counts = {}
-    for item in news_items:
-        source = item.get('source_name') or item.get('domain', 'Unknown')
-        source_counts[source] = source_counts.get(source, 0) + 1
-    
-    print(f"   - สรุปด้วย AI: {llm_summary_count} ข่าว")
-    print(f"   - ข่าวจากเว็บตรง: {direct_count} ข่าว")
-    print(f"   - แหล่งข่าวที่พบ:")
-    for source, count in sorted(source_counts.items()):
-        print(f"     • {source}: {count} ข่าว")
-    
-    # Step 2: Create LINE message
+    # Step 3: Create combined message
     print("\n[3] กำลังสร้างข้อความ LINE...")
-    line_message = LineMessageBuilder.create_carousel_message(news_items)
+    line_message = LineMessageBuilder.create_combined_message(news_items, wti_message)
     
     if not line_message:
         print("[ERROR] ไม่สามารถสร้างข้อความได้")
         return
     
-    # Step 3: Send message
-    print("\n[4] กำลังส่งข้อความ...")
+    # แสดงสถิติ
+    news_count = len(news_items) if news_items else 0
+    has_wti = 1 if wti_message else 0
+    total_items = news_count + has_wti
+    
+    print(f"\n[4] ข้อมูลที่จะส่ง:")
+    print(f"   - ข่าวพลังงาน: {news_count} ข่าว")
+    print(f"   - ราคาน้ำมัน WTI: {'มี' if wti_message else 'ไม่มี'}")
+    print(f"   - รวมทั้งหมด: {total_items} รายการ")
+    
+    # Step 4: Send message
+    print("\n[5] กำลังส่งข้อความ...")
     success = line_sender.send_message(line_message)
     
-    # Step 4: Mark as sent if successful
+    # Step 5: Mark as sent if successful
     if success and not DRY_RUN:
         for item in news_items:
             append_sent_link(item.get('canon_url') or item.get('url'))
-        print("\n[SUCCESS] อัปเดตฐานข้อมูลข่าวที่ส่งแล้ว")
+        print("\n[SUCCESS] อัปเดตฐานข้อมูลสำเร็จ")
     
     print("\n" + "="*60)
     print("ดำเนินการเสร็จสิ้น")
     print("="*60)
+
+# =============================================================================
+# GITHUB ACTIONS WORKFLOW TEMPLATE
+# =============================================================================
+"""
+name: Energy News Monitor
+
+on:
+  schedule:
+    # รันทุกวันเวลา 9:00 และ 17:00 น. (ตามเวลาไทย)
+    - cron: '0 2,10 * * *'  # UTC: 02:00 และ 10:00 (ไทย: 09:00 และ 17:00)
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Run energy news monitor
+      env:
+        LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+        GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        WTI_API_KEY: ${{ secrets.WTI_API_KEY }}
+        TZ: Asia/Bangkok
+      run: |
+        python energy_news_monitor.py
+        
+    - name: Commit cache files
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add wti_cache.json wti_history.json sent_links/*.txt
+        git commit -m "Update cache and history [skip ci]" || echo "No changes to commit"
+        git push || echo "No changes to push"
+"""
 
 if __name__ == "__main__":
     main()
