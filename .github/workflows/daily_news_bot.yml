@@ -1,8 +1,9 @@
-name: Daily News Bot
+name: Daily Energy News Bot
 
 on:
   schedule:
-    - cron: "0 23 * * *"  # 06:00 ไทย = 23:00 UTC
+    - cron: "0 23 * * *"  # 06:00 ไทย = 23:00 UTC (เช้า)
+    - cron: "0 10 * * *"  # 17:00 ไทย = 10:00 UTC (เย็น)
   workflow_dispatch:
 
 permissions:
@@ -25,54 +26,46 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirement.txt
+          pip install requests feedparser python-dateutil pytz
 
       - name: Syntax check
-        run: python -m py_compile news.py
+        run: python -m py_compile energy_news_monitor.py
 
-      - name: Run news.py
+      - name: Run Energy News Monitor
         env:
+          # LINE Configuration
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          
+          # Groq Configuration (Optional)
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GROQ_MODEL_NAME: llama-3.1-8b-instant
-
-          GOOGLE_NEWS_QUERY: 'energy OR LNG OR oil OR "electricity tariff" OR nuclear OR sanctions OR geopolitics'
-          GOOGLE_NEWS_HL: "en"
-          GOOGLE_NEWS_GL: "US"
-          GOOGLE_NEWS_CEID: "US:en"
-
-          SELECT_LIMIT: "40"
-          SEND_LIMIT: "10"
-
-          MAX_RETRIES: "10"
-          SLEEP_MIN: "6"
-          SLEEP_MAX: "10"
-
-          THEME_BATCH_SIZE: "6"
-          SUMMARY_CLIP: "220"
-          MAX_PROMPT_CHARS: "17000"
-
-          SCORE_THEME_MIN: "60"
-          SCORE_STRICT: "70"
-          SCORE_RELAXED: "50"
-          BONUS_HIT: "10"
-
-          SEED_NEWS_FILE: "seed_news.txt"
-          PROJECT_LIST_FILE: "project_list.txt"
-          PARTNER_LIST_FILE: "partner_list.txt"
-
-          DEFAULT_HERO_URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
-          TRACK_DIR: "sent_links"
+          GROQ_MODEL: "llama-3.1-8b-instant"
+          GROQ_ENDPOINT: "https://api.groq.com/openai/v1/chat/completions"
+          USE_LLM_SUMMARY: "true"
+          
+          # News Configuration
+          TZ: "Asia/Bangkok"
+          WINDOW_HOURS: "48"
+          MAX_PER_FEED: "30"
           DRY_RUN: "false"
+          BUBBLES_PER_CAROUSEL: "10"
+          
+          # News Sources Filter
+          ALLOWED_NEWS_SOURCES: ""
+          
+          # WTI Oil Price Configuration
+          WTI_API_KEY: ${{ secrets.WTI_API_KEY }}
+          WTI_ENABLED: "true"
+          WTI_SEND_DAILY: "true"
+          WTI_SEND_THRESHOLD: "2.0"
 
         run: |
-          python -u news.py
+          python -u energy_news_monitor.py
 
-      - name: Commit and push sent_links
+      - name: Commit cache and history files
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sent_links/ || true
-          git commit -m "Update sent links for $(date +'%Y-%m-%d')" || echo "No changes to commit"
+          git add sent_links/ wti_cache.json wti_history.json || true
+          git commit -m "Update cache and sent links for $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
           git push || echo "Push skipped"
