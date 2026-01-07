@@ -495,14 +495,12 @@ class LineMessageBuilder:
             }
         ]
         
-        # Add metadata (เวลา, แหล่งข่าว, และเว็บไซต์)
+        # Add metadata - เวลาและแหล่งข่าว
         metadata_parts = []
         if time_str:
             metadata_parts.append(time_str)
         if news_item.get('feed'):
             metadata_parts.append(news_item['feed'])
-        if news_item.get('domain'):
-            metadata_parts.append(news_item['domain'])
         
         if metadata_parts:
             contents.append({
@@ -510,6 +508,16 @@ class LineMessageBuilder:
                 "text": " | ".join(metadata_parts),
                 "size": "xs",
                 "color": "#888888",
+                "margin": "sm"
+            })
+        
+        # ✅ **เพิ่มเว็บข่าวในบรรทัดใหม่**
+        if news_item.get('domain'):
+            contents.append({
+                "type": "text",
+                "text": cut(news_item['domain'], 40),  # ตัดไม่ให้ยาวเกิน
+                "size": "xs",
+                "color": "#666666",
                 "margin": "sm"
             })
         
