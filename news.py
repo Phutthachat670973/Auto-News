@@ -1,3 +1,4 @@
+@@ -1,1447 +1,1448 @@
 # -*- coding: utf-8 -*-
 """
 Enhanced News Aggregator with WTI Futures (OilPriceAPI Only)
@@ -95,13 +96,13 @@ PROJECTS_BY_COUNTRY = {
 # =============================================================================
 class EnhancedDeduplication:
     """ระบบกันข่าวซ้ำที่ปรับปรุงใหม่"""
-    
+
     THAI_STOP_WORDS = {
         'ที่', 'ใน', 'จาก', 'เป็น', 'การ', 'และ', 'ของ', 'ได้', 'มี', 'ว่า',
         'กับ', 'โดย', 'ให้', 'แล้ว', 'ไป', 'มา', 'อยู่', 'ยัง', 'คือ', 'ถึง',
         'นี้', 'นั้น', 'ซึ่ง', 'เพื่อ', 'แต่', 'ถ้า', 'จะ', 'ก็', 'ไม่', 'ขึ้น'
     }
-    
+
     ENGLISH_STOP_WORDS = {
         'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
         'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
@@ -109,7 +110,7 @@ class EnhancedDeduplication:
         'could', 'should', 'may', 'might', 'can', 'this', 'that', 'these',
         'those', 'it', 'its'
     }
-    
+
     GROUPING_KEYWORDS = {
         'pttep', 'ปตท.', 'murphy', 'shell', 'chevron', 'exxon', 'total',
         'แบร็ค อิลส์', 'black hills', 'บางจาก', 'irpc', 'top',
@@ -123,24 +124,24 @@ class EnhancedDeduplication:
         'investment', 'deal', 'agreement', 'contract', 'acquisition',
         'ลงทุน', 'สัญญา', 'ซื้อ', 'ขาย'
     }
-    
+
     def __init__(self):
         self.seen_urls: Set[str] = set()
         self.seen_fingerprints: Set[str] = set()
         self.processed_items: List[dict] = []
         self.title_cache: List[Tuple[str, str]] = []
-    
+
     def normalize_text(self, text: str) -> str:
         """Normalize text สำหรับการเปรียบเทียบ"""
         if not text:
             return ""
-        
+
         text = text.lower()
         text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
         text = re.sub(r'[^\w\s]', ' ', text)
         text = re.sub(r'\d+', '', text)
         text = ' '.join(text.split())
-        
+
         words = text.split()
         filtered_words = [
             w for w in words 
@@ -148,82 +149,82 @@ class EnhancedDeduplication:
             and w not in self.ENGLISH_STOP_WORDS
             and len(w) > 1
         ]
-        
+
         return ' '.join(filtered_words)
-    
+
     def extract_keywords(self, text: str) -> Set[str]:
         """ดึงคำสำคัญจากข้อความ"""
         text_lower = text.lower()
         found_keywords = set()
-        
+
         for keyword in self.GROUPING_KEYWORDS:
             if keyword in text_lower:
                 found_keywords.add(keyword)
-        
+
         return found_keywords
-    
+
     def create_content_fingerprint(self, item: dict) -> str:
         """สร้าง fingerprint จากเนื้อหาข่าว"""
         title = self.normalize_text(item.get('title', ''))
         country = item.get('country', '')
         keywords = self.extract_keywords(f"{item.get('title', '')} {item.get('summary', '')}")
         keywords_str = '|'.join(sorted(keywords))
-        
+
         content = f"{title[:100]}|{country}|{keywords_str}"
         return hashlib.md5(content.encode('utf-8')).hexdigest()
-    
+
     def calculate_similarity(self, text1: str, text2: str) -> float:
         """คำนวณความคล้ายคลึงระหว่างข้อความ"""
         norm1 = self.normalize_text(text1)
         norm2 = self.normalize_text(text2)
-        
+
         if not norm1 or not norm2:
             return 0.0
-        
+
         return SequenceMatcher(None, norm1, norm2).ratio()
-    
+
     def is_duplicate_url(self, url: str) -> bool:
         """ตรวจสอบว่า URL นี้เคยประมวลผลแล้วหรือไม่"""
         url_clean = url.lower().strip()
         url_clean = re.sub(r'[?&](utm_|ref=|fbclid=)[^&]*', '', url_clean)
-        
+
         if url_clean in self.seen_urls:
             return True
-        
+
         self.seen_urls.add(url_clean)
         return False
-    
+
     def is_duplicate_content(self, item: dict) -> Tuple[bool, Optional[str]]:
         """ตรวจสอบว่าเนื้อหาข่าวซ้ำหรือไม่"""
         url = item.get('canon_url') or item.get('url', '')
         if self.is_duplicate_url(url):
             return True, "URL ซ้ำ"
-        
+
         fingerprint = self.create_content_fingerprint(item)
         if fingerprint in self.seen_fingerprints:
             return True, "Fingerprint ซ้ำ (เนื้อหาเดียวกัน)"
         self.seen_fingerprints.add(fingerprint)
-        
+
         title = item.get('title', '')
         for cached_norm_title, cached_orig_title in self.title_cache:
             similarity = self.calculate_similarity(title, cached_norm_title)
-            
+
             if similarity > 0.90:
                 return True, f"Title คล้ายกันมาก ({similarity:.1%})"
-            
+
             if similarity > 0.75:
                 for existing in self.processed_items:
                     if existing.get('title') == cached_orig_title:
                         if existing.get('country') == item.get('country'):
                             return True, f"Title คล้ายกัน ({similarity:.1%}) และประเทศเดียวกัน"
-        
+
         current_keywords = self.extract_keywords(f"{item.get('title', '')} {item.get('summary', '')}")
         if len(current_keywords) >= 3:
             for existing in self.processed_items:
                 existing_keywords = self.extract_keywords(
                     f"{existing.get('title', '')} {existing.get('summary', '')}"
                 )
-                
+
                 if len(current_keywords & existing_keywords) >= len(current_keywords) * 0.8:
                     if existing.get('country') == item.get('country'):
                         pub_dt1 = item.get('published_dt')
@@ -232,21 +233,21 @@ class EnhancedDeduplication:
                             time_diff = abs((pub_dt1 - pub_dt2).total_seconds() / 3600)
                             if time_diff < 24:
                                 return True, "คำสำคัญตรงกัน + ประเทศเดียวกัน + เวลาใกล้กัน"
-        
+
         norm_title = self.normalize_text(title)
         self.title_cache.append((norm_title, title))
-        
+
         return False, None
-    
+
     def add_item(self, item: dict) -> bool:
         """เพิ่มข่าวเข้าระบบ (ถ้าไม่ซ้ำ)"""
         is_dup, reason = self.is_duplicate_content(item)
-        
+
         if is_dup:
             if DEBUG_FILTERING:
                 print(f"  ✗ ข่าวซ้ำ: {reason}")
             return False
-        
+
         self.processed_items.append(item)
         return True
 
@@ -255,7 +256,7 @@ class EnhancedDeduplication:
 # =============================================================================
 class KeywordFilter:
     """กรองข่าวตามคำสำคัญ"""
-    
+
     ENERGY_KEYWORDS = [
         'พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ค่าไฟฟ้า', 'อัตราค่าไฟฟ้า',
         'ก๊าซ', 'LNG', 'น้ำมัน', 'เชื้อเพลิง', 'พลังงานทดแทน',
@@ -271,7 +272,7 @@ class KeywordFilter:
         'power plant', 'renewable', 'solar', 'wind', 'biomass',
         'energy policy', 'energy project', 'energy investment'
     ]
-    
+
     ENERGY_MARKET_KEYWORDS = [
         'ราคา', 'ราคาน้ำมัน', 'ราคาก๊าซ', 'ราคาไฟฟ้า', 'ค่าไฟ',
         'ตลาด', 'ตลาดพลังงาน', 'ตลาดน้ำมัน', 'ตลาดก๊าซ',
@@ -281,7 +282,7 @@ class KeywordFilter:
         'price', 'market', 'global', 'crude', 'brent', 'wti',
         'increase', 'decrease', 'drop', 'rise', 'fall'
     ]
-    
+
     BUSINESS_KEYWORDS = [
         'โครงการ', 'ลงทุน', 'สัญญา', 'สัมปทาน', 'มูลค่า',
         'ล้าน', 'พันล้าน', 'ดอลลาร์', 'บาท', 'เหรียญ',
@@ -297,7 +298,7 @@ class KeywordFilter:
         'development', 'construction', 'installation',
         'market', 'trading', 'stock', 'exchange', 'global'
     ]
-    
+
     EXCLUDE_KEYWORDS = [
         'ตลาดรถยนต์', 'รถยนต์', 'รถ', 'รถใหม่', 'รถยนต์ใหม่',
         'ยานยนต์', 'อุตสาหกรรมยานยนต์',
@@ -306,35 +307,35 @@ class KeywordFilter:
         'celebrity', 'actor', 'singer', 'donation', 'charity', 'philanthropy',
         'car', 'automotive', 'vehicle', 'automobile'
     ]
-    
+
     @classmethod
     def check_valid_energy_news(cls, text: str) -> tuple:
         """ตรวจสอบว่าเป็นข่าวพลังงานที่เกี่ยวข้องกับธุรกิจหรือไม่"""
         text_lower = text.lower()
         reasons = []
-        
+
         for exclude in cls.EXCLUDE_KEYWORDS:
             if exclude.lower() in text_lower:
                 reasons.append(f"มีคำต้องห้าม: '{exclude}'")
                 return False, "ข่าวสังคม", reasons
-        
+
         found_energy_keywords = [kw for kw in cls.ENERGY_KEYWORDS if kw.lower() in text_lower]
         found_market_keywords = [kw for kw in cls.ENERGY_MARKET_KEYWORDS if kw.lower() in text_lower]
-        
+
         if not found_energy_keywords and not found_market_keywords:
             reasons.append("ไม่มีคำที่เกี่ยวข้องกับพลังงาน")
             return False, "ไม่เกี่ยวข้องกับพลังงาน", reasons
-        
+
         if found_energy_keywords:
             reasons.append(f"พบคำพลังงาน: {', '.join(found_energy_keywords[:3])}")
         if found_market_keywords:
             reasons.append(f"พบคำตลาดพลังงาน: {', '.join(found_market_keywords[:3])}")
-        
+
         found_business_keywords = [kw for kw in cls.BUSINESS_KEYWORDS if kw.lower() in text_lower]
-        
+
         is_market_news = any(word in text_lower for word in ['ราคา', 'ตลาด', 'price', 'market'])
         has_energy_keywords = bool(found_energy_keywords)
-        
+
         if is_market_news and has_energy_keywords:
             reasons.append("เป็นข่าวราคา/ตลาดพลังงาน")
             return True, "ผ่าน", reasons
@@ -347,12 +348,12 @@ class KeywordFilter:
         else:
             reasons.append("ไม่มีคำบ่งบอกธุรกิจ/ตลาด")
             return False, "ไม่ใช่ข่าวธุรกิจ", reasons
-    
+
     @classmethod
     def detect_country(cls, text: str) -> str:
         """Detect country from text"""
         text_lower = text.lower()
-        
+
         country_patterns = {
             "Thailand": ['ไทย', 'ประเทศไทย', 'thailand', 'bangkok'],
             "Myanmar": ['เมียนมา', 'myanmar', 'ย่างกุ้ง', 'yangon'],
@@ -363,11 +364,11 @@ class KeywordFilter:
             "Oman": ['โอมาน', 'oman', 'muscat'],
             "UAE": ['ยูเออี', 'uae', 'ดูไบ', 'dubai', 'อาบูดาบี', 'abu dhabi']
         }
-        
+
         for country, patterns in country_patterns.items():
             if any(pattern in text_lower for pattern in patterns):
                 return country
-        
+
         return ""
 
 # =============================================================================
@@ -420,15 +421,15 @@ def is_allowed_source(url: str) -> bool:
     """ตรวจสอบว่า URL นี้มาจากเว็บข่าวที่เราอนุญาตหรือไม่"""
     if not ALLOWED_NEWS_SOURCES_LIST:
         return True
-    
+
     domain = extract_domain(url)
     if not domain:
         return False
-    
+
     for allowed_source in ALLOWED_NEWS_SOURCES_LIST:
         if allowed_source in domain:
             return True
-    
+
     return False
 
 def shorten_google_news_url(url: str) -> str:
@@ -484,7 +485,7 @@ def create_simple_summary(text: str, max_length: int = 150) -> str:
     text = (text or "").strip()
     if not text:
         return ""
-    
+
     text = ' '.join(text.split())
     sentences = re.split(r'[.!?]', text)
     if sentences and len(sentences[0]) > 10:
@@ -492,7 +493,7 @@ def create_simple_summary(text: str, max_length: int = 150) -> str:
         if len(summary) > max_length:
             summary = summary[:max_length-1] + "…"
         return summary + "."
-    
+
     if len(text) > max_length:
         return text[:max_length-1] + "…"
     return text
@@ -558,12 +559,12 @@ class LLMAnalyzer:
         self.api_key = api_key
         self.model = model
         self.endpoint = endpoint
-    
+
     def analyze_news(self, title: str, summary: str) -> dict:
         """Analyze news using LLM"""
         if not self.api_key:
             return self._get_default_analysis(title, summary)
-        
+
         system_prompt = """คุณเป็นผู้ช่วยสรุปข่าวพลังงาน
         ตอบกลับเป็น JSON เท่านั้นตามรูปแบบนี้:
         {
@@ -572,13 +573,13 @@ class LLMAnalyzer:
             "summary_th": "สรุปภาษาไทยสั้นๆ 1 ประโยค",
             "topics": ["หัวข้อ1", "หัวข้อ2"]
         }"""
-        
+
         user_prompt = f"""ข่าว: {title}
         
         เนื้อหา: {summary[:500]}
         
         โปรดสรุปข่าวนี้เป็นภาษาไทยสั้นๆ 1 ประโยค:"""
-        
+
         try:
             response = requests.post(
                 self.endpoint,
@@ -597,37 +598,37 @@ class LLMAnalyzer:
                 },
                 timeout=30
             )
-            
+
             if response.status_code != 200:
                 print(f"[LLM] HTTP Error {response.status_code}")
                 return self._get_default_analysis(title, summary)
-            
+
             data = response.json()
             content = data["choices"][0]["message"]["content"].strip()
-            
+
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
                 analysis = json.loads(json_match.group())
-                
+
                 return {
                     "relevant": bool(analysis.get("relevant", True)),
                     "country": str(analysis.get("country", "")).strip(),
                     "summary_th": str(analysis.get("summary_th", "")).strip()[:150],
                     "topics": [str(t).strip() for t in analysis.get("topics", []) if t]
                 }
-                
+
         except json.JSONDecodeError:
             print("[LLM] Failed to parse JSON response")
         except Exception as e:
             print(f"[LLM] Error: {str(e)}")
-        
+
         return self._get_default_analysis(title, summary)
-    
+
     def _get_default_analysis(self, title: str, summary: str):
         """สร้างการวิเคราะห์พื้นฐาน"""
         combined = f"{title} {summary}"
         simple_summary = create_simple_summary(combined, 100)
-        
+
         return {
             "relevant": True,
             "country": "",
@@ -643,7 +644,7 @@ class NewsProcessor:
         self.sent_links = read_sent_links()
         self.llm_analyzer = LLMAnalyzer(GROQ_API_KEY, GROQ_MODEL, GROQ_ENDPOINT) if GROQ_API_KEY else None
         self.dedup = EnhancedDeduplication()
-        
+
         self.news_sources = {
             'reuters.com': 'Reuters',
             'bloomberg.com': 'Bloomberg',
@@ -660,7 +661,7 @@ class NewsProcessor:
             'khaosod.co.th': 'ข่าวสด',
             'matichon.co.th': 'มติชน',
         }
-        
+
         self.filter_stats = {
             'total_processed': 0,
             'filtered_by': {
@@ -675,31 +676,31 @@ class NewsProcessor:
                 'passed': 0
             }
         }
-        
+
         self.filtered_news = []
-    
+
     def get_source_name(self, url: str) -> str:
         """ดึงชื่อเว็บข่าวจาก URL"""
         domain = extract_domain(url)
         if not domain:
             return domain
-        
+
         for source_domain, source_name in self.news_sources.items():
             if source_domain in domain:
                 return source_name
-        
+
         return domain
-    
+
     def fetch_and_filter_news(self):
         """Fetch and filter news from all feeds"""
         all_news = []
-        
+
         for feed_name, feed_type, feed_url in FEEDS:
             print(f"\n[Fetching] {feed_name} ({feed_type})...")
-            
+
             try:
                 entries = fetch_feed_with_retry(feed_name, feed_url)
-                
+
                 for entry in entries[:MAX_PER_FEED]:
                     self.filter_stats['total_processed'] += 1
                     news_item, filter_reason = self._process_entry(entry, feed_name, feed_type)
@@ -709,47 +710,47 @@ class NewsProcessor:
                         print(f"  ✓ {news_item['title'][:50]}...")
                     elif filter_reason and DEBUG_FILTERING:
                         print(f"  ✗ {filter_reason}")
-                        
+
             except Exception as e:
                 print(f"  ✗ Error: {str(e)}")
-        
+
         all_news.sort(key=lambda x: -((x.get('published_dt') or datetime.min).timestamp()))
-        
+
         return all_news
-    
+
     def _process_entry(self, entry, feed_name: str, feed_type: str):
         """Process individual news entry"""
         item = parse_entry(entry, feed_name, feed_type)
-        
+
         if not item["title"]:
             self.filter_stats['filtered_by']['no_title'] += 1
             return None, "ไม่มีหัวข้อข่าว"
-        
+
         if not item["url"]:
             self.filter_stats['filtered_by']['no_url'] += 1
             return None, "ไม่มี URL"
-        
+
         if item["canon_url"] in self.sent_links or item["url"] in self.sent_links:
             self.filter_stats['filtered_by']['already_sent'] += 1
             return None, f"ส่งแล้ว: {item['title'][:30]}..."
-        
+
         if item["published_dt"] and not in_time_window(item["published_dt"], WINDOW_HOURS):
             self.filter_stats['filtered_by']['out_of_window'] += 1
             return None, f"เกินเวลา: {item['title'][:30]}..."
-        
+
         if feed_type != "direct":
             display_url = item["canon_url"] or item["url"]
             if not is_allowed_source(display_url):
                 self.filter_stats['filtered_by']['not_allowed_source'] += 1
                 return None, f"แหล่งข่าวไม่อนุญาต: {extract_domain(display_url)}"
-        
+
         full_text = f"{item['title']} {item['summary']}"
         is_valid, reason, details = KeywordFilter.check_valid_energy_news(full_text)
-        
+
         if not is_valid:
             self.filter_stats['filtered_by']['invalid_energy_news'] += 1
             return None, f"{reason}: {item['title'][:30]}..."
-        
+
         country = KeywordFilter.detect_country(full_text)
         if not country:
             if feed_type == "direct":
@@ -757,21 +758,21 @@ class NewsProcessor:
             else:
                 self.filter_stats['filtered_by']['no_country'] += 1
                 return None, f"ไม่พบประเทศ: {item['title'][:30]}..."
-        
+
         llm_summary = ""
         if USE_LLM_SUMMARY and self.llm_analyzer:
             llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
-            
+
             if llm_analysis['country'] and llm_analysis['country'] in PROJECTS_BY_COUNTRY:
                 country = llm_analysis['country']
-            
+
             if llm_analysis.get('summary_th'):
                 llm_summary = llm_analysis['summary_th']
-        
+
         project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
         display_url = item["canon_url"] or item["url"]
         source_name = self.get_source_name(display_url)
-        
+
         final_item = {
             'title': item['title'][:100],
             'url': item['url'],
@@ -787,11 +788,11 @@ class NewsProcessor:
             'feed_type': feed_type,
             'simple_summary': create_simple_summary(full_text, 100)
         }
-        
+
         if not self.dedup.add_item(final_item):
             self.filter_stats['filtered_by']['duplicate'] += 1
             return None, f"ข่าวซ้ำ: {item['title'][:30]}..."
-        
+
         return final_item, None
 
 # =============================================================================
@@ -802,10 +803,10 @@ class LineMessageBuilder:
     def create_flex_bubble(news_item):
         """Create a LINE Flex Bubble for a news item"""
         title = cut(news_item.get('title', ''), 80)
-        
+
         pub_dt = news_item.get('published_dt')
         time_str = pub_dt.strftime("%d/%m/%Y %H:%M") if pub_dt else ""
-        
+
         colors = {
             "Thailand": "#FF6B6B",
             "Vietnam": "#4ECDC4",
@@ -817,9 +818,9 @@ class LineMessageBuilder:
             "Kazakhstan": "#00BBF9",
             "International": "#888888"
         }
-        
+
         color = colors.get(news_item.get('country', 'International'), "#888888")
-        
+
         contents = [
             {
                 "type": "box",
@@ -839,13 +840,13 @@ class LineMessageBuilder:
                 "cornerRadius": "8px"
             }
         ]
-        
+
         metadata_parts = []
         if time_str:
             metadata_parts.append(time_str)
         if news_item.get('feed'):
             metadata_parts.append(news_item['feed'])
-        
+
         if metadata_parts:
             contents.append({
                 "type": "text",
@@ -854,7 +855,7 @@ class LineMessageBuilder:
                 "color": "#888888",
                 "margin": "sm"
             })
-        
+
         if news_item.get('source_name'):
             contents.append({
                 "type": "text",
@@ -863,7 +864,7 @@ class LineMessageBuilder:
                 "color": "#666666",
                 "margin": "sm"
             })
-        
+
         contents.append({
             "type": "text",
             "text": f"ประเทศ: {news_item.get('country', 'N/A')}",
@@ -872,7 +873,7 @@ class LineMessageBuilder:
             "color": color,
             "weight": "bold"
         })
-        
+
         if news_item.get('project_hints'):
             hints_text = ", ".join(news_item['project_hints'][:2])
             contents.append({
@@ -883,7 +884,7 @@ class LineMessageBuilder:
                 "wrap": True,
                 "margin": "xs"
             })
-        
+
         summary_text = ""
         if news_item.get('llm_summary'):
             summary_text = news_item['llm_summary']
@@ -891,10 +892,10 @@ class LineMessageBuilder:
             summary_text = news_item['simple_summary']
         elif news_item.get('summary'):
             summary_text = create_simple_summary(news_item['summary'], 120)
-        
+
         if not summary_text or len(summary_text.strip()) < 10:
             summary_text = f"{news_item.get('title', 'ข่าวพลังงาน')[:60]}..."
-        
+
         if summary_text:
             contents.append({
                 "type": "text",
@@ -904,7 +905,7 @@ class LineMessageBuilder:
                 "margin": "md",
                 "color": "#424242"
             })
-        
+
         bubble = {
             "type": "bubble",
             "size": "kilo",
@@ -916,7 +917,7 @@ class LineMessageBuilder:
                 "spacing": "sm"
             }
         }
-        
+
         url = news_item.get('canon_url') or news_item.get('url')
         if url and len(url) < 1000:
             bubble["footer"] = {
@@ -936,22 +937,22 @@ class LineMessageBuilder:
                     }
                 ]
             }
-        
+
         return bubble
-    
+
     @staticmethod
     def create_carousel_message(news_items):
         """Create LINE carousel message from news items"""
         bubbles = []
-        
+
         for item in news_items[:BUBBLES_PER_CAROUSEL]:
             bubble = LineMessageBuilder.create_flex_bubble(item)
             if bubble:
                 bubbles.append(bubble)
-        
+
         if not bubbles:
             return None
-        
+
         return {
             "type": "flex",
             "altText": f"สรุปข่าวพลังงาน {datetime.now(TZ).strftime('%d/%m/%Y')} ({len(bubbles)} ข่าว)",
@@ -971,7 +972,7 @@ class LineSender:
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json"
         }
-    
+
     def send_message(self, message_obj):
         """Send message to LINE"""
         if DRY_RUN:
@@ -980,9 +981,9 @@ class LineSender:
             print("="*60)
             print(json.dumps(message_obj, indent=2, ensure_ascii=False)[:500])
             return True
-        
+
         url = "https://api.line.me/v2/bot/message/broadcast"
-        
+
         try:
             response = requests.post(
                 url,
@@ -990,108 +991,130 @@ class LineSender:
                 json={"messages": [message_obj]},
                 timeout=30
             )
-            
+
             if response.status_code == 200:
                 print("[LINE] Message sent successfully!")
                 return True
             else:
                 print(f"[LINE] Error {response.status_code}: {response.text[:200]}")
                 return False
-                
+
         except Exception as e:
             print(f"[LINE] Exception: {str(e)}")
             return False
 
- WTI FUTURES MODULE - OilPriceAPI.com Only
+# =============================================================================
+# WTI FUTURES MODULE - OilPriceAPI.com Only
 # =============================================================================
 class WTIFuturesFetcher:
     """ดึงข้อมูลราคา WTI Futures จาก OilPriceAPI.com เท่านั้น"""
-    
+
     def __init__(self, api_key: str):
         """Initialize WTI Futures Fetcher"""
         if not api_key or not api_key.strip():
             raise ValueError("OILPRICE_API_KEY is required!")
-        
+
         self.api_key = api_key.strip()
         self.base_url = "https://api.oilpriceapi.com/v1"
-    
+
     def fetch_current_wti_price(self) -> float:
+def fetch_current_wti_price(self) -> float:
         """ดึงราคา WTI ปัจจุบันจาก OilPriceAPI.com"""
+        url = f"{self.base_url}/prices/latest"
+        # ระบุให้ดึงเฉพาะราคา WTI
         url = f"{self.base_url}/prices/latest?by_code=WTI_USD"
         headers = {
             "Authorization": f"Token {self.api_key}",
             "Content-Type": "application/json"
         }
-        
+
         try:
+            print(f"[WTI] กำลังดึงราคาจาก OilPriceAPI.com...")
             print(f"[WTI] กำลังดึงราคา WTI Crude จาก OilPriceAPI.com...")
             response = requests.get(url, headers=headers, timeout=15)
-            
+
             if response.status_code == 401:
-                raise Exception("❌ API Key ไม่ถูกต้องหรือหมดอายุ")
+                raise Exception("❌ API Key ไม่ถูกต้องหรือหมดอายุ - ตรวจสอบที่ oilpriceapi.com")
             elif response.status_code == 429:
-                raise Exception("❌ เกิน rate limit")
+                raise Exception("❌ เกิน rate limit - รอสักครู่แล้วลองใหม่")
             elif response.status_code == 403:
-                raise Exception("❌ ไม่มีสิทธิ์เข้าถึง")
-            
+                raise Exception("❌ ไม่มีสิทธิ์เข้าถึง - ตรวจสอบ subscription plan")
+
             response.raise_for_status()
             data = response.json()
-            
+
             price = None
-            
+
             if isinstance(data.get('data'), dict) and 'price' in data['data']:
                 price = float(data['data']['price'])
+                print(f"[WTI] ✓ พบราคาจาก data.price")
             elif isinstance(data.get('data'), dict) and 'WTI' in data['data']:
                 price = float(data['data']['WTI'])
+                print(f"[WTI] ✓ พบราคาจาก data.WTI")
             elif isinstance(data.get('data'), list):
                 for item in data['data']:
                     if isinstance(item, dict):
                         name = str(item.get('name', '')).upper()
                         if 'WTI' in name or 'CRUDE' in name:
                             price = float(item.get('price', 0))
+                            print(f"[WTI] ✓ พบราคาจาก {item.get('name')}")
                             break
             elif 'price' in data:
                 price = float(data['price'])
-            
+                print(f"[WTI] ✓ พบราคาจาก price")
+
             if price and price > 0:
                 print(f"[WTI] ✓ ดึงราคาสำเร็จ: ${price:.2f}/barrel")
                 return price
             else:
-                raise Exception("ไม่พบข้อมูลราคา WTI")
-                
+                print(f"[WTI] ⚠ ไม่พบราคา WTI ใน response")
+                print(f"[WTI] Response structure: {list(data.keys())}")
+                raise Exception("ไม่พบข้อมูลราคา WTI ใน API response")
+
+        except requests.exceptions.Timeout:
+            raise Exception("❌ API timeout - ลองใหม่อีกครั้ง")
+        except requests.exceptions.ConnectionError:
+            raise Exception("❌ ไม่สามารถเชื่อมต่อ API ได้ - ตรวจสอบ internet connection")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"❌ Request error: {str(e)}")
+        except ValueError as e:
+            raise Exception(f"❌ ข้อมูลไม่ถูกต้อง: {str(e)}")
         except Exception as e:
+            if "API Key" in str(e) or "rate limit" in str(e):
+                raise
             raise Exception(f"❌ เกิดข้อผิดพลาด: {str(e)}")
+
     def calculate_futures_prices(self, current_price: float) -> List[Dict]:
         """คำนวณราคา futures 12 เดือนข้างหน้า"""
         futures_data = []
         now = datetime.now(TZ)
-        
+
         base_premium = 0.25
         seasonal_factor = 0.15
-        
+
         for i in range(12):
             future_date = now + timedelta(days=30 * (i + 1))
             month_num = future_date.month
-            
+
             if i < 3:
                 time_premium = i * base_premium * 0.8
             elif i < 6:
                 time_premium = i * base_premium * 1.0
             else:
                 time_premium = i * base_premium * 1.2
-            
+
             if month_num in [12, 1, 2]:
                 seasonal_adj = seasonal_factor * 1.5
             elif month_num in [6, 7, 8]:
                 seasonal_adj = seasonal_factor * 1.2
             else:
                 seasonal_adj = seasonal_factor * 0.8
-            
+
             import random
             volatility = random.uniform(-0.005, 0.005) * current_price
-            
+
             future_price = current_price + time_premium + seasonal_adj + volatility
-            
+
             futures_data.append({
                 "month": future_date.strftime("%b %Y"),
                 "contract": future_date.strftime("%b%y").upper(),
@@ -1099,26 +1122,26 @@ class WTIFuturesFetcher:
                 "change": round(future_price - current_price, 2),
                 "change_pct": round((future_price - current_price) / current_price * 100, 2)
             })
-        
+
         return futures_data
-    
+
     def get_current_and_futures(self) -> Dict:
         """ดึงข้อมูลราคาปัจจุบันและ futures ครบ 12 เดือน"""
         print("[WTI] กำลังดึงข้อมูลราคา WTI...")
-        
+
         current_price = self.fetch_current_wti_price()
-        
+
         current_data = {
             "source": "OilPriceAPI.com",
             "current_price": current_price,
             "timestamp": datetime.now(TZ).isoformat(),
             "currency": "USD/barrel"
         }
-        
+
         print(f"[WTI] กำลังคำนวณราคา futures 12 เดือน...")
         futures_data = self.calculate_futures_prices(current_price)
         print(f"[WTI] ✓ สร้างข้อมูล futures {len(futures_data)} เดือน")
-        
+
         return {
             "current": current_data,
             "futures": futures_data,
@@ -1127,7 +1150,7 @@ class WTIFuturesFetcher:
 
 class WTIFlexMessageBuilder:
     """สร้าง LINE Flex Message สำหรับแสดงราคา WTI Futures"""
-    
+
     @staticmethod
     def create_wti_futures_message(data: dict) -> dict:
         """สร้าง Flex Message แสดงราคา WTI Futures ครบ 12 เดือน"""
@@ -1135,7 +1158,7 @@ class WTIFlexMessageBuilder:
         futures = data.get("futures", [])
         updated_at = data.get("updated_at", "")
         current_price = current.get("current_price", 0)
-        
+
         header_contents = {
             "type": "box",
             "layout": "vertical",
@@ -1158,7 +1181,7 @@ class WTIFlexMessageBuilder:
             "backgroundColor": "#1E3A8A",
             "paddingAll": "20px"
         }
-        
+
         current_box = {
             "type": "box",
             "layout": "vertical",
@@ -1191,7 +1214,7 @@ class WTIFlexMessageBuilder:
             "paddingAll": "15px",
             "margin": "md"
         }
-        
+
         table_header = {
             "type": "box",
             "layout": "horizontal",
@@ -1228,16 +1251,16 @@ class WTIFlexMessageBuilder:
             "cornerRadius": "5px",
             "margin": "lg"
         }
-        
+
         futures_rows = []
         for i, future in enumerate(futures[:12]):
             month = future.get("month", "")
             price = future.get("price", 0)
             change_pct = future.get("change_pct", 0)
-            
+
             change_color = "#16A34A" if change_pct >= 0 else "#DC2626"
             change_symbol = "+" if change_pct >= 0 else ""
-            
+
             row = {
                 "type": "box",
                 "layout": "horizontal",
@@ -1272,7 +1295,7 @@ class WTIFlexMessageBuilder:
                 "backgroundColor": "#F9FAFB" if i % 2 == 0 else "#FFFFFF"
             }
             futures_rows.append(row)
-        
+
         footer = {
             "type": "box",
             "layout": "vertical",
@@ -1299,7 +1322,7 @@ class WTIFlexMessageBuilder:
                 }
             ]
         }
-        
+
         bubble = {
             "type": "bubble",
             "size": "mega",
@@ -1316,7 +1339,7 @@ class WTIFlexMessageBuilder:
                 "paddingAll": "0px"
             }
         }
-        
+
         return {
             "type": "flex",
             "altText": f"ราคา WTI Crude Oil Futures: ${current_price:.2f}/barrel",
@@ -1330,59 +1353,59 @@ def main():
     print("="*60)
     print("ระบบติดตามข่าวพลังงาน + WTI Futures (OilPriceAPI Only)")
     print("="*60)
-    
+
     if not LINE_CHANNEL_ACCESS_TOKEN:
         print("[ERROR] LINE_CHANNEL_ACCESS_TOKEN is required")
         return
-    
+
     if not OILPRICE_API_KEY:
         print("[ERROR] OILPRICE_API_KEY is required")
         print("        Get one from: https://www.oilpriceapi.com")
         return
-    
+
     if USE_LLM_SUMMARY and not GROQ_API_KEY:
         print("[WARNING] LLM summary enabled but no GROQ_API_KEY provided")
         print("[INFO] Will use simple summary for all news")
-    
+
     print(f"\n[CONFIG] Use LLM: {'Yes' if USE_LLM_SUMMARY and GROQ_API_KEY else 'No'}")
     print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
     print(f"[CONFIG] Debug filtering: {'Yes' if DEBUG_FILTERING else 'No'}")
     print(f"[CONFIG] Oil Price API: OilPriceAPI.com")
-    
+
     processor = NewsProcessor()
     line_sender = LineSender(LINE_CHANNEL_ACCESS_TOKEN)
-    
+
     print("\n[1] กำลังดึงและกรองข่าว...")
     news_items = processor.fetch_and_filter_news()
-    
+
     print(f"\n[FILTER STATISTICS]")
     print(f"  รวมข่าวที่ประมวลผล: {processor.filter_stats['total_processed']}")
     print(f"  ผ่านการกรอง: {processor.filter_stats['filtered_by']['passed']}")
     print(f"  ไม่ผ่านการกรอง: {processor.filter_stats['total_processed'] - processor.filter_stats['filtered_by']['passed']}")
-    
+
     if processor.filter_stats['total_processed'] - processor.filter_stats['filtered_by']['passed'] > 0:
         print(f"\n  รายละเอียดการกรอง:")
         for reason, count in processor.filter_stats['filtered_by'].items():
             if reason != 'passed' and count > 0:
                 print(f"    - {reason}: {count} ข่าว")
-    
+
     if not news_items:
         print("\n[INFO] ไม่พบข่าวใหม่ที่เกี่ยวข้อง")
     else:
         print(f"\n[2] พบข่าวที่เกี่ยวข้องทั้งหมด {len(news_items)} ข่าว")
-        
+
         llm_summary_count = sum(1 for item in news_items if item.get('llm_summary'))
         source_counts = {}
         country_counts = {}
-        
+
         for item in news_items:
             source = item.get('source_name') or item.get('domain', 'Unknown')
             source_counts[source] = source_counts.get(source, 0) + 1
-            
+
             country = item.get('country', 'Unknown')
             country_counts[country] = country_counts.get(country, 0) + 1
-        
+
         print(f"   - สรุปด้วย AI: {llm_summary_count} ข่าว")
         print(f"   - แหล่งข่าวที่พบ:")
         for source, count in sorted(source_counts.items()):
@@ -1390,34 +1413,34 @@ def main():
         print(f"   - แบ่งตามประเทศ:")
         for country, count in sorted(country_counts.items()):
             print(f"     • {country}: {count} ข่าว")
-        
+
         print("\n[3] กำลังสร้างข้อความ LINE...")
         line_message = LineMessageBuilder.create_carousel_message(news_items)
-        
+
         if line_message:
             print("\n[4] กำลังส่งข่าวพลังงาน...")
             success_news = line_sender.send_message(line_message)
         else:
             print("[WARNING] ไม่สามารถสร้างข้อความข่าวได้")
             success_news = False
-    
+
     print("\n[5] กำลังส่งข้อมูล WTI Futures...")
     try:
         wti_fetcher = WTIFuturesFetcher(api_key=OILPRICE_API_KEY)
         wti_data = wti_fetcher.get_current_and_futures()
         wti_message = WTIFlexMessageBuilder.create_wti_futures_message(wti_data)
-        
+
         success_wti = line_sender.send_message(wti_message)
-        
+
     except Exception as e:
         print(f"[WTI ERROR] {str(e)}")
         success_wti = False
-    
+
     if news_items and not DRY_RUN:
         for item in news_items:
             append_sent_link(item.get('canon_url') or item.get('url'))
         print("\n[SUCCESS] อัปเดตฐานข้อมูลข่าวที่ส่งแล้ว")
-    
+
     print("\n" + "="*60)
     if news_items:
         print(f"ดำเนินการเสร็จสิ้น - ส่งข่าว: {'✓' if success_news else '✗'}, ส่ง WTI: {'✓' if success_wti else '✗'}")
@@ -1426,4 +1449,3 @@ def main():
     print("="*60)
 
 if __name__ == "__main__":
-    main()
