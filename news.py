@@ -52,6 +52,10 @@ else:
     ALLOWED_NEWS_SOURCES_LIST = []
     print("[CONFIG] รับข่าวจากทุกเว็บข่าว")
 
+# ตัวแปรควบคุมความเข้มงวด
+STRICT_FILTERING = os.getenv("STRICT_FILTERING", "0").strip().lower() in ["1", "true", "yes", "y"]
+ALLOW_MARKET_NEWS = os.getenv("ALLOW_MARKET_NEWS", "1").strip().lower() in ["1", "true", "yes", "y"]
+
 # Sent links tracking
 SENT_DIR = os.getenv("SENT_DIR", "sent_links")
 os.makedirs(SENT_DIR, exist_ok=True)
@@ -101,6 +105,17 @@ class EnhancedKeywordFilter:
         'energy policy', 'energy project', 'energy investment'
     ]
     
+    # เพิ่มคำสำคัญสำหรับตลาดพลังงานและราคา
+    ENERGY_MARKET_KEYWORDS = [
+        'ราคา', 'ราคาน้ำมัน', 'ราคาก๊าซ', 'ราคาไฟฟ้า', 'ค่าไฟ',
+        'ตลาด', 'ตลาดพลังงาน', 'ตลาดน้ำมัน', 'ตลาดก๊าซ',
+        'โลก', 'โลกาว', 'ต่างประเทศ', 'สหรัฐ', 'เวเนซุเอลา',
+        'ร่วง', 'ปรับขึ้น', 'ปรับลด', 'ผันผวน', 'ตก', 'เพิ่ม',
+        'ดอลลาร์', 'บาร์เรล', 'ตลาดหุ้น', 'ตลาดโลก',
+        'price', 'market', 'global', 'crude', 'brent', 'wti',
+        'increase', 'decrease', 'drop', 'rise', 'fall'
+    ]
+    
     # คำที่บ่งบอกถึงธุรกิจ/โครงการ
     BUSINESS_KEYWORDS = [
         'โครงการ', 'ลงทุน', 'สัญญา', 'สัมปทาน', 'มูลค่า',
@@ -108,10 +123,15 @@ class EnhancedKeywordFilter:
         'พบ', 'สำรวจ', 'ขุดเจาะ', 'ผลิต', 'ส่งออก', 'นำเข้า',
         'ประกาศ', 'แถลง', 'รายงาน', 'ผลประกอบการ', 'รายได้',
         'ขยาย', 'พัฒนา', 'สร้าง', 'ก่อสร้าง', 'ติดตั้ง',
+        # เพิ่มคำสำคัญสำหรับตลาด
+        'ตลาด', 'ซื้อ', 'ขาย', 'ซื้อขาย', 'ซื้อขายล่วงหน้า',
+        'หุ้น', 'ตลาดหุ้น', 'ตลาดหลักทรัพย์', 'ตลาดโลก',
+        'เพิ่ม', 'ลด', 'ปรับ', 'เปลี่ยนแปลง', 'วิกฤต', 'โอกาส',
         'project', 'investment', 'contract', 'agreement', 'deal',
         'discovery', 'exploration', 'drilling', 'production', 'export',
         'announce', 'report', 'financial', 'revenue', 'expand',
-        'development', 'construction', 'installation'
+        'development', 'construction', 'installation',
+        'market', 'trading', 'stock', 'exchange', 'global'
     ]
     
     # คำที่ต้องหลีกเลี่ยง (ข่าวสังคม)
@@ -150,25 +170,51 @@ class EnhancedKeywordFilter:
             if keyword.lower() in text_lower:
                 found_energy_keywords.append(keyword)
         
-        if not found_energy_keywords:
-            reasons.append("ไม่มีคำที่เกี่ยวข้องกับพลังงาน")
+        # ตรวจสอบคำสำคัญตลาดพลังงานด้วย
+        found_market_keywords = []
+        for keyword in cls.ENERGY_MARKET_KEYWORDS:
+            if keyword.lower() in text_lower:
+                found_market_keywords.append(keyword)
+        
+        # ถ้าไม่มีคำพลังงานเลย
+        if not found_energy_keywords and not found_market_keywords:
+            reasons.append("ไม่มีคำที่เกี่ยวข้องกับพลังงานหรือตลาดพลังงาน")
             return False, "ไม่เกี่ยวข้องกับพลังงาน", reasons
         
         reasons.append(f"พบคำพลังงาน: {', '.join(found_energy_keywords[:3])}")
+        if found_market_keywords:
+            reasons.append(f"พบคำตลาดพลังงาน: {', '.join(found_market_keywords[:3])}")
         
-        # 3. ตรวจสอบว่ามีคำที่บ่งบอกถึงธุรกิจ/โครงการ
+        # 3. ตรวจสอบว่ามีคำที่บ่งบอกถึงธุรกิจ/โครงการ/ตลาด
         found_business_keywords = []
         for keyword in cls.BUSINESS_KEYWORDS:
             if keyword.lower() in text_lower:
                 found_business_keywords.append(keyword)
         
-        if not found_business_keywords:
-            reasons.append("ไม่มีคำบ่งบอกธุรกิจ/โครงการ")
-            return False, "ไม่ใช่ข่าวธุรกิจ", reasons
+        # ✅ **แก้ไข: ถ้าเป็นข่าวราคาพลังงานหรือตลาดพลังงาน ให้ผ่อนคลายเงื่อนไข**
+        is_market_news = any(word in text_lower for word in ['ราคา', 'ตลาด', 'price', 'market'])
+        has_energy_keywords = bool(found_energy_keywords)
         
-        reasons.append(f"พบคำธุรกิจ: {', '.join(found_business_keywords[:3])}")
+        # เงื่อนไขใหม่:
+        # 1. ถ้าเป็นข่าวราคาพลังงาน/ตลาดพลังงาน และมีคำพลังงาน → อนุญาต
+        # 2. ถ้ามีคำธุรกิจ → อนุญาต
+        # 3. ถ้าเป็นข่าวทั่วไปเกี่ยวกับพลังงาน → ต้องมีคำธุรกิจด้วย
         
-        return True, "ผ่าน", reasons
+        if is_market_news and has_energy_keywords:
+            # ข่าวราคาพลังงาน/ตลาดพลังงานที่มีคำพลังงานสำคัญ
+            reasons.append("เป็นข่าวราคา/ตลาดพลังงานที่สำคัญ")
+            return True, "ผ่าน", reasons
+        elif found_business_keywords:
+            # มีคำธุรกิจ/โครงการ
+            reasons.append(f"พบคำธุรกิจ: {', '.join(found_business_keywords[:3])}")
+            return True, "ผ่าน", reasons
+        elif has_energy_keywords and any(word in text_lower for word in ['สำคัญ', 'ใหญ่', 'หลัก', 'โลก', 'global']):
+            # ข่าวพลังงานสำคัญระดับโลก
+            reasons.append("เป็นข่าวพลังงานสำคัญระดับโลก")
+            return True, "ผ่าน", reasons
+        else:
+            reasons.append("ไม่มีคำบ่งบอกธุรกิจ/โครงการ/ตลาดที่สำคัญ")
+            return False, "ไม่ใช่ข่าวธุรกิจ/ตลาดพลังงาน", reasons
     
     @classmethod
     def detect_country(cls, text: str) -> str:
@@ -538,6 +584,37 @@ class EnhancedNewsProcessor:
         # หากไม่เจอ ให้ใช้ domain เป็นชื่อ
         return domain
     
+    def _is_important_energy_news(self, item: dict) -> bool:
+        """ตรวจสอบว่าเป็นข่าวพลังงานสำคัญที่ควรอนุญาตโดยเฉพาะ"""
+        title = item.get('title', '').lower()
+        summary = item.get('summary', '').lower()
+        text = f"{title} {summary}"
+        
+        # รายการคำสำคัญสำหรับข่าวพลังงานสำคัญที่ควรอนุญาต
+        important_patterns = [
+            # ราคาพลังงานโลก
+            (['น้ำมันโลกร่วง', 'น้ำมันโลก', 'ราคาน้ำมันโลก', 'crude oil', 'brent'], 2),
+            (['ก๊าซธรรมชาติโลก', 'ราคาก๊าซโลก', 'lng price', 'gas price'], 2),
+            (['ค่าไฟปรับ', 'ค่าไฟฟ้า', 'ไฟฟ้าแพง', 'อัตราค่าไฟฟ้า'], 2),
+            
+            # ตลาดพลังงานโลก
+            (['ตลาดน้ำมันโลก', 'ตลาดพลังงานโลก', 'oil market', 'energy market'], 2),
+            (['สหรัฐ', 'อเมริกา', 'usa', 'u.s.', 'จีน', 'china'], 1),
+            
+            # เหตุการณ์สำคัญ
+            (['วิกฤต', 'crisis', 'embargo', 'ห้ามส่งออก', 'sanction'], 2),
+            (['โอเปก', 'opec', 'องค์การประเทศผู้ส่งออกน้ำมัน'], 2),
+            (['พลังงานโลก', 'global energy', 'world energy'], 2),
+        ]
+        
+        score = 0
+        for keywords, points in important_patterns:
+            if any(keyword in text for keyword in keywords):
+                score += points
+        
+        # ถ้าได้คะแนนสูงพอ ให้ถือว่าสำคัญ
+        return score >= 3
+    
     def _is_similar_title(self, title1: str, title2: str, threshold: float = 0.8) -> bool:
         """ตรวจสอบความคล้ายคลึงของหัวข้อข่าว"""
         similarity = SequenceMatcher(None, title1, title2).ratio()
@@ -709,7 +786,22 @@ class EnhancedNewsProcessor:
         
         # Step 1: Enhanced keyword filtering
         is_valid, reason, details = EnhancedKeywordFilter.check_valid_energy_news(full_text)
-        if not is_valid:
+        
+        # ✅ **เพิ่ม: ตรวจสอบว่าข่าวสำคัญพิเศษหรือไม่**
+        is_important = self._is_important_energy_news(item)
+        
+        if not is_valid and is_important:
+            # ข่าวสำคัญที่ควรอนุญาต แม้จะไม่ผ่านการกรองปกติ
+            reasons_list = details if details else [reason]
+            reasons_list.append("แต่เป็นข่าวพลังงานสำคัญระดับโลก")
+            
+            if DEBUG_FILTERING:
+                print(f"  [IMPORTANT] ข่าวสำคัญผ่านการตรวจสอบ: {item['title'][:50]}...")
+            
+            # ดำเนินการต่อ แม้จะไม่ผ่านการกรองปกติ
+            # (ไม่เพิ่มสถิติ invalid_energy_news และปล่อยให้ผ่าน)
+            pass  # ปล่อยให้ผ่านไปตรวจสอบเงื่อนไขอื่นๆ
+        elif not is_valid:
             self.filter_stats['filtered_by']['invalid_energy_news'] += 1
             debug_details = f"{reason}"
             if details:
@@ -1135,6 +1227,8 @@ def main():
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
     print(f"[CONFIG] Debug filtering: {'Yes' if DEBUG_FILTERING else 'No'}")
     print(f"[CONFIG] Allowed news sources: {ALLOWED_NEWS_SOURCES_LIST if ALLOWED_NEWS_SOURCES_LIST else 'All sources'}")
+    print(f"[CONFIG] Strict filtering: {'Yes' if STRICT_FILTERING else 'No'}")
+    print(f"[CONFIG] Allow market news: {'Yes' if ALLOW_MARKET_NEWS else 'No'}")
     print(f"[CONFIG] จำนวน feed ทั้งหมด: {len(FEEDS)}")
     print(f"[CONFIG] Feed รายการ: {[f[0] for f in FEEDS]}")
     
@@ -1160,12 +1254,13 @@ def main():
         
         # แสดงตัวอย่างข่าวที่ไม่ผ่านการกรอง
         if len(processor.filtered_news) > 0:
-            print(f"\n  ตัวอย่างข่าวที่ไม่ผ่านการกรอง (แสดง 5 อันดับแรก):")
-            for i, filtered in enumerate(processor.filtered_news[:5]):
+            print(f"\n  ตัวอย่างข่าวที่ไม่ผ่านการกรอง (แสดง {min(10, len(processor.filtered_news))} อันดับแรก):")
+            for i, filtered in enumerate(processor.filtered_news[:10]):
                 print(f"    {i+1}. {filtered['title']}")
                 print(f"       เหตุผล: {filtered['reason']}")
                 if filtered.get('details'):
                     print(f"       รายละเอียด: {filtered['details']}")
+                print()
     
     if not news_items:
         print("\n[INFO] ไม่พบข่าวใหม่ที่เกี่ยวข้อง")
