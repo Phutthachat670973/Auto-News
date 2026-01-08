@@ -1016,16 +1016,17 @@ class WTIFuturesFetcher:
         self.api_key = api_key.strip()
         self.base_url = "https://api.oilpriceapi.com/v1"
         
-    def fetch_current_wti_price(self) -> float:
+def fetch_current_wti_price(self) -> float:
         """ดึงราคา WTI ปัจจุบันจาก OilPriceAPI.com"""
-        url = f"{self.base_url}/prices/latest"
+        # ระบุให้ดึงเฉพาะราคา WTI
+        url = f"{self.base_url}/prices/latest?by_code=WTI_USD"
         headers = {
             "Authorization": f"Token {self.api_key}",
             "Content-Type": "application/json"
         }
         
         try:
-            print(f"[WTI] กำลังดึงราคาจาก OilPriceAPI.com...")
+            print(f"[WTI] กำลังดึงราคา WTI Crude จาก OilPriceAPI.com...")
             response = requests.get(url, headers=headers, timeout=15)
             
             if response.status_code == 401:
