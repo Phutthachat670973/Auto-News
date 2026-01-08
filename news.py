@@ -1135,11 +1135,112 @@ class WTIFuturesFetcher:
         except Exception as e:
             raise Exception(f"ไม่สามารถดึงราคา WTI ได้: {str(e)}")
     
-    def calculate_futures_prices(self, current_price: float) -> List[Dict]:
-        """คำนวณราคา futures 12 เดือนข้างหน้า"""
+    def fetch_futures_prices(self, current_price: float) -> List[Dict]:
+        """ดึงราคา WTI futures จริงจาก OilPriceAPI.com"""
+        # ลองดึงราคา futures จาก API ก่อน
+        try:
+            futures_data = self._fetch_real_futures_from_api(current_price)
+            if futures_data:
+                return futures_data
+        except Exception as e:
+            print(f"[WTI] ⚠ ไม่สามารถดึงราคา futures จาก API: {str(e)}")
+        
+        # ถ้าไม่สำเร็จ ใช้การคำนวณแบบประมาณการ
+        print(f"[WTI] ⚠ ใช้การคำนวณราคา futures แบบประมาณการ")
+        return self._calculate_estimated_futures(current_price)
+    
+    def _fetch_real_futures_from_api(self, current_price: float) -> List[Dict]:
+        """ดึงราคา futures จริงจาก API (ถ้า API รองรับ)"""
+        # OilPriceAPI.com ไม่มี endpoint สำหรับ futures โดยตรง
+        # ต้องดึงจากแหล่งอื่นหรือใช้ข้อมูลจาก ICE/NYMEX
+        
+        # ตัวเลือก 1: ลองดึงจาก by_type=futures (ถ้ามี)
+        url = f"{self.base_url}/prices/latest?by_type=futures"
+        headers = {
+            "Authorization": f"Token {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # ลองแปลงข้อมูลเป็น futures format
+                futures_data = self._parse_futures_response(data, current_price)
+                if futures_data:
+                    print(f"[WTI] ✓ ดึงราคา futures จาก API สำเร็จ")
+                    return futures_data
+        except Exception:
+            pass
+        
+        raise Exception("API ไม่รองรับการดึงราคา futures")
+    
+    def _parse_futures_response(self, data: dict, current_price: float) -> List[Dict]:
+        """แปลง API response เป็น futures data format"""
+        futures_data = []
+        
+        # ลองหา futures contracts ใน response
+        if isinstance(data.get('data'), dict):
+            for key, value in data['data'].items():
+                if 'WTI' in str(key).upper() or 'CL' in str(key).upper():
+                    if isinstance(value, dict) and 'price' in value:
+                        # ถ้ามี contract month ใน key
+                        month_match = re.search(r'(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})', str(key).upper())
+                        if month_match:
+                            price = float(value['price'])
+                            futures_data.append({
+                                'contract': month_match.group(0),
+                                'price': price
+                            })
+        
+        elif isinstance(data.get('data'), list):
+            for item in data['data']:
+                if isinstance(item, dict):
+                    code = str(item.get('code', '')).upper()
+                    if 'WTI' in code or 'CL' in code:
+                        price = float(item.get('price', 0))
+                        if price > 0:
+                            futures_data.append({
+                                'contract': code,
+                                'price': price
+                            })
+        
+        # ถ้าพบข้อมูล futures จาก API
+        if futures_data:
+            return self._format_futures_data(futures_data, current_price)
+        
+        return []
+    
+    def _format_futures_data(self, raw_futures: List[Dict], current_price: float) -> List[Dict]:
+        """จัดรูปแบบข้อมูล futures ให้ตรงกับที่ต้องการ"""
+        formatted = []
+        now = datetime.now(TZ)
+        
+        # เรียงลำดับตาม contract date
+        sorted_futures = sorted(raw_futures, key=lambda x: x.get('contract', ''))
+        
+        for i, future in enumerate(sorted_futures[:12]):
+            future_date = now + timedelta(days=30 * (i + 1))
+            price = future.get('price', 0)
+            
+            formatted.append({
+                "month": future_date.strftime("%b %Y"),
+                "contract": future.get('contract', future_date.strftime("%b%y").upper()),
+                "price": round(price, 2),
+                "change": round(price - current_price, 2),
+                "change_pct": round((price - current_price) / current_price * 100, 2)
+            })
+        
+        return formatted
+    
+    def _calculate_estimated_futures(self, current_price: float) -> List[Dict]:
+        """คำนวณราคา futures แบบประมาณการ (fallback)"""
         futures_data = []
         now = datetime.now(TZ)
         
+        # ใช้โมเดลแบบง่ายตาม contango curve
         base_premium = 0.25
         seasonal_factor = 0.15
         
@@ -1147,6 +1248,7 @@ class WTIFuturesFetcher:
             future_date = now + timedelta(days=30 * (i + 1))
             month_num = future_date.month
             
+            # Time premium (contango)
             if i < 3:
                 time_premium = i * base_premium * 0.8
             elif i < 6:
@@ -1154,13 +1256,15 @@ class WTIFuturesFetcher:
             else:
                 time_premium = i * base_premium * 1.2
             
-            if month_num in [12, 1, 2]:
+            # Seasonal adjustment
+            if month_num in [12, 1, 2]:  # ฤดูหนาว
                 seasonal_adj = seasonal_factor * 1.5
-            elif month_num in [6, 7, 8]:
+            elif month_num in [6, 7, 8]:  # ฤดูร้อน
                 seasonal_adj = seasonal_factor * 1.2
             else:
                 seasonal_adj = seasonal_factor * 0.8
             
+            # เพิ่มความผันผวนเล็กน้อย
             import random
             volatility = random.uniform(-0.005, 0.005) * current_price
             
@@ -1171,7 +1275,8 @@ class WTIFuturesFetcher:
                 "contract": future_date.strftime("%b%y").upper(),
                 "price": round(future_price, 2),
                 "change": round(future_price - current_price, 2),
-                "change_pct": round((future_price - current_price) / current_price * 100, 2)
+                "change_pct": round((future_price - current_price) / current_price * 100, 2),
+                "estimated": True
             })
         
         return futures_data
@@ -1190,14 +1295,18 @@ class WTIFuturesFetcher:
             "commodity": "WTI Crude Oil"
         }
         
-        print(f"[WTI] กำลังคำนวณราคา futures 12 เดือน...")
-        futures_data = self.calculate_futures_prices(current_price)
-        print(f"[WTI] ✓ สร้างข้อมูล futures {len(futures_data)} เดือน")
+        print(f"[WTI] กำลังดึงราคา futures 12 เดือน...")
+        futures_data = self.fetch_futures_prices(current_price)
+        print(f"[WTI] ✓ ได้ข้อมูล futures {len(futures_data)} เดือน")
+        
+        # ตรวจสอบว่าเป็นข้อมูลจริงหรือประมาณการ
+        is_estimated = any(f.get('estimated', False) for f in futures_data)
         
         return {
             "current": current_data,
             "futures": futures_data,
-            "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
+            "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
+            "is_estimated": is_estimated
         }
 
 class WTIFlexMessageBuilder:
