@@ -1190,24 +1190,28 @@ class WTIFuturesFetcher:
                             if 'meta' in result and 'regularMarketPrice' in result['meta']:
                                 price = result['meta']['regularMarketPrice']
                                 
-                                if symbol == 'CL=F':
-                                    base_price = price
-                                    print(f"[WTI/Yahoo] ✓ Current Price: ${price:.2f}/barrel")
-                                else:
-                                    change = 0
-                                    change_pct = 0
-                                    
-                                    if base_price:
-                                        change = price - base_price
-                                        change_pct = (change / base_price) * 100
-                                    
-                                    futures_data.append({
-                                        "month": month_label,
-                                        "contract": symbol.replace('.NYM', ''),
-                                        "price": round(price, 2),
-                                        "change": round(change, 2),
-                                        "change_pct": round(change_pct, 2)
-                                    })
+if symbol == 'CL=F':
+    # บันทึกราคา Front Month เป็น base
+    base_price = price
+    print(f"[WTI/Yahoo] ✓ Current Price: ${price:.2f}/barrel")
+else:
+    # คำนวณ change จาก Front Month (base_price) ไม่ใช่ previous close
+    if base_price:
+        change = price - base_price
+        change_pct = (change / base_price) * 100
+    else:
+        # ถ้ายังไม่มี base ให้ใช้ previous close
+        prev_close = result['meta'].get('chartPreviousClose', price)
+        change = price - prev_close
+        change_pct = (change / prev_close) * 100 if prev_close else 0
+    
+    futures_data.append({
+        "month": month_label,
+        "contract": symbol.replace('.NYM', ''),
+        "price": round(price, 2),
+        "change": round(change, 2),
+        "change_pct": round(change_pct, 2)
+    })
                     
                     time.sleep(0.2)  # Rate limiting
                     
