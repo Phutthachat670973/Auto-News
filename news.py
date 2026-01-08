@@ -1002,13 +1002,12 @@ class LineSender:
             print(f"[LINE] Exception: {str(e)}")
             return False
 
-# =============================================================================
-# WTI FUTURES MODULE - OilPriceAPI.com Only
+ WTI FUTURES MODULE - OilPriceAPI.com Only
 # =============================================================================
 class WTIFuturesFetcher:
     """ดึงข้อมูลราคา WTI Futures จาก OilPriceAPI.com เท่านั้น"""
     
-def __init__(self, api_key: str):
+    def __init__(self, api_key: str):
         """Initialize WTI Futures Fetcher"""
         if not api_key or not api_key.strip():
             raise ValueError("OILPRICE_API_KEY is required!")
@@ -1018,7 +1017,6 @@ def __init__(self, api_key: str):
     
     def fetch_current_wti_price(self) -> float:
         """ดึงราคา WTI ปัจจุบันจาก OilPriceAPI.com"""
-        # ระบุให้ดึงเฉพาะราคา WTI
         url = f"{self.base_url}/prices/latest?by_code=WTI_USD"
         headers = {
             "Authorization": f"Token {self.api_key}",
@@ -1030,11 +1028,11 @@ def __init__(self, api_key: str):
             response = requests.get(url, headers=headers, timeout=15)
             
             if response.status_code == 401:
-                raise Exception("❌ API Key ไม่ถูกต้องหรือหมดอายุ - ตรวจสอบที่ oilpriceapi.com")
+                raise Exception("❌ API Key ไม่ถูกต้องหรือหมดอายุ")
             elif response.status_code == 429:
-                raise Exception("❌ เกิน rate limit - รอสักครู่แล้วลองใหม่")
+                raise Exception("❌ เกิน rate limit")
             elif response.status_code == 403:
-                raise Exception("❌ ไม่มีสิทธิ์เข้าถึง - ตรวจสอบ subscription plan")
+                raise Exception("❌ ไม่มีสิทธิ์เข้าถึง")
             
             response.raise_for_status()
             data = response.json()
@@ -1043,43 +1041,26 @@ def __init__(self, api_key: str):
             
             if isinstance(data.get('data'), dict) and 'price' in data['data']:
                 price = float(data['data']['price'])
-                print(f"[WTI] ✓ พบราคาจาก data.price")
             elif isinstance(data.get('data'), dict) and 'WTI' in data['data']:
                 price = float(data['data']['WTI'])
-                print(f"[WTI] ✓ พบราคาจาก data.WTI")
             elif isinstance(data.get('data'), list):
                 for item in data['data']:
                     if isinstance(item, dict):
                         name = str(item.get('name', '')).upper()
                         if 'WTI' in name or 'CRUDE' in name:
                             price = float(item.get('price', 0))
-                            print(f"[WTI] ✓ พบราคาจาก {item.get('name')}")
                             break
             elif 'price' in data:
                 price = float(data['price'])
-                print(f"[WTI] ✓ พบราคาจาก price")
             
             if price and price > 0:
                 print(f"[WTI] ✓ ดึงราคาสำเร็จ: ${price:.2f}/barrel")
                 return price
             else:
-                print(f"[WTI] ⚠ ไม่พบราคา WTI ใน response")
-                print(f"[WTI] Response structure: {list(data.keys())}")
-                raise Exception("ไม่พบข้อมูลราคา WTI ใน API response")
+                raise Exception("ไม่พบข้อมูลราคา WTI")
                 
-        except requests.exceptions.Timeout:
-            raise Exception("❌ API timeout - ลองใหม่อีกครั้ง")
-        except requests.exceptions.ConnectionError:
-            raise Exception("❌ ไม่สามารถเชื่อมต่อ API ได้ - ตรวจสอบ internet connection")
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"❌ Request error: {str(e)}")
-        except ValueError as e:
-            raise Exception(f"❌ ข้อมูลไม่ถูกต้อง: {str(e)}")
         except Exception as e:
-            if "API Key" in str(e) or "rate limit" in str(e):
-                raise
             raise Exception(f"❌ เกิดข้อผิดพลาด: {str(e)}")
-    
     def calculate_futures_prices(self, current_price: float) -> List[Dict]:
         """คำนวณราคา futures 12 เดือนข้างหน้า"""
         futures_data = []
