@@ -43,9 +43,6 @@ BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))
 # Debug mode - เปิดให้เห็นเหตุผลการกรอง
 DEBUG_FILTERING = os.getenv("DEBUG_FILTERING", "1").strip().lower() in ["1", "true", "yes", "y"]
 
-# Score threshold - คะแนนต่ำสุดที่ข่าวต้องได้เพื่อจะส่ง
-SCORE_THRESHOLD = int(os.getenv("SCORE_THRESHOLD", "20"))
-
 # สร้างตัวแปรสำหรับเลือกเว็บข่าวที่ต้องการ
 ALLOWED_NEWS_SOURCES = os.getenv("ALLOWED_NEWS_SOURCES", "").strip()
 if ALLOWED_NEWS_SOURCES:
@@ -55,12 +52,16 @@ else:
     ALLOWED_NEWS_SOURCES_LIST = []
     print("[CONFIG] รับข่าวจากทุกเว็บข่าว")
 
+# ตัวแปรควบคุมความเข้มงวด
+STRICT_FILTERING = os.getenv("STRICT_FILTERING", "0").strip().lower() in ["1", "true", "yes", "y"]
+MIN_BUSINESS_KEYWORDS = int(os.getenv("MIN_BUSINESS_KEYWORDS", "1"))
+
 # Sent links tracking
 SENT_DIR = os.getenv("SENT_DIR", "sent_links")
 os.makedirs(SENT_DIR, exist_ok=True)
 
 # =============================================================================
-# PROJECT DATABASE
+# PROJECT DATABASE (เพิ่มประเทศที่พบในข่าวจริง)
 # =============================================================================
 PROJECTS_BY_COUNTRY = {
     "Thailand": [
@@ -81,6 +82,8 @@ PROJECTS_BY_COUNTRY = {
     "Kazakhstan": ["โครงการดุงกา", "Dunga"],
     "Oman": ["Oman Block 61", "Block 61", "Oman Block 6", "PDO"],
     "UAE": ["Abu Dhabi Offshore 1", "Abu Dhabi Offshore 2", "Abu Dhabi Offshore 3"],
+    "USA": ["Wyoming", "Texas", "Gulf of Mexico"],
+    "International": [],
 }
 
 # =============================================================================
@@ -102,6 +105,18 @@ class EnhancedKeywordFilter:
         'energy', 'electricity', 'power', 'gas', 'oil', 'fuel',
         'power plant', 'renewable', 'solar', 'wind', 'biomass',
         'energy policy', 'energy project', 'energy investment'
+    ]
+    
+    # คำที่บ่งบอกถึงโครงการ/การลงทุนพลังงาน
+    ENERGY_PROJECT_KEYWORDS = [
+        'โครงการ', 'ลงทุน', 'investment', 'discovery', 'พบ', 'สำรวจ',
+        'ขุดเจาะ', 'drilling', 'สำรอง', 'reserve', 'ผลิต', 'production',
+        'ส่งออก', 'export', 'สัญญา', 'contract', 'deal', 'agreement',
+        'มูลค่า', 'million', 'billion', 'ดอลลาร์', 'dollar', 'บาท',
+        'โรงไฟฟ้า', 'power plant', 'ไฟฟ้า', 'electricity', 'พลังงาน', 'energy',
+        'ก๊าซ', 'gas', 'LNG', 'น้ำมัน', 'oil', 'เชื้อเพลิง', 'fuel',
+        'สัมปทาน', 'concession', 'สัมปทานพลังงาน', 'สัมปทานก๊าซ',
+        'แหล่ง', 'field', 'แหล่งก๊าซ', 'gas field', 'แหล่งน้ำมัน', 'oil field'
     ]
     
     # คำที่บ่งบอกถึงธุรกิจ/โครงการ
@@ -136,131 +151,84 @@ class EnhancedKeywordFilter:
     ]
     
     @classmethod
-    def check_and_score_energy_news(cls, text: str) -> tuple:
-        """ตรวจสอบและให้คะแนนข่าวพลังงาน"""
+    def check_valid_energy_news(cls, text: str) -> tuple:
+        """ตรวจสอบว่าเป็นข่าวพลังงานที่เกี่ยวข้องกับธุรกิจหรือไม่ และระบุเหตุผล"""
         text_lower = text.lower()
-        score = 0
         reasons = []
-        matched_keywords = []
         
-        # 1. ตรวจสอบว่าเป็นข่าวสังคมหรือไม่ (คะแนนติดลบ)
+        # 1. ตรวจสอบว่าเป็นข่าวสังคมหรือไม่ (ปรับเงื่อนไขให้ยืดหยุ่น)
+        social_keywords_found = []
         for exclude in cls.EXCLUDE_KEYWORDS:
             if exclude.lower() in text_lower:
-                score -= 20
-                reasons.append(f"มีคำต้องห้าม: '{exclude}' (-20 คะแนน)")
-                return False, score, "ข่าวสังคม", reasons, matched_keywords
+                social_keywords_found.append(exclude)
         
-        # 2. ตรวจสอบคำพลังงาน (พื้นฐาน)
+        # ถ้าพบคำต้องห้ามมากกว่า 1 คำ และไม่มีคำพลังงานหลัก ให้ถือว่าเป็นข่าวสังคม
+        if len(social_keywords_found) > 1:
+            # แต่ต้องตรวจสอบว่ามีคำพลังงานหลักอยู่ด้วยหรือไม่
+            has_energy_keyword = False
+            for energy_word in ['พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ก๊าซ', 'LNG', 'น้ำมัน', 'โรงไฟฟ้า']:
+                if energy_word in text_lower:
+                    has_energy_keyword = True
+                    break
+            
+            if not has_energy_keyword:
+                reasons.append(f"มีคำต้องห้ามหลายคำ: {', '.join(social_keywords_found[:3])}")
+                return False, "ข่าวสังคม", reasons
+        
+        # 2. ตรวจสอบว่ามีคำที่เกี่ยวข้องกับพลังงานหรือโครงการพลังงาน
+        all_energy_keywords = cls.ENERGY_KEYWORDS + cls.ENERGY_PROJECT_KEYWORDS
         found_energy_keywords = []
-        for keyword in cls.ENERGY_KEYWORDS:
+        for keyword in all_energy_keywords:
             if keyword.lower() in text_lower:
                 found_energy_keywords.append(keyword)
         
-        if found_energy_keywords:
-            energy_score = min(len(found_energy_keywords) * 5, 15)  # สูงสุด 15 คะแนน
-            score += energy_score
-            reasons.append(f"พบคำพลังงาน ({len(found_energy_keywords)} คำ): +{energy_score} คะแนน")
-            matched_keywords.extend(found_energy_keywords[:3])
-        else:
-            reasons.append("ไม่มีคำที่เกี่ยวข้องกับพลังงาน (0 คะแนน)")
+        # ถ้าไม่พบคำพลังงานเลย
+        if not found_energy_keywords:
+            reasons.append("ไม่มีคำที่เกี่ยวข้องกับพลังงาน")
+            return False, "ไม่เกี่ยวข้องกับพลังงาน", reasons
         
-        # 3. ตรวจสอบคำธุรกิจ (สำคัญมาก)
+        reasons.append(f"พบคำพลังงาน: {', '.join(found_energy_keywords[:3])}")
+        
+        # 3. ตรวจสอบว่ามีคำที่บ่งบอกถึงธุรกิจ/โครงการ (ปรับให้ยืดหยุ่น)
         found_business_keywords = []
         for keyword in cls.BUSINESS_KEYWORDS:
             if keyword.lower() in text_lower:
                 found_business_keywords.append(keyword)
         
+        # ถ้ามีคำพลังงานหลัก (เช่น โครงการ, ลงทุน, มูลค่า) ให้ผ่อนปรน
+        has_critical_words = any(word in text_lower for word in ['โครงการ', 'ลงทุน', 'investment', 'มูลค่า', 'million', 'billion'])
+        
+        if not found_business_keywords and not has_critical_words:
+            reasons.append("ไม่มีคำบ่งบอกธุรกิจ/โครงการ")
+            return False, "ไม่ใช่ข่าวธุรกิจ", reasons
+        
         if found_business_keywords:
-            business_score = min(len(found_business_keywords) * 8, 40)  # สูงสุด 40 คะแนน
-            score += business_score
-            reasons.append(f"พบคำธุรกิจ ({len(found_business_keywords)} คำ): +{business_score} คะแนน")
-            matched_keywords.extend(found_business_keywords[:3])
-        else:
-            reasons.append("ไม่มีคำบ่งบอกธุรกิจ/โครงการ (0 คะแนน)")
+            reasons.append(f"พบคำธุรกิจ: {', '.join(found_business_keywords[:3])}")
         
-        # 4. โบนัสสำหรับคำสำคัญพิเศษ
-        special_bonus_keywords = {
-            'โครงการ': 10,
-            'ลงทุน': 10,
-            'สัมปทาน': 15,
-            'contract': 10,
-            'investment': 10,
-            'discovery': 15,
-            'พบ': 10,
-            'สำรวจ': 10
-        }
-        
-        special_bonus = 0
-        for keyword, bonus in special_bonus_keywords.items():
-            if keyword.lower() in text_lower:
-                special_bonus += bonus
-        
-        if special_bonus > 0:
-            score += special_bonus
-            reasons.append(f"โบนัสคำสำคัญพิเศษ: +{special_bonus} คะแนน")
-        
-        # 5. โบนัสสำหรับชื่อบริษัทใหญ่
-        big_companies = ['murphy', 'shell', 'exxon', 'chevron', 'ptt', 'pttep', 'gulf', 'egco', 'บี.กริม', 'bgrimm']
-        for company in big_companies:
-            if company.lower() in text_lower:
-                score += 10
-                reasons.append(f"พบบริษัทใหญ่ ({company}): +10 คะแนน")
-                break
-        
-        # 6. โบนัสสำหรับจำนวนเงิน (มูลค่าสูง)
-        money_patterns = [
-            (r'(\d+)\s*ล้านดอลลาร์', 15),
-            (r'(\d+)\s*พันล้านดอลลาร์', 25),
-            (r'(\d+)\s*ล้านเหรียญ', 15),
-            (r'(\d+)\s*ล้านบาท', 10),
-            (r'(\d+)\s*พันล้านบาท', 20),
-            (r'\$(\d+)\s*million', 15),
-            (r'\$(\d+)\s*billion', 25)
-        ]
-        
-        for pattern, bonus in money_patterns:
-            if re.search(pattern, text_lower):
-                score += bonus
-                reasons.append(f"พบมูลค่าการลงทุน: +{bonus} คะแนน")
-                break
-        
-        # 7. ลดคะแนนสำหรับข่าวราคา (ไม่ใช่โครงการ)
-        price_keywords = ['ราคา', 'price', 'market', 'ตลาด', 'ซื้อขาย']
-        price_count = sum(1 for kw in price_keywords if kw in text_lower)
-        if price_count >= 2 and len(found_business_keywords) < 2:
-            score -= 10
-            reasons.append(f"ข่าวราคา/ตลาด: -10 คะแนน")
-        
-        # 8. โบนัสสำหรับประเทศที่สนใจ
-        target_countries = ['เวียดนาม', 'vietnam', 'เมียนมา', 'myanmar', 'มาเลเซีย', 'malaysia', 'อินโดนีเซีย', 'indonesia']
-        for country in target_countries:
-            if country.lower() in text_lower:
-                score += 5
-                reasons.append(f"ประเทศเป้าหมาย ({country}): +5 คะแนน")
-                break
-        
-        # ตรวจสอบว่าผ่านเกณฑ์ขั้นต่ำหรือไม่
-        if len(found_energy_keywords) == 0:
-            return False, score, "ไม่เกี่ยวข้องกับพลังงาน", reasons, matched_keywords
-        
-        return True, score, "ผ่าน", reasons, matched_keywords
+        return True, "ผ่าน", reasons
     
     @classmethod
     def detect_country(cls, text: str) -> str:
-        """Detect country from text"""
+        """Detect country from text with fallback logic"""
         text_lower = text.lower()
         
         country_patterns = {
-            "Thailand": ['ไทย', 'ประเทศไทย', 'thailand', 'bangkok'],
-            "Myanmar": ['เมียนมา', 'myanmar', 'ย่างกุ้ง', 'yangon'],
+            "Thailand": ['ไทย', 'ประเทศไทย', 'thailand', 'bangkok', 'กรุงเทพ', 'กสิกรไทย', 'กระทรวงพาณิชย์'],
+            "Myanmar": ['เมียนมา', 'myanmar', 'ย่างกุ้ง', 'yangon', 'พม่า'],
             "Malaysia": ['มาเลเซีย', 'malaysia', 'กัวลาลัมเปอร์', 'kuala lumpur'],
-            "Vietnam": ['เวียดนาม', 'vietnam', 'ฮานอย', 'hanoi'],
+            "Vietnam": ['เวียดนาม', 'vietnam', 'ฮานอย', 'hanoi', 'เวียน', 'viet'],
             "Indonesia": ['อินโดนีเซีย', 'indonesia', 'จาการ์ตา', 'jakarta'],
             "Kazakhstan": ['คาซัคสถาน', 'kazakhstan', 'astana'],
             "Oman": ['โอมาน', 'oman', 'muscat'],
-            "UAE": ['ยูเออี', 'uae', 'ดูไบ', 'dubai', 'อาบูดาบี', 'abu dhabi']
+            "UAE": ['ยูเออี', 'uae', 'ดูไบ', 'dubai', 'อาบูดาบี', 'abu dhabi', 'emirates'],
+            "USA": ['สหรัฐฯ', 'สหรัฐอเมริกา', 'usa', 'united states', 'wyoming', 'texas', 'อเมริกา'],
+            "Russia": ['รัสเซีย', 'russia', 'moscow'],
+            "China": ['จีน', 'china', 'ปักกิ่ง', 'beijing'],
+            "UK": ['อังกฤษ', 'united kingdom', 'uk', 'ลอนดอน', 'london'],
+            "International": ['นานาชาติ', 'international', 'global', 'ทั่วโลก', 'หลายประเทศ']
         }
         
+        # ตรวจสอบตามลำดับความสำคัญ
         for country, patterns in country_patterns.items():
             if any(pattern in text_lower for pattern in patterns):
                 return country
@@ -275,11 +243,11 @@ def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
 
 FEEDS = [
     ("GoogleNewsTH", "thai", gnews_rss(
-        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "สัมปทาน") -"รถยนต์" -"ตลาดรถ" -"ดารา" -"นักแสดง"',
+        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "สัมปทาน" OR "โครงการ" OR "ลงทุน" OR "สำรวจ" OR "ขุดเจาะ") -"รถยนต์" -"ตลาดรถ" -"ดารา" -"นักแสดง" -"ร่วมบุญ"',
         hl="th", gl="TH", ceid="TH:th"
     )),
     ("GoogleNewsEN", "international", gnews_rss(
-        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia) -car -automotive -celebrity',
+        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project" OR "energy investment" OR "oil discovery" OR "gas field" OR "LNG" OR "energy deal") AND (Thailand OR Vietnam OR Malaysia OR Indonesia OR Myanmar OR Asia) -car -automotive -celebrity',
         hl="en", gl="US", ceid="US:en"
     )),
     ("EnergyNewsCenter", "direct", "https://www.energynewscenter.com/feed/"),
@@ -326,8 +294,16 @@ def is_allowed_source(url: str) -> bool:
     
     # ตรวจสอบว่า domain อยู่ในรายการที่อนุญาต
     for allowed_source in ALLOWED_NEWS_SOURCES_LIST:
-        if allowed_source in domain:  # ใช้ partial match เช่น "reuters" จะ match "reuters.com"
+        if allowed_source.lower() in domain.lower():  # ใช้ case-insensitive partial match
             return True
+    
+    # ถ้าเป็น Google News ให้อนุญาตเสมอ (เพราะเป็น aggregator)
+    if 'news.google.com' in domain:
+        return True
+    
+    # สำหรับ DRY_RUN ให้แสดง debug message
+    if DRY_RUN and DEBUG_FILTERING:
+        print(f"  [DEBUG] แหล่งข่าวไม่ได้รับการอนุญาต: {domain}")
     
     return False
 
@@ -545,7 +521,7 @@ class LLMAnalyzer:
         }
 
 # =============================================================================
-# ENHANCED NEWS PROCESSOR (ระบบคะแนน)
+# ENHANCED NEWS PROCESSOR (แก้ไขปัญหาข่าวซ้ำ)
 # =============================================================================
 class EnhancedNewsProcessor:
     def __init__(self):
@@ -582,24 +558,22 @@ class EnhancedNewsProcessor:
         # สำหรับเก็บสถิติ
         self.filter_stats = {
             'total_processed': 0,
-            'passed_by_score': 0,
-            'failed_by_score': 0,
             'filtered_by': {
                 'no_title': 0,
                 'no_url': 0,
                 'already_sent': 0,
                 'out_of_window': 0,
                 'not_allowed_source': 0,
+                'invalid_energy_news': 0,
                 'no_country': 0,
                 'duplicate_in_session': 0,
                 'similar_news_exists': 0,
+                'passed': 0
             }
         }
         
         # สำหรับเก็บข่าวที่ไม่ผ่านการกรอง
         self.filtered_news = []
-        # สำหรับเก็บข่าวที่ได้คะแนน แต่ไม่ถึงเกณฑ์
-        self.low_score_news = []
     
     def get_source_name(self, url: str) -> str:
         """ดึงชื่อเว็บข่าวจาก URL"""
@@ -614,66 +588,6 @@ class EnhancedNewsProcessor:
         
         # หากไม่เจอ ให้ใช้ domain เป็นชื่อ
         return domain
-    
-    def _calculate_news_score(self, item: dict, full_text: str) -> tuple:
-        """คำนวณคะแนนข่าว"""
-        base_score = 0
-        reasons = []
-        
-        # 1. คะแนนจากเนื้อหา (Keyword scoring)
-        is_valid, content_score, reason, details, matched_keywords = EnhancedKeywordFilter.check_and_score_energy_news(full_text)
-        base_score += content_score
-        reasons.extend(details)
-        
-        if not is_valid:
-            return 0, reasons, matched_keywords
-        
-        # 2. คะแนนจากแหล่งข่าว
-        domain = extract_domain(item.get('canon_url') or item.get('url', ''))
-        source_bonus = {
-            'reuters.com': 15,
-            'bloomberg.com': 15,
-            'bangkokpost.com': 10,
-            'thansettakij.com': 8,
-            'energynewscenter.com': 12
-        }
-        
-        if domain in source_bonus:
-            base_score += source_bonus[domain]
-            reasons.append(f"แหล่งข่าวคุณภาพ ({domain}): +{source_bonus[domain]} คะแนน")
-        elif domain and 'news.google.com' not in domain:
-            base_score += 5
-            reasons.append(f"แหล่งข่าวอื่น: +5 คะแนน")
-        
-        # 3. คะแนนจากความสดใหม่
-        if item.get('published_dt'):
-            hours_ago = (now_tz() - item['published_dt']).total_seconds() / 3600
-            if hours_ago <= 6:
-                base_score += 10
-                reasons.append(f"ข่าวสดใหม่ (<6 ชม.): +10 คะแนน")
-            elif hours_ago <= 24:
-                base_score += 5
-                reasons.append(f"ข่าวสดใหม่ (<24 ชม.): +5 คะแนน")
-        
-        # 4. คะแนนจากความยาวเนื้อหา
-        if len(item.get('summary', '')) > 100:
-            base_score += 5
-            reasons.append(f"เนื้อหาครบถ้วน: +5 คะแนน")
-        
-        # 5. คะแนนจาก feed type
-        if item.get('feed_type') == 'direct':
-            base_score += 8
-            reasons.append(f"จากเว็บตรง: +8 คะแนน")
-        
-        # 6. ลดคะแนนสำหรับข่าวซ้ำ
-        title_lower = item.get('title', '').lower()
-        for existing_title in self._title_cache:
-            if SequenceMatcher(None, title_lower, existing_title).ratio() > 0.7:
-                base_score -= 15
-                reasons.append(f"ข่าวคล้ายกับที่มีอยู่: -15 คะแนน")
-                break
-        
-        return max(0, base_score), reasons, matched_keywords
     
     def _is_similar_title(self, title1: str, title2: str, threshold: float = 0.8) -> bool:
         """ตรวจสอบความคล้ายคลึงของหัวข้อข่าว"""
@@ -695,7 +609,7 @@ class EnhancedNewsProcessor:
         return f"{country}_{'_'.join(words)}"
     
     def _score_news_item(self, item: dict) -> int:
-        """ให้คะแนนข่าวตามคุณภาพ (เก่า)"""
+        """ให้คะแนนข่าวตามคุณภาพ"""
         score = 0
         
         # มี URL จริง (ไม่ใช่ google news)
@@ -718,6 +632,17 @@ class EnhancedNewsProcessor:
         
         return score
     
+    def _select_better_news(self, item1: dict, item2: dict) -> dict:
+        """เลือกข่าวที่ดีกว่าจากข่าวที่คล้ายกัน"""
+        score1 = self._score_news_item(item1)
+        score2 = self._score_news_item(item2)
+        
+        if DEBUG_FILTERING:
+            print(f"  [DEDUP] ข่าว 1: {score1} คะแนน | ข่าว 2: {score2} คะแนน")
+        
+        # เลือกข่าวที่มีคะแนนสูงกว่า
+        return item1 if score1 >= score2 else item2
+    
     def fetch_and_filter_news(self):
         """Fetch and filter news from all feeds"""
         all_news = []
@@ -725,21 +650,20 @@ class EnhancedNewsProcessor:
         # รีเซ็ตสถิติ
         self.filter_stats = {
             'total_processed': 0,
-            'passed_by_score': 0,
-            'failed_by_score': 0,
             'filtered_by': {
                 'no_title': 0,
                 'no_url': 0,
                 'already_sent': 0,
                 'out_of_window': 0,
                 'not_allowed_source': 0,
+                'invalid_energy_news': 0,
                 'no_country': 0,
                 'duplicate_in_session': 0,
                 'similar_news_exists': 0,
+                'passed': 0
             }
         }
         self.filtered_news = []
-        self.low_score_news = []
         
         for feed_name, feed_type, feed_url in FEEDS:
             print(f"\n[Fetching] {feed_name} ({feed_type})...")
@@ -752,25 +676,13 @@ class EnhancedNewsProcessor:
                 
                 for entry in entries[:limit]:
                     self.filter_stats['total_processed'] += 1
-                    news_item, filter_reason, score = self._process_entry_with_scoring(entry, feed_name, feed_type)
-                    
+                    news_item, filter_reason = self._process_entry_with_debug(entry, feed_name, feed_type)
                     if news_item:
-                        if score >= SCORE_THRESHOLD:
-                            all_news.append(news_item)
-                            self.filter_stats['passed_by_score'] += 1
-                            print(f"  ✓ [{score} คะแนน] {news_item['title'][:50]}...")
-                        else:
-                            self.filter_stats['failed_by_score'] += 1
-                            self.low_score_news.append({
-                                'title': news_item['title'][:50],
-                                'score': score,
-                                'details': news_item.get('score_details', [])
-                            })
-                            if DEBUG_FILTERING:
-                                print(f"  ⚠ [{score} คะแนน] {news_item['title'][:50]}... (ต่ำกว่าเกณฑ์ {SCORE_THRESHOLD})")
+                        all_news.append(news_item)
+                        self.filter_stats['filtered_by']['passed'] += 1
+                        print(f"  ✓ {news_item['title'][:50]}...")
                     elif filter_reason:
-                        if DEBUG_FILTERING:
-                            print(f"  ✗ {filter_reason}")
+                        print(f"  ✗ {filter_reason}")
                         
             except Exception as e:
                 print(f"  ✗ Error: {str(e)}")
@@ -778,33 +690,56 @@ class EnhancedNewsProcessor:
         # Step 1.5: Remove group duplicates
         all_news = self._remove_group_duplicates(all_news)
         
-        # เรียงลำดับตามคะแนน (สูงสุดก่อน)
-        all_news.sort(key=lambda x: -x.get('score', 0))
+        # Sort by date (ใหม่ที่สุดก่อน)
+        all_news.sort(key=lambda x: -((x.get('published_dt') or datetime.min).timestamp()))
         
         return all_news
     
-    def _process_entry_with_scoring(self, entry, feed_name: str, feed_type: str):
-        """Process individual news entry with scoring system"""
+    def _process_entry_with_debug(self, entry, feed_name: str, feed_type: str):
+        """Process individual news entry with debug info"""
         item = parse_entry(entry, feed_name, feed_type)
         
         # Basic validation
         if not item["title"]:
             self.filter_stats['filtered_by']['no_title'] += 1
-            return None, "✗ ไม่มีหัวข้อข่าว", 0
+            self.filtered_news.append({
+                'title': 'ไม่มีหัวข้อข่าว',
+                'reason': 'ไม่มีหัวข้อข่าว',
+                'details': 'title is empty'
+            })
+            return None, f"✗ ไม่มีหัวข้อข่าว"
         
         if not item["url"]:
             self.filter_stats['filtered_by']['no_url'] += 1
-            return None, "✗ ไม่มี URL", 0
+            self.filtered_news.append({
+                'title': item.get('title', 'ไม่มีหัวข้อ')[:50],
+                'reason': 'ไม่มี URL',
+                'details': 'url is empty'
+            })
+            return None, f"✗ ไม่มี URL"
         
         # Check if already sent
         if item["canon_url"] in self.sent_links or item["url"] in self.sent_links:
             self.filter_stats['filtered_by']['already_sent'] += 1
-            return None, f"✗ ส่งแล้วก่อนหน้า: {item['title'][:30]}...", 0
+            self.filtered_news.append({
+                'title': item['title'][:50],
+                'reason': 'ส่งแล้วก่อนหน้า',
+                'details': f"URL: {item['canon_url'][:50] if item['canon_url'] else item['url'][:50]}"
+            })
+            return None, f"✗ ส่งแล้วก่อนหน้า: {item['title'][:30]}..."
         
         # Check time window
         if item["published_dt"] and not in_time_window(item["published_dt"], WINDOW_HOURS):
             self.filter_stats['filtered_by']['out_of_window'] += 1
-            return None, f"✗ เกินเวลาที่กำหนด (WINDOW_HOURS={WINDOW_HOURS} ชั่วโมง)", 0
+            if item["published_dt"]:
+                time_diff = now_tz() - item["published_dt"]
+                hours_diff = time_diff.total_seconds() / 3600
+                self.filtered_news.append({
+                    'title': item['title'][:50],
+                    'reason': 'เกินเวลาที่กำหนด',
+                    'details': f"เผยแพร่: {item['published_dt'].strftime('%Y-%m-%d %H:%M')} ({hours_diff:.1f} ชม.ที่ผ่านมา)"
+                })
+            return None, f"✗ เกินเวลาที่กำหนด (WINDOW_HOURS={WINDOW_HOURS} ชั่วโมง)"
         
         # สำหรับเว็บตรง (direct) ไม่ต้องตรวจสอบ ALLOWED_NEWS_SOURCES
         if feed_type != "direct":
@@ -812,65 +747,103 @@ class EnhancedNewsProcessor:
             display_url = item["canon_url"] or item["url"]
             if not is_allowed_source(display_url):
                 self.filter_stats['filtered_by']['not_allowed_source'] += 1
-                return None, f"✗ แหล่งข่าวไม่อนุญาต: {extract_domain(display_url)}", 0
+                domain = extract_domain(display_url)
+                self.filtered_news.append({
+                    'title': item['title'][:50],
+                    'reason': 'แหล่งข่าวไม่อนุญาต',
+                    'details': f"โดเมน: {domain}"
+                })
+                return None, f"✗ แหล่งข่าวไม่อนุญาต: {domain}"
         
         # Combine text for analysis
         full_text = f"{item['title']} {item['summary']}"
         
-        # Step 1: Calculate content score
-        content_score, score_details, matched_keywords = self._calculate_news_score(item, full_text)
+        # Step 1: Enhanced keyword filtering
+        is_valid, reason, details = EnhancedKeywordFilter.check_valid_energy_news(full_text)
+        if not is_valid:
+            self.filter_stats['filtered_by']['invalid_energy_news'] += 1
+            debug_details = f"{reason}"
+            if details:
+                debug_details += f" ({'; '.join(details)})"
+            
+            self.filtered_news.append({
+                'title': item['title'][:50],
+                'reason': reason,
+                'details': '; '.join(details) if details else reason
+            })
+            
+            return None, f"✗ {debug_details}"
         
-        # ถ้าคะแนนเป็น 0 (ไม่ผ่าน keyword filter)
-        if content_score == 0:
-            self.filter_stats['filtered_by']['no_country'] += 1  # ใช้เป็นหมวดหมู่ทั่วไป
-            return None, f"✗ ไม่ผ่านเกณฑ์เนื้อหา (0 คะแนน)", 0
-        
-        # Step 2: Detect country
+        # Step 2: Detect country with fallback
         country = EnhancedKeywordFilter.detect_country(full_text)
+        
+        # ถ้าไม่พบประเทศจากข้อความ
         if not country:
-            # สำหรับเว็บพลังงานโดยตรง ให้ใช้ Thailand เป็น default
-            if feed_type == "direct":
+            # สำหรับข่าวภาษาไทย (GoogleNewsTH) ให้ใช้ Thailand เป็น default
+            if feed_name == "GoogleNewsTH":
                 country = "Thailand"
+            # สำหรับข่าวภาษาอังกฤษที่มีเนื้อหาเกี่ยวกับเอเชียตะวันออกเฉียงใต้
+            elif feed_name == "GoogleNewsEN":
+                # ตรวจสอบว่ามีคำที่เกี่ยวข้องกับภูมิภาคนี้หรือไม่
+                sea_keywords = ['thailand', 'vietnam', 'malaysia', 'indonesia', 'myanmar', 'laos', 'cambodia', 'philippines']
+                if any(keyword in full_text.lower() for keyword in sea_keywords):
+                    # ใช้ประเทศแรกที่พบ
+                    for keyword, country_name in [('thailand', 'Thailand'), ('vietnam', 'Vietnam'), 
+                                                  ('malaysia', 'Malaysia'), ('indonesia', 'Indonesia')]:
+                        if keyword in full_text.lower():
+                            country = country_name
+                            break
+                    if not country:
+                        country = "International"
+                else:
+                    country = "International"
             else:
-                self.filter_stats['filtered_by']['no_country'] += 1
-                content_score -= 10  # ลดคะแนนสำหรับไม่มีประเทศ
-                score_details.append("ไม่มีประเทศที่เกี่ยวข้อง: -10 คะแนน")
+                # สำหรับ feed อื่นๆ
+                country = "International"
         
         # Step 3: ตรวจสอบข่าวซ้ำใน session เดียวกัน
         title_lower = item['title'].lower()
-        duplicate_found = False
         for existing_title in self._title_cache:
             if self._is_similar_title(title_lower, existing_title, threshold=0.7):
-                duplicate_found = True
-                break
-        
-        if duplicate_found:
-            self.filter_stats['filtered_by']['duplicate_in_session'] += 1
-            return None, f"✗ ข่าวซ้ำใน session", content_score
-        
+                self.filter_stats['filtered_by']['duplicate_in_session'] += 1
+                self.filtered_news.append({
+                    'title': item['title'][:50],
+                    'reason': 'ข่าวซ้ำใน session',
+                    'details': f"คล้ายกับ: {existing_title[:50]}..."
+                })
+                return None, f"✗ ข่าวซ้ำใน session"
         self._title_cache.append(title_lower)
         
         # Step 4: Check for similar existing news
         existing_item = self._find_similar_news(item, country)
         if existing_item:
             self.filter_stats['filtered_by']['similar_news_exists'] += 1
-            # เลือกข่าวที่มีคะแนนสูงกว่า
-            if content_score <= existing_item.get('score', 0):
-                return None, f"✗ มีข่าวที่ดีกว่าอยู่แล้ว", content_score
-            else:
+            selected_item = self._select_better_news(item, existing_item)
+            if selected_item == item:
                 # แทนที่ข่าวเก่าด้วยข่าวใหม่
                 self._processed_items = [it for it in self._processed_items if it != existing_item]
+                self.filtered_news.append({
+                    'title': existing_item['title'][:50],
+                    'reason': 'ถูกแทนที่ด้วยข่าวที่ดีกว่า',
+                    'details': f"แทนที่ด้วย: {item['title'][:50]}..."
+                })
+            else:
+                # ข่าวใหม่แย่กว่า ไม่ต้องเพิ่ม
+                self.filtered_news.append({
+                    'title': item['title'][:50],
+                    'reason': 'ถูกแทนที่ด้วยข่าวที่ดีกว่า',
+                    'details': f"มีข่าวที่ดีกว่าอยู่แล้ว: {existing_item['title'][:50]}..."
+                })
+                return None, f"✗ มีข่าวที่ดีกว่าอยู่แล้ว"
         
         # Step 5: LLM analysis (สำหรับสรุปข่าวเท่านั้น)
         llm_summary = ""
-        if USE_LLM_SUMMARY and self.llm_analyzer and content_score >= 30:  # ใช้ LLM เฉพาะข่าวสำคัญ
+        if USE_LLM_SUMMARY and self.llm_analyzer:
             llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
             
             # ใช้ LLM country ถ้าตรวจพบ
             if llm_analysis['country'] and llm_analysis['country'] in PROJECTS_BY_COUNTRY:
                 country = llm_analysis['country']
-                content_score += 5
-                score_details.append("LLM ตรวจจับประเทศ: +5 คะแนน")
             
             # ใช้ summary จาก LLM
             if llm_analysis.get('summary_th'):
@@ -897,16 +870,13 @@ class EnhancedNewsProcessor:
             'llm_summary': llm_summary,
             'feed': feed_name,
             'feed_type': feed_type,
-            'simple_summary': create_simple_summary(full_text, 100),
-            'score': content_score,
-            'score_details': score_details,
-            'matched_keywords': matched_keywords
+            'simple_summary': create_simple_summary(full_text, 100)
         }
         
         # เก็บไว้ใน processed items
         self._processed_items.append(final_item)
         
-        return final_item, None, content_score
+        return final_item, None
     
     def _find_similar_news(self, new_item: dict, country: str):
         """ค้นหาข่าวที่คล้ายกัน"""
@@ -943,7 +913,7 @@ class EnhancedNewsProcessor:
             self._group_cache.add(group_key)
             unique_items.append(item)
         
-        if DEBUG_FILTERING and len(news_items) > len(unique_items):
+        if DEBUG_FILTERING:
             print(f"[DEDUP] หลังจากลบข่าวซ้ำ: {len(news_items)} -> {len(unique_items)} ข่าว")
         return unique_items
 
@@ -960,19 +930,21 @@ class EnhancedLineMessageBuilder:
         pub_dt = news_item.get('published_dt')
         time_str = pub_dt.strftime("%d/%m/%Y %H:%M") if pub_dt else ""
         
-        # สีตามคะแนน (แดง=สูง, เขียว=กลาง, เทา=ต่ำ)
-        score = news_item.get('score', 0)
-        if score >= 40:
-            color = "#FF6B6B"  # แดง - สำคัญมาก
-        elif score >= 30:
-            color = "#FFD166"  # เหลือง - สำคัญ
-        elif score >= 20:
-            color = "#06D6A0"  # เขียว - ปานกลาง
-        else:
-            color = "#888888"  # เทา - ต่ำ
+        # สีตามประเทศ
+        colors = {
+            "Thailand": "#FF6B6B",
+            "Vietnam": "#4ECDC4",
+            "Myanmar": "#FFD166",
+            "Malaysia": "#06D6A0",
+            "Indonesia": "#118AB2",
+            "UAE": "#9D4EDD",
+            "Oman": "#F15BB5",
+            "Kazakhstan": "#00BBF9",
+            "USA": "#FF9E00",
+            "International": "#888888"
+        }
         
-        # เพิ่มคะแนนใน title
-        title_with_score = f"[{score} คะแนน] {title}"
+        color = colors.get(news_item.get('country', 'International'), "#888888")
         
         # Build bubble contents
         contents = [
@@ -982,7 +954,7 @@ class EnhancedLineMessageBuilder:
                 "contents": [
                     {
                         "type": "text",
-                        "text": cut(title_with_score, 80),
+                        "text": title,
                         "weight": "bold",
                         "size": "md",
                         "wrap": True,
@@ -1081,20 +1053,6 @@ class EnhancedLineMessageBuilder:
                 "color": "#424242"
             })
         
-        # ✅ **เพิ่มคะแนนและเหตุผล (แสดงใน debug mode เท่านั้น)**
-        if DEBUG_FILTERING and news_item.get('score_details'):
-            score_details = news_item.get('score_details', [])[:3]  # แสดงแค่ 3 ข้อแรก
-            details_text = " | ".join([d.split(':')[0] for d in score_details])
-            if details_text:
-                contents.append({
-                    "type": "text",
-                    "text": f"🔍 {details_text}",
-                    "size": "xxs",
-                    "color": "#888888",
-                    "margin": "xs",
-                    "wrap": True
-                })
-        
         # Create bubble
         bubble = {
             "type": "bubble",
@@ -1144,9 +1102,6 @@ class EnhancedLineMessageBuilder:
         if not bubbles:
             return None
         
-        # เรียงลำดับตามคะแนนใหม่ (สูงสุดอยู่บน)
-        bubbles.sort(key=lambda x: -int(re.search(r'\[(\d+)\s*คะแนน\]', x['body']['contents'][0]['contents'][0]['text']).group(1) if re.search(r'\[(\d+)\s*คะแนน\]', x['body']['contents'][0]['contents'][0]['text']) else 0))
-        
         return {
             "type": "flex",
             "altText": f"สรุปข่าวพลังงาน {datetime.now(TZ).strftime('%d/%m/%Y')} ({len(bubbles)} ข่าว)",
@@ -1180,30 +1135,25 @@ class LineSender:
                 title = ""
                 source = ""
                 country = ""
-                score = 0
                 
                 for content in body_contents:
                     if content.get('type') == 'text':
                         text = content.get('text', '')
-                        if 'คะแนน' in text and not title:
-                            title = text[:80]
-                            # ดึงคะแนน
-                            match = re.search(r'\[(\d+)\s*คะแนน\]', text)
-                            if match:
-                                score = int(match.group(1))
+                        if len(text) > 10 and not title:
+                            title = text[:60]
                         elif '📰' in text or '🌐' in text:
                             source = text
                         elif text.startswith("ประเทศ:"):
                             country = text.replace("ประเทศ: ", "")
                 
-                print(f"{i+1}. [{score} คะแนน] {title.replace(f'[{score} คะแนน] ', '')}")
+                print(f"{i+1}. {title}")
                 if country:
                     print(f"   ประเทศ: {country}")
                 if source:
                     print(f"   แหล่งข่าว: {source}")
                 print()
             
-            print(f"Total: {len(contents)} news items (Threshold: {SCORE_THRESHOLD}+)")
+            print(f"Total: {len(contents)} news items")
             return True
         
         url = "https://api.line.me/v2/bot/message/broadcast"
@@ -1232,7 +1182,7 @@ class LineSender:
 # =============================================================================
 def main():
     print("="*60)
-    print("ระบบติดตามข่าวพลังงาน - ระบบคะแนน")
+    print("ระบบติดตามข่าวพลังงาน - แก้ไขปัญหาข่าวซ้ำและข่าวไม่เกี่ยวข้อง")
     print("="*60)
     
     # Configuration check
@@ -1248,8 +1198,9 @@ def main():
     print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
     print(f"[CONFIG] Debug filtering: {'Yes' if DEBUG_FILTERING else 'No'}")
-    print(f"[CONFIG] Score threshold: {SCORE_THRESHOLD} points")
     print(f"[CONFIG] Allowed news sources: {ALLOWED_NEWS_SOURCES_LIST if ALLOWED_NEWS_SOURCES_LIST else 'All sources'}")
+    print(f"[CONFIG] Strict filtering: {'Yes' if STRICT_FILTERING else 'No'}")
+    print(f"[CONFIG] Min business keywords: {MIN_BUSINESS_KEYWORDS}")
     print(f"[CONFIG] จำนวน feed ทั้งหมด: {len(FEEDS)}")
     print(f"[CONFIG] Feed รายการ: {[f[0] for f in FEEDS]}")
     
@@ -1264,42 +1215,34 @@ def main():
     # Print filtering statistics
     print(f"\n[FILTER STATISTICS]")
     print(f"  รวมข่าวที่ประมวลผล: {processor.filter_stats['total_processed']}")
-    print(f"  ผ่านเกณฑ์คะแนน ({SCORE_THRESHOLD}+): {processor.filter_stats['passed_by_score']}")
-    print(f"  ต่ำกว่าเกณฑ์คะแนน: {processor.filter_stats['failed_by_score']}")
+    print(f"  ผ่านการกรอง: {processor.filter_stats['filtered_by']['passed']}")
+    print(f"  ไม่ผ่านการกรอง: {processor.filter_stats['total_processed'] - processor.filter_stats['filtered_by']['passed']}")
     
-    total_filtered = sum(processor.filter_stats['filtered_by'].values())
-    print(f"  ตัดออกด้วยเงื่อนไขอื่น: {total_filtered}")
-    
-    if total_filtered > 0:
-        print(f"\n  รายละเอียดการกรองอื่น:")
+    if processor.filter_stats['total_processed'] - processor.filter_stats['filtered_by']['passed'] > 0:
+        print(f"\n  รายละเอียดการกรอง:")
         for reason, count in processor.filter_stats['filtered_by'].items():
-            if count > 0:
+            if reason != 'passed' and count > 0:
                 print(f"    - {reason}: {count} ข่าว")
-    
-    # แสดงตัวอย่างข่าวที่ได้คะแนนต่ำ
-    if len(processor.low_score_news) > 0:
-        print(f"\n  ตัวอย่างข่าวที่ได้คะแนนต่ำ ({SCORE_THRESHOLD} ลงมา):")
-        for i, low_score in enumerate(processor.low_score_news[:3]):
-            print(f"    {i+1}. {low_score['title']} [{low_score['score']} คะแนน]")
-            if DEBUG_FILTERING and low_score.get('details'):
-                for detail in low_score['details'][:2]:
-                    print(f"        - {detail}")
+        
+        # แสดงตัวอย่างข่าวที่ไม่ผ่านการกรอง
+        if len(processor.filtered_news) > 0:
+            print(f"\n  ตัวอย่างข่าวที่ไม่ผ่านการกรอง (แสดง 10 อันดับแรก):")
+            for i, filtered in enumerate(processor.filtered_news[:10]):
+                print(f"    {i+1}. {filtered['title']}")
+                print(f"       เหตุผล: {filtered['reason']}")
+                if filtered.get('details'):
+                    print(f"       รายละเอียด: {filtered['details'][:100]}")
+                if i >= 9:
+                    remaining = len(processor.filtered_news) - 10
+                    if remaining > 0:
+                        print(f"    ... และอีก {remaining} ข่าว")
+                    break
     
     if not news_items:
-        print("\n[INFO] ไม่พบข่าวใหม่ที่มีคะแนนถึงเกณฑ์")
+        print("\n[INFO] ไม่พบข่าวใหม่ที่เกี่ยวข้อง")
         return
     
-    print(f"\n[2] พบข่าวที่มีคะแนนถึงเกณฑ์ทั้งหมด {len(news_items)} ข่าว")
-    
-    # แสดงคะแนนสูงสุดและต่ำสุด
-    if news_items:
-        max_score = max(item.get('score', 0) for item in news_items)
-        min_score = min(item.get('score', 0) for item in news_items)
-        avg_score = sum(item.get('score', 0) for item in news_items) / len(news_items)
-        
-        print(f"   - คะแนนสูงสุด: {max_score}")
-        print(f"   - คะแนนต่ำสุด: {min_score}")
-        print(f"   - คะแนนเฉลี่ย: {avg_score:.1f}")
+    print(f"\n[2] พบข่าวที่เกี่ยวข้องทั้งหมด {len(news_items)} ข่าว")
     
     # Count statistics
     llm_summary_count = sum(1 for item in news_items if item.get('llm_summary'))
@@ -1308,34 +1251,21 @@ def main():
     # นับจำนวนข่าวแยกตามแหล่งข่าว
     source_counts = {}
     country_counts = {}
-    score_ranges = {'สูง (40+)': 0, 'กลาง (30-39)': 0, 'ต่ำ (20-29)': 0}
-    
     for item in news_items:
         source = item.get('source_name') or item.get('domain', 'Unknown')
         source_counts[source] = source_counts.get(source, 0) + 1
         
         country = item.get('country', 'Unknown')
         country_counts[country] = country_counts.get(country, 0) + 1
-        
-        score = item.get('score', 0)
-        if score >= 40:
-            score_ranges['สูง (40+)'] += 1
-        elif score >= 30:
-            score_ranges['กลาง (30-39)'] += 1
-        else:
-            score_ranges['ต่ำ (20-29)'] += 1
     
     print(f"   - สรุปด้วย AI: {llm_summary_count} ข่าว")
     print(f"   - ข่าวจากเว็บตรง: {direct_count} ข่าว")
     print(f"   - แหล่งข่าวที่พบ:")
-    for source, count in sorted(source_counts.items(), key=lambda x: x[1], reverse=True):
+    for source, count in sorted(source_counts.items()):
         print(f"     • {source}: {count} ข่าว")
     print(f"   - แบ่งตามประเทศ:")
-    for country, count in sorted(country_counts.items(), key=lambda x: x[1], reverse=True):
+    for country, count in sorted(country_counts.items()):
         print(f"     • {country}: {count} ข่าว")
-    print(f"   - แบ่งตามระดับคะแนน:")
-    for range_name, count in score_ranges.items():
-        print(f"     • {range_name}: {count} ข่าว")
     
     # Step 2: Create LINE message
     print("\n[3] กำลังสร้างข้อความ LINE...")
