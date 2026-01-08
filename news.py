@@ -1295,33 +1295,30 @@ class WTIFuturesFetcher:
         return futures_data
     
     def get_current_and_futures(self) -> Dict:
-    """ดึงข้อมูลราคาปัจจุบันและ futures ครบ 12 เดือน"""
-    print("[WTI/EIA] กำลังดึงข้อมูลราคา WTI...")
-    
-    current_price, spot_date = self.fetch_current_wti_price()  # ✅ เพิ่ม spot_date
-    
-    if not current_price:
-        raise Exception("ไม่สามารถดึงราคา WTI ได้จาก EIA")
-    
-    current_data = {
-        "source": f"U.S. Energy Information Administration (EIA) - {spot_date}",
-        "current_price": current_price,
-        "timestamp": datetime.now(TZ).isoformat(),
-        "currency": "USD/barrel",
-        "commodity": "WTI Crude Oil (Cushing, OK)"
-    }
-    
-    print(f"[WTI/EIA] กำลังคำนวณราคา futures 12 เดือน...")
-    futures_data = self._estimate_futures_from_spot(current_price)  # ✅ เปลี่ยนชื่อ method
-    print(f"[WTI/EIA] ✓ คำนวณ futures {len(futures_data)} เดือนเสร็จสิ้น")
-    
-    return {
-        "current": current_data,
-        "futures": futures_data,
-        "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
-        "is_estimated": True,
-        "method": "EIA spot price + statistical contango model"
-    }
+        """ดึงข้อมูลราคาปัจจุบันและ futures ครบ 12 เดือน"""
+        print("[WTI/EIA] กำลังดึงข้อมูลราคา WTI...")
+        
+        current_price = self.fetch_current_wti_price()
+        
+        current_data = {
+            "source": "U.S. Energy Information Administration (EIA)",
+            "current_price": current_price,
+            "timestamp": datetime.now(TZ).isoformat(),
+            "currency": "USD/barrel",
+            "commodity": "WTI Crude Oil (Cushing, OK)"
+        }
+        
+        print(f"[WTI/EIA] กำลังคำนวณราคา futures 12 เดือน...")
+        futures_data = self.calculate_futures_prices(current_price)
+        print(f"[WTI/EIA] ✓ คำนวณ futures {len(futures_data)} เดือนเสร็จสิ้น")
+        
+        return {
+            "current": current_data,
+            "futures": futures_data,
+            "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
+            "is_estimated": True,
+            "method": "EIA spot price + statistical contango model"
+        }
 
 class WTIFlexMessageBuilder:
     """สร้าง LINE Flex Message สำหรับแสดงราคา WTI Futures"""
