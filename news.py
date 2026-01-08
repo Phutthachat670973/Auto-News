@@ -1003,10 +1003,10 @@ class LineSender:
             return False
 
 # =============================================================================
-# WTI FUTURES MODULE - OilPriceAPI.com Only
+# WTI FUTURES MODULE - OilPriceAPI.com Only (FIXED VERSION)
 # =============================================================================
 class WTIFuturesFetcher:
-    """ดึงข้อมูลราคา WTI Futures จาก OilPriceAPI.com เท่านั้น"""
+    """ดึงข้อมูลราคา WTI Futures จาก OilPriceAPI.com เท่านั้น - รุ่นปรับปรุงแล้ว"""
     
     def __init__(self, api_key: str):
         """Initialize WTI Futures Fetcher"""
@@ -1017,15 +1017,16 @@ class WTIFuturesFetcher:
         self.base_url = "https://api.oilpriceapi.com/v1"
         
     def fetch_current_wti_price(self) -> float:
-        """ดึงราคา WTI ปัจจุบันจาก OilPriceAPI.com"""
-        url = f"{self.base_url}/prices/latest"
+        """ดึงราคา WTI ปัจจุบันจาก OilPriceAPI.com - แก้ไขแล้วให้ดึง WTI โดยเฉพาะ"""
+        # ระบุให้ดึงเฉพาะ WTI โดยเฉพาะ
+        url = f"{self.base_url}/prices/latest?by_code=WTI_USD"
         headers = {
             "Authorization": f"Token {self.api_key}",
             "Content-Type": "application/json"
         }
         
         try:
-            print(f"[WTI] กำลังดึงราคาจาก OilPriceAPI.com...")
+            print(f"[WTI] กำลังดึงราคา WTI จาก OilPriceAPI.com...")
             response = requests.get(url, headers=headers, timeout=15)
             
             if response.status_code == 401:
@@ -1038,33 +1039,46 @@ class WTIFuturesFetcher:
             response.raise_for_status()
             data = response.json()
             
+            # ลองหาราคา WTI จากหลาย pattern ที่เป็นไปได้
             price = None
             
-            if isinstance(data.get('data'), dict) and 'price' in data['data']:
-                price = float(data['data']['price'])
-                print(f"[WTI] ✓ พบราคาจาก data.price")
-            elif isinstance(data.get('data'), dict) and 'WTI' in data['data']:
-                price = float(data['data']['WTI'])
-                print(f"[WTI] ✓ พบราคาจาก data.WTI")
+            # Pattern 1: ข้อมูลอยู่ในรูปแบบ data.price
+            if isinstance(data.get('data'), dict):
+                if 'price' in data['data']:
+                    price = float(data['data']['price'])
+                    print(f"[WTI] ✓ พบราคาจาก data.price")
+                elif 'WTI_USD' in data['data']:
+                    price_data = data['data']['WTI_USD']
+                    if isinstance(price_data, dict) and 'price' in price_data:
+                        price = float(price_data['price'])
+                    elif isinstance(price_data, (int, float)):
+                        price = float(price_data)
+                    print(f"[WTI] ✓ พบราคาจาก data.WTI_USD")
+            
+            # Pattern 2: ข้อมูลอยู่ในรูปแบบ array
             elif isinstance(data.get('data'), list):
                 for item in data['data']:
                     if isinstance(item, dict):
+                        code = str(item.get('code', '')).upper()
                         name = str(item.get('name', '')).upper()
-                        if 'WTI' in name or 'CRUDE' in name:
+                        # ตรวจสอบว่าเป็น WTI หรือไม่ และไม่ใช่ Brent
+                        if 'WTI' in code or ('WTI' in name and 'BRENT' not in name):
                             price = float(item.get('price', 0))
-                            print(f"[WTI] ✓ พบราคาจาก {item.get('name')}")
+                            print(f"[WTI] ✓ พบราคาจาก {item.get('name', 'WTI')}")
                             break
+            
+            # Pattern 3: ข้อมูลอยู่ระดับบนสุด
             elif 'price' in data:
                 price = float(data['price'])
                 print(f"[WTI] ✓ พบราคาจาก price")
             
             if price and price > 0:
-                print(f"[WTI] ✓ ดึงราคาสำเร็จ: ${price:.2f}/barrel")
+                print(f"[WTI] ✓ ดึงราคา WTI สำเร็จ: ${price:.2f}/barrel")
                 return price
             else:
-                print(f"[WTI] ⚠ ไม่พบราคา WTI ใน response")
-                print(f"[WTI] Response structure: {list(data.keys())}")
-                raise Exception("ไม่พบข้อมูลราคา WTI ใน API response")
+                # ถ้ายังไม่เจอ ลองดึงแบบไม่มี parameter
+                print(f"[WTI] ⚠ ไม่พบราคา WTI ด้วย by_code, ลองดึงข้อมูลทั้งหมด...")
+                return self._fetch_wti_from_all_prices()
                 
         except requests.exceptions.Timeout:
             raise Exception("❌ API timeout - ลองใหม่อีกครั้ง")
@@ -1078,6 +1092,48 @@ class WTIFuturesFetcher:
             if "API Key" in str(e) or "rate limit" in str(e):
                 raise
             raise Exception(f"❌ เกิดข้อผิดพลาด: {str(e)}")
+    
+    def _fetch_wti_from_all_prices(self) -> float:
+        """ดึงราคา WTI จากการ query ข้อมูลทั้งหมด (fallback method)"""
+        url = f"{self.base_url}/prices/latest"
+        headers = {
+            "Authorization": f"Token {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            
+            # ค้นหา WTI ในข้อมูลทั้งหมด
+            if isinstance(data.get('data'), dict):
+                # ลองหา key ที่มี WTI
+                for key, value in data['data'].items():
+                    if 'WTI' in str(key).upper() and 'BRENT' not in str(key).upper():
+                        if isinstance(value, dict) and 'price' in value:
+                            price = float(value['price'])
+                        elif isinstance(value, (int, float)):
+                            price = float(value)
+                        else:
+                            continue
+                        print(f"[WTI] ✓ พบราคา WTI จาก {key}: ${price:.2f}/barrel")
+                        return price
+            
+            elif isinstance(data.get('data'), list):
+                for item in data['data']:
+                    if isinstance(item, dict):
+                        code = str(item.get('code', '')).upper()
+                        name = str(item.get('name', '')).upper()
+                        if ('WTI' in code or 'WTI' in name) and 'BRENT' not in name:
+                            price = float(item.get('price', 0))
+                            print(f"[WTI] ✓ พบราคา WTI: ${price:.2f}/barrel")
+                            return price
+            
+            raise Exception("ไม่พบข้อมูลราคา WTI ใน API response")
+            
+        except Exception as e:
+            raise Exception(f"ไม่สามารถดึงราคา WTI ได้: {str(e)}")
     
     def calculate_futures_prices(self, current_price: float) -> List[Dict]:
         """คำนวณราคา futures 12 เดือนข้างหน้า"""
@@ -1130,7 +1186,8 @@ class WTIFuturesFetcher:
             "source": "OilPriceAPI.com",
             "current_price": current_price,
             "timestamp": datetime.now(TZ).isoformat(),
-            "currency": "USD/barrel"
+            "currency": "USD/barrel",
+            "commodity": "WTI Crude Oil"
         }
         
         print(f"[WTI] กำลังคำนวณราคา futures 12 เดือน...")
@@ -1183,7 +1240,7 @@ class WTIFlexMessageBuilder:
             "contents": [
                 {
                     "type": "text",
-                    "text": "ราคาปัจจุบัน",
+                    "text": "ราคาปัจจุบัน (WTI)",
                     "size": "sm",
                     "color": "#8B8B8B",
                     "weight": "bold"
@@ -1309,7 +1366,7 @@ class WTIFlexMessageBuilder:
                 },
                 {
                     "type": "text",
-                    "text": "📡 ข้อมูลจาก OilPriceAPI.com",
+                    "text": "📡 ข้อมูลจาก OilPriceAPI.com (WTI)",
                     "size": "xxs",
                     "color": "#8B8B8B",
                     "align": "center",
@@ -1366,7 +1423,7 @@ def main():
     print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
     print(f"[CONFIG] Debug filtering: {'Yes' if DEBUG_FILTERING else 'No'}")
-    print(f"[CONFIG] Oil Price API: OilPriceAPI.com")
+    print(f"[CONFIG] Oil Price API: OilPriceAPI.com (WTI Only)")
     
     processor = NewsProcessor()
     line_sender = LineSender(LINE_CHANNEL_ACCESS_TOKEN)
