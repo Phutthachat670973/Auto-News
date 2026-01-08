@@ -52,16 +52,12 @@ else:
     ALLOWED_NEWS_SOURCES_LIST = []
     print("[CONFIG] รับข่าวจากทุกเว็บข่าว")
 
-# ตัวแปรควบคุมความเข้มงวด
-STRICT_FILTERING = os.getenv("STRICT_FILTERING", "0").strip().lower() in ["1", "true", "yes", "y"]
-MIN_BUSINESS_KEYWORDS = int(os.getenv("MIN_BUSINESS_KEYWORDS", "1"))
-
 # Sent links tracking
 SENT_DIR = os.getenv("SENT_DIR", "sent_links")
 os.makedirs(SENT_DIR, exist_ok=True)
 
 # =============================================================================
-# PROJECT DATABASE (เพิ่มประเทศที่พบในข่าวจริง)
+# PROJECT DATABASE
 # =============================================================================
 PROJECTS_BY_COUNTRY = {
     "Thailand": [
@@ -82,8 +78,6 @@ PROJECTS_BY_COUNTRY = {
     "Kazakhstan": ["โครงการดุงกา", "Dunga"],
     "Oman": ["Oman Block 61", "Block 61", "Oman Block 6", "PDO"],
     "UAE": ["Abu Dhabi Offshore 1", "Abu Dhabi Offshore 2", "Abu Dhabi Offshore 3"],
-    "USA": ["Wyoming", "Texas", "Gulf of Mexico"],
-    "International": [],
 }
 
 # =============================================================================
@@ -105,18 +99,6 @@ class EnhancedKeywordFilter:
         'energy', 'electricity', 'power', 'gas', 'oil', 'fuel',
         'power plant', 'renewable', 'solar', 'wind', 'biomass',
         'energy policy', 'energy project', 'energy investment'
-    ]
-    
-    # คำที่บ่งบอกถึงโครงการ/การลงทุนพลังงาน
-    ENERGY_PROJECT_KEYWORDS = [
-        'โครงการ', 'ลงทุน', 'investment', 'discovery', 'พบ', 'สำรวจ',
-        'ขุดเจาะ', 'drilling', 'สำรอง', 'reserve', 'ผลิต', 'production',
-        'ส่งออก', 'export', 'สัญญา', 'contract', 'deal', 'agreement',
-        'มูลค่า', 'million', 'billion', 'ดอลลาร์', 'dollar', 'บาท',
-        'โรงไฟฟ้า', 'power plant', 'ไฟฟ้า', 'electricity', 'พลังงาน', 'energy',
-        'ก๊าซ', 'gas', 'LNG', 'น้ำมัน', 'oil', 'เชื้อเพลิง', 'fuel',
-        'สัมปทาน', 'concession', 'สัมปทานพลังงาน', 'สัมปทานก๊าซ',
-        'แหล่ง', 'field', 'แหล่งก๊าซ', 'gas field', 'แหล่งน้ำมัน', 'oil field'
     ]
     
     # คำที่บ่งบอกถึงธุรกิจ/โครงการ
@@ -156,75 +138,54 @@ class EnhancedKeywordFilter:
         text_lower = text.lower()
         reasons = []
         
-        # 1. ตรวจสอบว่าเป็นข่าวสังคมหรือไม่ (ปรับเงื่อนไขให้ยืดหยุ่น)
-        social_keywords_found = []
+        # 1. ตรวจสอบว่าเป็นข่าวสังคมหรือไม่
         for exclude in cls.EXCLUDE_KEYWORDS:
             if exclude.lower() in text_lower:
-                social_keywords_found.append(exclude)
-        
-        # ถ้าพบคำต้องห้ามมากกว่า 1 คำ และไม่มีคำพลังงานหลัก ให้ถือว่าเป็นข่าวสังคม
-        if len(social_keywords_found) > 1:
-            # แต่ต้องตรวจสอบว่ามีคำพลังงานหลักอยู่ด้วยหรือไม่
-            has_energy_keyword = False
-            for energy_word in ['พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ก๊าซ', 'LNG', 'น้ำมัน', 'โรงไฟฟ้า']:
-                if energy_word in text_lower:
-                    has_energy_keyword = True
-                    break
-            
-            if not has_energy_keyword:
-                reasons.append(f"มีคำต้องห้ามหลายคำ: {', '.join(social_keywords_found[:3])}")
+                reasons.append(f"มีคำต้องห้าม: '{exclude}'")
                 return False, "ข่าวสังคม", reasons
         
-        # 2. ตรวจสอบว่ามีคำที่เกี่ยวข้องกับพลังงานหรือโครงการพลังงาน
-        all_energy_keywords = cls.ENERGY_KEYWORDS + cls.ENERGY_PROJECT_KEYWORDS
+        # 2. ตรวจสอบว่ามีคำที่เกี่ยวข้องกับพลังงาน
         found_energy_keywords = []
-        for keyword in all_energy_keywords:
+        for keyword in cls.ENERGY_KEYWORDS:
             if keyword.lower() in text_lower:
                 found_energy_keywords.append(keyword)
         
-        # ถ้าไม่พบคำพลังงานเลย
         if not found_energy_keywords:
             reasons.append("ไม่มีคำที่เกี่ยวข้องกับพลังงาน")
             return False, "ไม่เกี่ยวข้องกับพลังงาน", reasons
         
         reasons.append(f"พบคำพลังงาน: {', '.join(found_energy_keywords[:3])}")
         
-        # 3. ตรวจสอบว่ามีคำที่บ่งบอกถึงธุรกิจ/โครงการ (ปรับให้ยืดหยุ่น)
+        # 3. ตรวจสอบว่ามีคำที่บ่งบอกถึงธุรกิจ/โครงการ
         found_business_keywords = []
         for keyword in cls.BUSINESS_KEYWORDS:
             if keyword.lower() in text_lower:
                 found_business_keywords.append(keyword)
         
-        # ถ้ามีคำพลังงานหลัก (เช่น โครงการ, ลงทุน, มูลค่า) ให้ผ่อนปรน
-        has_critical_words = any(word in text_lower for word in ['โครงการ', 'ลงทุน', 'investment', 'มูลค่า', 'million', 'billion'])
-        
-        if not found_business_keywords and not has_critical_words:
+        if not found_business_keywords:
             reasons.append("ไม่มีคำบ่งบอกธุรกิจ/โครงการ")
             return False, "ไม่ใช่ข่าวธุรกิจ", reasons
         
-        if found_business_keywords:
-            reasons.append(f"พบคำธุรกิจ: {', '.join(found_business_keywords[:3])}")
+        reasons.append(f"พบคำธุรกิจ: {', '.join(found_business_keywords[:3])}")
         
         return True, "ผ่าน", reasons
     
     @classmethod
     def detect_country(cls, text: str) -> str:
-        """Detect country from text with fallback logic"""
+        """Detect country from text"""
         text_lower = text.lower()
         
         country_patterns = {
-            "Thailand": ['ไทย', 'ประเทศไทย', 'thailand', 'bangkok', 'กรุงเทพ', 'กสิกรไทย', 'กระทรวงพาณิชย์'],
-            "Myanmar": ['เมียนมา', 'myanmar', 'ย่างกุ้ง', 'yangon', 'พม่า'],
+            "Thailand": ['ไทย', 'ประเทศไทย', 'thailand', 'bangkok'],
+            "Myanmar": ['เมียนมา', 'myanmar', 'ย่างกุ้ง', 'yangon'],
             "Malaysia": ['มาเลเซีย', 'malaysia', 'กัวลาลัมเปอร์', 'kuala lumpur'],
-            "Vietnam": ['เวียดนาม', 'vietnam', 'ฮานอย', 'hanoi', 'เวียน', 'viet'],
+            "Vietnam": ['เวียดนาม', 'vietnam', 'ฮานอย', 'hanoi'],
             "Indonesia": ['อินโดนีเซีย', 'indonesia', 'จาการ์ตา', 'jakarta'],
             "Kazakhstan": ['คาซัคสถาน', 'kazakhstan', 'astana'],
             "Oman": ['โอมาน', 'oman', 'muscat'],
-            "UAE": ['ยูเออี', 'uae', 'ดูไบ', 'dubai', 'อาบูดาบี', 'abu dhabi', 'emirates'],
-            "International": ['นานาชาติ', 'international', 'global', 'ทั่วโลก', 'หลายประเทศ']
+            "UAE": ['ยูเออี', 'uae', 'ดูไบ', 'dubai', 'อาบูดาบี', 'abu dhabi']
         }
         
-        # ตรวจสอบตามลำดับความสำคัญ
         for country, patterns in country_patterns.items():
             if any(pattern in text_lower for pattern in patterns):
                 return country
@@ -239,11 +200,11 @@ def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
 
 FEEDS = [
     ("GoogleNewsTH", "thai", gnews_rss(
-        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "สัมปทาน" OR "โครงการ" OR "ลงทุน" OR "สำรวจ" OR "ขุดเจาะ") -"รถยนต์" -"ตลาดรถ" -"ดารา" -"นักแสดง" -"ร่วมบุญ"',
+        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "สัมปทาน") -"รถยนต์" -"ตลาดรถ" -"ดารา" -"นักแสดง"',
         hl="th", gl="TH", ceid="TH:th"
     )),
     ("GoogleNewsEN", "international", gnews_rss(
-        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project" OR "energy investment" OR "oil discovery" OR "gas field" OR "LNG" OR "energy deal") AND (Thailand OR Vietnam OR Malaysia OR Indonesia OR Myanmar OR Asia) -car -automotive -celebrity',
+        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia) -car -automotive -celebrity',
         hl="en", gl="US", ceid="US:en"
     )),
     ("EnergyNewsCenter", "direct", "https://www.energynewscenter.com/feed/"),
@@ -290,16 +251,8 @@ def is_allowed_source(url: str) -> bool:
     
     # ตรวจสอบว่า domain อยู่ในรายการที่อนุญาต
     for allowed_source in ALLOWED_NEWS_SOURCES_LIST:
-        if allowed_source.lower() in domain.lower():  # ใช้ case-insensitive partial match
+        if allowed_source in domain:  # ใช้ partial match เช่น "reuters" จะ match "reuters.com"
             return True
-    
-    # ถ้าเป็น Google News ให้อนุญาตเสมอ (เพราะเป็น aggregator)
-    if 'news.google.com' in domain:
-        return True
-    
-    # สำหรับ DRY_RUN ให้แสดง debug message
-    if DRY_RUN and DEBUG_FILTERING:
-        print(f"  [DEBUG] แหล่งข่าวไม่ได้รับการอนุญาต: {domain}")
     
     return False
 
@@ -770,32 +723,20 @@ class EnhancedNewsProcessor:
             
             return None, f"✗ {debug_details}"
         
-        # Step 2: Detect country with fallback
+        # Step 2: Detect country
         country = EnhancedKeywordFilter.detect_country(full_text)
-        
-        # ถ้าไม่พบประเทศจากข้อความ
         if not country:
-            # สำหรับข่าวภาษาไทย (GoogleNewsTH) ให้ใช้ Thailand เป็น default
-            if feed_name == "GoogleNewsTH":
+            # สำหรับเว็บพลังงานโดยตรง ให้ใช้ Thailand เป็น default
+            if feed_type == "direct":
                 country = "Thailand"
-            # สำหรับข่าวภาษาอังกฤษที่มีเนื้อหาเกี่ยวกับเอเชียตะวันออกเฉียงใต้
-            elif feed_name == "GoogleNewsEN":
-                # ตรวจสอบว่ามีคำที่เกี่ยวข้องกับภูมิภาคนี้หรือไม่
-                sea_keywords = ['thailand', 'vietnam', 'malaysia', 'indonesia', 'myanmar', 'laos', 'cambodia', 'philippines']
-                if any(keyword in full_text.lower() for keyword in sea_keywords):
-                    # ใช้ประเทศแรกที่พบ
-                    for keyword, country_name in [('thailand', 'Thailand'), ('vietnam', 'Vietnam'), 
-                                                  ('malaysia', 'Malaysia'), ('indonesia', 'Indonesia')]:
-                        if keyword in full_text.lower():
-                            country = country_name
-                            break
-                    if not country:
-                        country = "International"
-                else:
-                    country = "International"
             else:
-                # สำหรับ feed อื่นๆ
-                country = "International"
+                self.filter_stats['filtered_by']['no_country'] += 1
+                self.filtered_news.append({
+                    'title': item['title'][:50],
+                    'reason': 'ไม่พบประเทศที่เกี่ยวข้อง',
+                    'details': 'ไม่พบชื่อประเทศในเนื้อหาข่าว'
+                })
+                return None, f"✗ ไม่พบประเทศที่เกี่ยวข้อง"
         
         # Step 3: ตรวจสอบข่าวซ้ำใน session เดียวกัน
         title_lower = item['title'].lower()
@@ -936,7 +877,6 @@ class EnhancedLineMessageBuilder:
             "UAE": "#9D4EDD",
             "Oman": "#F15BB5",
             "Kazakhstan": "#00BBF9",
-            "USA": "#FF9E00",
             "International": "#888888"
         }
         
@@ -1195,8 +1135,6 @@ def main():
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
     print(f"[CONFIG] Debug filtering: {'Yes' if DEBUG_FILTERING else 'No'}")
     print(f"[CONFIG] Allowed news sources: {ALLOWED_NEWS_SOURCES_LIST if ALLOWED_NEWS_SOURCES_LIST else 'All sources'}")
-    print(f"[CONFIG] Strict filtering: {'Yes' if STRICT_FILTERING else 'No'}")
-    print(f"[CONFIG] Min business keywords: {MIN_BUSINESS_KEYWORDS}")
     print(f"[CONFIG] จำนวน feed ทั้งหมด: {len(FEEDS)}")
     print(f"[CONFIG] Feed รายการ: {[f[0] for f in FEEDS]}")
     
@@ -1222,17 +1160,12 @@ def main():
         
         # แสดงตัวอย่างข่าวที่ไม่ผ่านการกรอง
         if len(processor.filtered_news) > 0:
-            print(f"\n  ตัวอย่างข่าวที่ไม่ผ่านการกรอง (แสดง 10 อันดับแรก):")
-            for i, filtered in enumerate(processor.filtered_news[:10]):
+            print(f"\n  ตัวอย่างข่าวที่ไม่ผ่านการกรอง (แสดง 5 อันดับแรก):")
+            for i, filtered in enumerate(processor.filtered_news[:5]):
                 print(f"    {i+1}. {filtered['title']}")
                 print(f"       เหตุผล: {filtered['reason']}")
                 if filtered.get('details'):
-                    print(f"       รายละเอียด: {filtered['details'][:100]}")
-                if i >= 9:
-                    remaining = len(processor.filtered_news) - 10
-                    if remaining > 0:
-                        print(f"    ... และอีก {remaining} ข่าว")
-                    break
+                    print(f"       รายละเอียด: {filtered['details']}")
     
     if not news_items:
         print("\n[INFO] ไม่พบข่าวใหม่ที่เกี่ยวข้อง")
