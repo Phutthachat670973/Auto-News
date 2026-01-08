@@ -140,7 +140,6 @@ class EnhancedKeywordFilter:
         'ยานยนต์', 'อุตสาหกรรมยานยนต์',
         'ดารา', 'ศิลปิน', 'นักแสดง', 'นักร้อง', 'คนดัง',
         'ร่วมบุญ', 'การกุศล', 'จิตอาสา', 'มอบ', 'ให้', 'ช่วยเหลือ',
-        'หู', 'สะเด็ด', 'จา พนม', 'ชวน', 'มอบพลังงาน', 'ให้คนไทย',
         'celebrity', 'actor', 'singer', 'donation', 'charity', 'philanthropy',
         'car', 'automotive', 'vehicle', 'automobile'
     ]
@@ -253,7 +252,6 @@ FEEDS = [
         '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia) -car -automotive -celebrity',
         hl="en", gl="US", ceid="US:en"
     )),
-    ("EnergyNewsCenter", "direct", "https://www.energynewscenter.com/feed/"),
 ]
 
 # =============================================================================
