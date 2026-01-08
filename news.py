@@ -1294,31 +1294,69 @@ class WTIFuturesFetcher:
         
         return futures_data
     
-    def get_current_and_futures(self) -> Dict:
-        """ดึงข้อมูลราคาปัจจุบันและ futures ครบ 12 เดือน"""
-        print("[WTI/EIA] กำลังดึงข้อมูลราคา WTI...")
-        
-        current_price = self.fetch_current_wti_price()
-        
-        current_data = {
-            "source": "U.S. Energy Information Administration (EIA)",
-            "current_price": current_price,
-            "timestamp": datetime.now(TZ).isoformat(),
-            "currency": "USD/barrel",
-            "commodity": "WTI Crude Oil (Cushing, OK)"
-        }
-        
-        print(f"[WTI/EIA] กำลังคำนวณราคา futures 12 เดือน...")
-        futures_data = self.calculate_futures_prices(current_price)
-        print(f"[WTI/EIA] ✓ คำนวณ futures {len(futures_data)} เดือนเสร็จสิ้น")
+def get_current_and_futures(self) -> Dict:
+    """ดึงข้อมูลราคาปัจจุบันและ futures (Yahoo Finance First)"""
+    print("\n[WTI] กำลังดึงข้อมูลราคา WTI Futures...")
+    
+    # Strategy 1: Try Yahoo Finance first (Best quality, real-time data)
+    futures_data, current_price = self.fetch_futures_from_yahoo()
+    
+    if futures_data and current_price:
+        print(f"[WTI] ✓ ใช้ข้อมูลจาก Yahoo Finance - {len(futures_data)} สัญญา")
         
         return {
-            "current": current_data,
+            "current": {
+                "source": "Yahoo Finance (NYMEX)",
+                "current_price": current_price,
+                "timestamp": datetime.now(TZ).isoformat(),
+                "currency": "USD/barrel",
+                "commodity": "WTI Crude Oil Futures"
+            },
+            "futures": futures_data[:12],
+            "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
+            "is_estimated": False,
+            "method": "Real-time data from Yahoo Finance (NYMEX)"
+        }
+    
+    # Strategy 2: Fallback to EIA Spot + Estimation
+    print("[WTI] Yahoo Finance ไม่สำเร็จ กำลังใช้ EIA Spot Price...")
+    spot_price, spot_date = self.fetch_current_wti_price()
+    
+    if spot_price:
+        print(f"[WTI] ✓ ใช้ EIA Spot Price + คำนวณ Futures")
+        futures_data = self._estimate_futures_from_spot(spot_price)
+        
+        return {
+            "current": {
+                "source": f"U.S. EIA Spot Price ({spot_date})",
+                "current_price": spot_price,
+                "timestamp": datetime.now(TZ).isoformat(),
+                "currency": "USD/barrel",
+                "commodity": "WTI Crude Oil (Cushing, OK)"
+            },
             "futures": futures_data,
             "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
             "is_estimated": True,
-            "method": "EIA spot price + statistical contango model"
+            "method": "EIA spot price + statistical estimation"
         }
+    
+    # Strategy 3: Use default fallback
+    print("[WTI] ⚠️ ทุกแหล่งล้มเหลว ใช้ค่าเริ่มต้น")
+    default_price = 75.00
+    
+    return {
+        "current": {
+            "source": "Default Estimate",
+            "current_price": default_price,
+            "timestamp": datetime.now(TZ).isoformat(),
+            "currency": "USD/barrel",
+            "commodity": "WTI Crude Oil"
+        },
+        "futures": self._estimate_futures_from_spot(default_price),
+        "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
+        "is_estimated": True,
+        "method": "Emergency fallback (all sources failed)"
+    }
 
 class WTIFlexMessageBuilder:
     """สร้าง LINE Flex Message สำหรับแสดงราคา WTI Futures"""
