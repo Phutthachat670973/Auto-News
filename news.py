@@ -40,8 +40,8 @@ MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "30"))
 DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ["1", "true", "yes", "y"]
 BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))
 
-# Debug mode
-DEBUG_FILTERING = os.getenv("DEBUG_FILTERING", "0").strip().lower() in ["1", "true", "yes", "y"]
+# Debug mode - เปิดให้เห็นเหตุผลการกรอง
+DEBUG_FILTERING = os.getenv("DEBUG_FILTERING", "1").strip().lower() in ["1", "true", "yes", "y"]
 
 # สร้างตัวแปรสำหรับเลือกเว็บข่าวที่ต้องการ
 ALLOWED_NEWS_SOURCES = os.getenv("ALLOWED_NEWS_SOURCES", "").strip()
@@ -503,6 +503,26 @@ class EnhancedNewsProcessor:
         self._title_cache = []
         self._processed_items = []
         self._group_cache = set()
+        
+        # สำหรับเก็บสถิติ
+        self.filter_stats = {
+            'total_processed': 0,
+            'filtered_by': {
+                'no_title': 0,
+                'no_url': 0,
+                'already_sent': 0,
+                'out_of_window': 0,
+                'not_allowed_source': 0,
+                'invalid_energy_news': 0,
+                'no_country': 0,
+                'duplicate_in_session': 0,
+                'similar_news_exists': 0,
+                'passed': 0
+            }
+        }
+        
+        # สำหรับเก็บข่าวที่ไม่ผ่านการกรอง
+        self.filtered_news = []
     
     def get_source_name(self, url: str) -> str:
         """ดึงชื่อเว็บข่าวจาก URL"""
@@ -575,7 +595,9 @@ class EnhancedNewsProcessor:
     def fetch_and_filter_news(self):
         """Fetch and filter news from all feeds"""
         all_news = []
-        filter_stats = {
+        
+        # รีเซ็ตสถิติ
+        self.filter_stats = {
             'total_processed': 0,
             'filtered_by': {
                 'no_title': 0,
@@ -590,6 +612,7 @@ class EnhancedNewsProcessor:
                 'passed': 0
             }
         }
+        self.filtered_news = []
         
         for feed_name, feed_type, feed_url in FEEDS:
             print(f"\n[Fetching] {feed_name} ({feed_type})...")
@@ -601,13 +624,13 @@ class EnhancedNewsProcessor:
                 limit = 20 if feed_type == "direct" else MAX_PER_FEED
                 
                 for entry in entries[:limit]:
-                    filter_stats['total_processed'] += 1
+                    self.filter_stats['total_processed'] += 1
                     news_item, filter_reason = self._process_entry_with_debug(entry, feed_name, feed_type)
                     if news_item:
                         all_news.append(news_item)
-                        filter_stats['filtered_by']['passed'] += 1
+                        self.filter_stats['filtered_by']['passed'] += 1
                         print(f"  ✓ {news_item['title'][:50]}...")
-                    elif DEBUG_FILTERING and filter_reason:
+                    elif filter_reason:
                         print(f"  ✗ {filter_reason}")
                         
             except Exception as e:
@@ -619,16 +642,6 @@ class EnhancedNewsProcessor:
         # Sort by date (ใหม่ที่สุดก่อน)
         all_news.sort(key=lambda x: -((x.get('published_dt') or datetime.min).timestamp()))
         
-        # Print filter statistics
-        if DEBUG_FILTERING:
-            print(f"\n[FILTER STATS]")
-            print(f"  รวมข่าวที่ประมวลผล: {filter_stats['total_processed']}")
-            print(f"  ผ่านการกรอง: {filter_stats['filtered_by']['passed']}")
-            print(f"  ไม่ผ่านการกรอง:")
-            for reason, count in filter_stats['filtered_by'].items():
-                if reason != 'passed' and count > 0:
-                    print(f"    - {reason}: {count}")
-        
         return all_news
     
     def _process_entry_with_debug(self, entry, feed_name: str, feed_type: str):
@@ -637,25 +650,59 @@ class EnhancedNewsProcessor:
         
         # Basic validation
         if not item["title"]:
-            return None, f"ไม่มีหัวข้อข่าว"
+            self.filter_stats['filtered_by']['no_title'] += 1
+            self.filtered_news.append({
+                'title': 'ไม่มีหัวข้อข่าว',
+                'reason': 'ไม่มีหัวข้อข่าว',
+                'details': 'title is empty'
+            })
+            return None, f"✗ ไม่มีหัวข้อข่าว"
         
         if not item["url"]:
-            return None, f"ไม่มี URL"
+            self.filter_stats['filtered_by']['no_url'] += 1
+            self.filtered_news.append({
+                'title': item.get('title', 'ไม่มีหัวข้อ')[:50],
+                'reason': 'ไม่มี URL',
+                'details': 'url is empty'
+            })
+            return None, f"✗ ไม่มี URL"
         
         # Check if already sent
         if item["canon_url"] in self.sent_links or item["url"] in self.sent_links:
-            return None, f"ส่งแล้วก่อนหน้า"
+            self.filter_stats['filtered_by']['already_sent'] += 1
+            self.filtered_news.append({
+                'title': item['title'][:50],
+                'reason': 'ส่งแล้วก่อนหน้า',
+                'details': f"URL: {item['canon_url'][:50] if item['canon_url'] else item['url'][:50]}"
+            })
+            return None, f"✗ ส่งแล้วก่อนหน้า: {item['title'][:30]}..."
         
         # Check time window
         if item["published_dt"] and not in_time_window(item["published_dt"], WINDOW_HOURS):
-            return None, f"เกินเวลาที่กำหนด (WINDOW_HOURS={WINDOW_HOURS} ชั่วโมง)"
+            self.filter_stats['filtered_by']['out_of_window'] += 1
+            if item["published_dt"]:
+                time_diff = now_tz() - item["published_dt"]
+                hours_diff = time_diff.total_seconds() / 3600
+                self.filtered_news.append({
+                    'title': item['title'][:50],
+                    'reason': 'เกินเวลาที่กำหนด',
+                    'details': f"เผยแพร่: {item['published_dt'].strftime('%Y-%m-%d %H:%M')} ({hours_diff:.1f} ชม.ที่ผ่านมา)"
+                })
+            return None, f"✗ เกินเวลาที่กำหนด (WINDOW_HOURS={WINDOW_HOURS} ชั่วโมง)"
         
         # สำหรับเว็บตรง (direct) ไม่ต้องตรวจสอบ ALLOWED_NEWS_SOURCES
         if feed_type != "direct":
             # ตรวจสอบว่า URL นี้มาจากเว็บข่าวที่อนุญาตหรือไม่
             display_url = item["canon_url"] or item["url"]
             if not is_allowed_source(display_url):
-                return None, f"แหล่งข่าวไม่อนุญาต: {extract_domain(display_url)}"
+                self.filter_stats['filtered_by']['not_allowed_source'] += 1
+                domain = extract_domain(display_url)
+                self.filtered_news.append({
+                    'title': item['title'][:50],
+                    'reason': 'แหล่งข่าวไม่อนุญาต',
+                    'details': f"โดเมน: {domain}"
+                })
+                return None, f"✗ แหล่งข่าวไม่อนุญาต: {domain}"
         
         # Combine text for analysis
         full_text = f"{item['title']} {item['summary']}"
@@ -663,10 +710,18 @@ class EnhancedNewsProcessor:
         # Step 1: Enhanced keyword filtering
         is_valid, reason, details = EnhancedKeywordFilter.check_valid_energy_news(full_text)
         if not is_valid:
+            self.filter_stats['filtered_by']['invalid_energy_news'] += 1
             debug_details = f"{reason}"
-            if DEBUG_FILTERING and details:
+            if details:
                 debug_details += f" ({'; '.join(details)})"
-            return None, f"ไม่ผ่านการกรอง: {debug_details}"
+            
+            self.filtered_news.append({
+                'title': item['title'][:50],
+                'reason': reason,
+                'details': '; '.join(details) if details else reason
+            })
+            
+            return None, f"✗ {debug_details}"
         
         # Step 2: Detect country
         country = EnhancedKeywordFilter.detect_country(full_text)
@@ -675,21 +730,48 @@ class EnhancedNewsProcessor:
             if feed_type == "direct":
                 country = "Thailand"
             else:
-                return None, "ไม่พบประเทศที่เกี่ยวข้อง"
+                self.filter_stats['filtered_by']['no_country'] += 1
+                self.filtered_news.append({
+                    'title': item['title'][:50],
+                    'reason': 'ไม่พบประเทศที่เกี่ยวข้อง',
+                    'details': 'ไม่พบชื่อประเทศในเนื้อหาข่าว'
+                })
+                return None, f"✗ ไม่พบประเทศที่เกี่ยวข้อง"
         
         # Step 3: ตรวจสอบข่าวซ้ำใน session เดียวกัน
         title_lower = item['title'].lower()
         for existing_title in self._title_cache:
             if self._is_similar_title(title_lower, existing_title, threshold=0.7):
-                return None, f"ข่าวซ้ำใน session"
+                self.filter_stats['filtered_by']['duplicate_in_session'] += 1
+                self.filtered_news.append({
+                    'title': item['title'][:50],
+                    'reason': 'ข่าวซ้ำใน session',
+                    'details': f"คล้ายกับ: {existing_title[:50]}..."
+                })
+                return None, f"✗ ข่าวซ้ำใน session"
         self._title_cache.append(title_lower)
         
         # Step 4: Check for similar existing news
         existing_item = self._find_similar_news(item, country)
         if existing_item:
-            if DEBUG_FILTERING:
-                print(f"  ! พบข่าวคล้ายกัน: {item['title'][:40]}...")
-            return self._select_better_news(item, existing_item), "แทนที่ด้วยข่าวที่ดีกว่า"
+            self.filter_stats['filtered_by']['similar_news_exists'] += 1
+            selected_item = self._select_better_news(item, existing_item)
+            if selected_item == item:
+                # แทนที่ข่าวเก่าด้วยข่าวใหม่
+                self._processed_items = [it for it in self._processed_items if it != existing_item]
+                self.filtered_news.append({
+                    'title': existing_item['title'][:50],
+                    'reason': 'ถูกแทนที่ด้วยข่าวที่ดีกว่า',
+                    'details': f"แทนที่ด้วย: {item['title'][:50]}..."
+                })
+            else:
+                # ข่าวใหม่แย่กว่า ไม่ต้องเพิ่ม
+                self.filtered_news.append({
+                    'title': item['title'][:50],
+                    'reason': 'ถูกแทนที่ด้วยข่าวที่ดีกว่า',
+                    'details': f"มีข่าวที่ดีกว่าอยู่แล้ว: {existing_item['title'][:50]}..."
+                })
+                return None, f"✗ มีข่าวที่ดีกว่าอยู่แล้ว"
         
         # Step 5: LLM analysis (สำหรับสรุปข่าวเท่านั้น)
         llm_summary = ""
@@ -1063,6 +1145,27 @@ def main():
     # Step 1: Fetch and filter news
     print("\n[1] กำลังดึงและกรองข่าว...")
     news_items = processor.fetch_and_filter_news()
+    
+    # Print filtering statistics
+    print(f"\n[FILTER STATISTICS]")
+    print(f"  รวมข่าวที่ประมวลผล: {processor.filter_stats['total_processed']}")
+    print(f"  ผ่านการกรอง: {processor.filter_stats['filtered_by']['passed']}")
+    print(f"  ไม่ผ่านการกรอง: {processor.filter_stats['total_processed'] - processor.filter_stats['filtered_by']['passed']}")
+    
+    if processor.filter_stats['total_processed'] - processor.filter_stats['filtered_by']['passed'] > 0:
+        print(f"\n  รายละเอียดการกรอง:")
+        for reason, count in processor.filter_stats['filtered_by'].items():
+            if reason != 'passed' and count > 0:
+                print(f"    - {reason}: {count} ข่าว")
+        
+        # แสดงตัวอย่างข่าวที่ไม่ผ่านการกรอง
+        if len(processor.filtered_news) > 0:
+            print(f"\n  ตัวอย่างข่าวที่ไม่ผ่านการกรอง (แสดง 5 อันดับแรก):")
+            for i, filtered in enumerate(processor.filtered_news[:5]):
+                print(f"    {i+1}. {filtered['title']}")
+                print(f"       เหตุผล: {filtered['reason']}")
+                if filtered.get('details'):
+                    print(f"       รายละเอียด: {filtered['details']}")
     
     if not news_items:
         print("\n[INFO] ไม่พบข่าวใหม่ที่เกี่ยวข้อง")
