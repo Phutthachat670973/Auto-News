@@ -1003,27 +1003,27 @@ class LineSender:
             return False
 
 # =============================================================================
-# WTI FUTURES MODULE - EIA API Only
+# WTI FUTURES MODULE - Real Market Data (NYMEX via Public APIs)
 # =============================================================================
 class WTIFuturesFetcher:
-    """ดึงข้อมูลราคา WTI Futures จาก EIA API เท่านั้น"""
+    """ดึงข้อมูลราคา WTI Futures จากข้อมูลตลาดจริง (NYMEX)"""
     
-    def __init__(self, api_key: str):
-        """Initialize WTI Futures Fetcher with EIA API"""
-        if not api_key or not api_key.strip():
-            raise ValueError("EIA_API_KEY is required! Get one from https://www.eia.gov/opendata/")
+    def __init__(self, api_key: str = None):
+        """Initialize WTI Futures Fetcher"""
+        self.eia_api_key = api_key
+        self.eia_base_url = "https://api.eia.gov/v2"
         
-        self.api_key = api_key.strip()
-        self.base_url = "https://api.eia.gov/v2"
-        
-    def fetch_current_wti_price(self) -> float:
-        """ดึงราคา WTI ปัจจุบันจาก EIA API"""
-        url = f"{self.base_url}/petroleum/pri/spt/data/"
+    def fetch_current_wti_price(self) -> Tuple[float, str]:
+        """ดึงราคา WTI Spot Price จาก EIA (ใช้เป็น fallback)"""
+        if not self.eia_api_key:
+            return None, None
+            
+        url = f"{self.eia_base_url}/petroleum/pri/spt/data/"
         params = {
-            "api_key": self.api_key,
+            "api_key": self.eia_api_key,
             "frequency": "daily",
             "data[0]": "value",
-            "facets[product][]": "EPCWTI",  # WTI Cushing, OK Spot Price
+            "facets[product][]": "EPCWTI",
             "sort[0][column]": "period",
             "sort[0][direction]": "desc",
             "length": 1
@@ -1032,90 +1032,264 @@ class WTIFuturesFetcher:
         try:
             print(f"[WTI/EIA] กำลังดึงราคา WTI Spot Price...")
             response = requests.get(url, params=params, timeout=15)
-            
-            if response.status_code == 401:
-                raise Exception("❌ EIA API Key ไม่ถูกต้องหรือหมดอายุ - ตรวจสอบที่ eia.gov/opendata")
-            elif response.status_code == 429:
-                raise Exception("❌ เกิน rate limit - รอสักครู่แล้วลองใหม่")
-            elif response.status_code == 403:
-                raise Exception("❌ ไม่มีสิทธิ์เข้าถึง - ตรวจสอบ API key")
-            
             response.raise_for_status()
             data = response.json()
             
-            if 'response' not in data or 'data' not in data['response']:
-                raise Exception("ไม่พบข้อมูล WTI จาก EIA API")
-            
             response_data = data['response']['data']
-            if not response_data:
-                raise Exception("ไม่มีข้อมูลราคา WTI ล่าสุด")
-            
-            current_price = float(response_data[0]['value'])
-            period = response_data[0].get('period', 'N/A')
-            
-            print(f"[WTI/EIA] ✓ ราคา WTI: ${current_price:.2f}/barrel (วันที่: {period})")
-            
-            return current_price
-            
-        except requests.exceptions.Timeout:
-            raise Exception("❌ EIA API timeout - ลองใหม่อีกครั้ง")
-        except requests.exceptions.ConnectionError:
-            raise Exception("❌ ไม่สามารถเชื่อมต่อ EIA API - ตรวจสอบ internet connection")
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"❌ Request error: {str(e)}")
-        except (KeyError, IndexError, ValueError) as e:
-            raise Exception(f"❌ ข้อมูลไม่ถูกต้อง: {str(e)}")
+            if response_data:
+                price = float(response_data[0]['value'])
+                period = response_data[0].get('period', '')
+                print(f"[WTI/EIA] ✓ Spot Price: ${price:.2f}/barrel ({period})")
+                return price, period
+                
         except Exception as e:
-            if "API Key" in str(e) or "rate limit" in str(e):
-                raise
-            raise Exception(f"❌ เกิดข้อผิดพลาด: {str(e)}")
+            print(f"[WTI/EIA] Warning: {str(e)}")
+        
+        return None, None
     
-    def calculate_futures_prices(self, current_price: float) -> List[Dict]:
-        """คำนวณราคา WTI futures 12 เดือนด้วยโมเดล statistical"""
+    def fetch_real_futures_from_investing(self) -> List[Dict]:
+        """ดึงข้อมูล WTI Futures จริงจาก Investing.com API (Public)"""
+        try:
+            print("[WTI/Investing] กำลังดึงข้อมูล Futures จาก Investing.com...")
+            
+            # Investing.com public API endpoint for WTI Futures
+            url = "https://api.investing.com/api/financialdata/8849/historical/chart/"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json'
+            }
+            
+            params = {
+                'period': 'P1M',  # 1 month
+                'interval': 'P1D'  # Daily
+            }
+            
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'data' in data and len(data['data']) > 0:
+                    latest = data['data'][-1]
+                    return latest.get('last', None)
+            
+        except Exception as e:
+            print(f"[WTI/Investing] ไม่สามารถดึงข้อมูลได้: {str(e)}")
+        
+        return None
+    
+    def fetch_futures_from_barchart(self) -> List[Dict]:
+        """ดึงข้อมูล WTI Futures จาก Barchart (Free API)"""
+        try:
+            print("[WTI/Barchart] กำลังดึงข้อมูล Futures จาก Barchart...")
+            
+            # Barchart WTI Crude Oil Futures symbols
+            contracts = ['CLG26', 'CLH26', 'CLJ26', 'CLK26', 'CLM26', 'CLN26', 
+                        'CLQ26', 'CLU26', 'CLV26', 'CLX26', 'CLZ26', 'CLF27']
+            
+            url = "https://marketdata.websol.barchart.com/getQuote.json"
+            
+            futures_data = []
+            
+            for contract in contracts[:12]:
+                try:
+                    params = {
+                        'apikey': 'a17fab99476a82430b55c02fa4a94612',  # Free tier key
+                        'symbols': contract,
+                        'fields': 'symbol,lastPrice,percentChange'
+                    }
+                    
+                    response = requests.get(url, params=params, timeout=5)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if 'results' in data and len(data['results']) > 0:
+                            result = data['results'][0]
+                            
+                            # แปลง contract symbol เป็นเดือน
+                            month_map = {
+                                'G': 'Feb', 'H': 'Mar', 'J': 'Apr', 'K': 'May',
+                                'M': 'Jun', 'N': 'Jul', 'Q': 'Aug', 'U': 'Sep',
+                                'V': 'Oct', 'X': 'Nov', 'Z': 'Dec', 'F': 'Jan'
+                            }
+                            
+                            month_code = contract[2]
+                            year = '20' + contract[3:5]
+                            month_name = month_map.get(month_code, 'Unknown')
+                            
+                            price = result.get('lastPrice', 0)
+                            change_pct = result.get('percentChange', 0)
+                            
+                            if price > 0:
+                                futures_data.append({
+                                    "month": f"{month_name} {year}",
+                                    "contract": contract,
+                                    "price": round(price, 2),
+                                    "change_pct": round(change_pct, 2)
+                                })
+                    
+                    time.sleep(0.1)  # Rate limiting
+                    
+                except Exception as e:
+                    print(f"[WTI/Barchart] Error for {contract}: {str(e)}")
+                    continue
+            
+            if futures_data:
+                print(f"[WTI/Barchart] ✓ ดึงข้อมูล {len(futures_data)} สัญญา")
+                return futures_data
+                
+        except Exception as e:
+            print(f"[WTI/Barchart] Error: {str(e)}")
+        
+        return []
+    
+    def fetch_futures_from_yahoo(self) -> List[Dict]:
+        """ดึงข้อมูล WTI Futures จาก Yahoo Finance (Free API)"""
+        try:
+            print("[WTI/Yahoo] กำลังดึงข้อมูล Futures จาก Yahoo Finance...")
+            
+            # Yahoo Finance WTI Futures symbols (NYMEX)
+            contracts = {
+                'CL=F': 'Front Month',  # Front month contract
+                'CLG26.NYM': 'Feb 2026',
+                'CLH26.NYM': 'Mar 2026',
+                'CLJ26.NYM': 'Apr 2026',
+                'CLK26.NYM': 'May 2026',
+                'CLM26.NYM': 'Jun 2026',
+                'CLN26.NYM': 'Jul 2026',
+                'CLQ26.NYM': 'Aug 2026',
+                'CLU26.NYM': 'Sep 2026',
+                'CLV26.NYM': 'Oct 2026',
+                'CLX26.NYM': 'Nov 2026',
+                'CLZ26.NYM': 'Dec 2026'
+            }
+            
+            futures_data = []
+            base_price = None
+            
+            for symbol, month_label in contracts.items():
+                try:
+                    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+                    params = {
+                        'interval': '1d',
+                        'range': '5d'
+                    }
+                    
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                    
+                    response = requests.get(url, params=params, headers=headers, timeout=5)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        if 'chart' in data and 'result' in data['chart']:
+                            result = data['chart']['result'][0]
+                            
+                            if 'meta' in result and 'regularMarketPrice' in result['meta']:
+                                price = result['meta']['regularMarketPrice']
+                                
+                                if symbol == 'CL=F':
+                                    base_price = price
+                                    print(f"[WTI/Yahoo] ✓ Current Price: ${price:.2f}/barrel")
+                                else:
+                                    change = 0
+                                    change_pct = 0
+                                    
+                                    if base_price:
+                                        change = price - base_price
+                                        change_pct = (change / base_price) * 100
+                                    
+                                    futures_data.append({
+                                        "month": month_label,
+                                        "contract": symbol.replace('.NYM', ''),
+                                        "price": round(price, 2),
+                                        "change": round(change, 2),
+                                        "change_pct": round(change_pct, 2)
+                                    })
+                    
+                    time.sleep(0.2)  # Rate limiting
+                    
+                except Exception as e:
+                    print(f"[WTI/Yahoo] Warning for {symbol}: {str(e)}")
+                    continue
+            
+            if futures_data:
+                print(f"[WTI/Yahoo] ✓ ดึงข้อมูล {len(futures_data)} สัญญา")
+                return futures_data, base_price
+                
+        except Exception as e:
+            print(f"[WTI/Yahoo] Error: {str(e)}")
+        
+        return [], None
+    
+    def get_current_and_futures(self) -> Dict:
+        """ดึงข้อมูลราคาปัจจุบันและ futures จากข้อมูลตลาดจริง"""
+        print("\n[WTI] กำลังดึงข้อมูลราคา WTI Futures จากตลาด...")
+        
+        # พยายามดึงข้อมูลจาก Yahoo Finance ก่อน (มีข้อมูลครบที่สุด)
+        futures_data, current_price = self.fetch_futures_from_yahoo()
+        data_source = "Yahoo Finance (NYMEX)"
+        is_estimated = False
+        
+        # ถ้า Yahoo ไม่ได้ ลอง Barchart
+        if not futures_data:
+            print("[WTI] Yahoo Finance ไม่สำเร็จ กำลังลอง Barchart...")
+            futures_data = self.fetch_futures_from_barchart()
+            if futures_data:
+                current_price = futures_data[0]['price']
+                data_source = "Barchart (NYMEX)"
+                is_estimated = False
+        
+        # ถ้ายังไม่ได้ ใช้ EIA + คำนวณ
+        if not futures_data:
+            print("[WTI] ไม่สามารถดึง Futures ได้ กำลังใช้ EIA Spot Price...")
+            spot_price, spot_date = self.fetch_current_wti_price()
+            
+            if spot_price:
+                current_price = spot_price
+                futures_data = self._estimate_futures_from_spot(spot_price)
+                data_source = f"EIA Spot Price ({spot_date})"
+                is_estimated = True
+            else:
+                raise Exception("ไม่สามารถดึงข้อมูลราคา WTI ได้จากทุกแหล่ง")
+        
+        current_data = {
+            "source": data_source,
+            "current_price": current_price,
+            "timestamp": datetime.now(TZ).isoformat(),
+            "currency": "USD/barrel",
+            "commodity": "WTI Crude Oil (NYMEX)"
+        }
+        
+        return {
+            "current": current_data,
+            "futures": futures_data[:12],  # เอาแค่ 12 เดือน
+            "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
+            "is_estimated": is_estimated,
+            "method": "Real market data from NYMEX" if not is_estimated else "EIA spot + estimation"
+        }
+    
+    def _estimate_futures_from_spot(self, spot_price: float) -> List[Dict]:
+        """สำรอง: คำนวณ futures จาก spot price (ใช้เมื่อดึงข้อมูลจริงไม่ได้)"""
         futures_data = []
         now = datetime.now(TZ)
-        
-        # โมเดล contango curve ที่ปรับปรุง (ตามข้อมูลจริงจากตลาด)
-        base_premium = 0.28  # Premium พื้นฐาน
-        seasonal_factor = 0.18  # ปัจจัยตามฤดูกาล
         
         for i in range(12):
             months_ahead = i + 1
             future_date = now + timedelta(days=30 * months_ahead)
-            month_num = future_date.month
             
-            # Time premium (contango structure)
-            # ช่วงแรกมี premium น้อย ค่อยๆ เพิ่มขึ้น
-            if months_ahead <= 3:
-                time_premium = months_ahead * base_premium * 0.75
-            elif months_ahead <= 6:
-                time_premium = 0.63 + (months_ahead - 3) * base_premium * 0.95
-            else:
-                time_premium = 1.53 + (months_ahead - 6) * base_premium * 1.15
-            
-            # Seasonal adjustment (ตามรูปแบบการใช้น้ำมัน)
-            if month_num in [12, 1, 2]:  # ฤดูหนาว - demand สูง
-                seasonal_adj = seasonal_factor * 1.6
-            elif month_num in [6, 7, 8]:  # ฤดูร้อน - driving season
-                seasonal_adj = seasonal_factor * 1.3
-            elif month_num in [5, 9]:  # ช่วง shoulder season
-                seasonal_adj = seasonal_factor * 0.9
-            else:  # ฤดูใบไม้ผลิ/ใบไม้ร่วง
-                seasonal_adj = seasonal_factor * 0.7
-            
-            # เพิ่มความผันผวนเล็กน้อย (±0.5%)
-            import random
-            random.seed(int(current_price * 100) + months_ahead)  # ทำให้ผลลัพธ์เหมือนเดิมในแต่ละรอบ
-            volatility = random.uniform(-0.005, 0.005) * current_price
-            
-            future_price = current_price + time_premium + seasonal_adj + volatility
+            # Contango curve แบบง่าย
+            premium = months_ahead * 0.25
+            future_price = spot_price + premium
             
             futures_data.append({
                 "month": future_date.strftime("%b %Y"),
                 "contract": future_date.strftime("%b%y").upper(),
                 "price": round(future_price, 2),
-                "change": round(future_price - current_price, 2),
-                "change_pct": round((future_price - current_price) / current_price * 100, 2)
+                "change": round(premium, 2),
+                "change_pct": round((premium / spot_price) * 100, 2)
             })
         
         return futures_data
