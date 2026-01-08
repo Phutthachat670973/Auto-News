@@ -7,6 +7,7 @@ import time
 import hashlib
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs, unquote
+from difflib import SequenceMatcher
 
 import requests
 import feedparser
@@ -40,7 +41,6 @@ DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in ["1", "true", "yes", "y"]
 BUBBLES_PER_CAROUSEL = int(os.getenv("BUBBLES_PER_CAROUSEL", "10"))
 
 # สร้างตัวแปรสำหรับเลือกเว็บข่าวที่ต้องการ
-# รูปแบบ: "reuters.com,bloomberg.com,bangkokpost.com,thansettakij.com"
 ALLOWED_NEWS_SOURCES = os.getenv("ALLOWED_NEWS_SOURCES", "").strip()
 if ALLOWED_NEWS_SOURCES:
     ALLOWED_NEWS_SOURCES_LIST = [s.strip().lower() for s in ALLOWED_NEWS_SOURCES.split(",") if s.strip()]
@@ -78,10 +78,10 @@ PROJECTS_BY_COUNTRY = {
 }
 
 # =============================================================================
-# KEYWORD FILTERS (เรียบง่ายขึ้น)
+# ENHANCED KEYWORD FILTER (แก้ไขปัญหาข่าวซ้ำและข่าวไม่เกี่ยวข้อง)
 # =============================================================================
-class KeywordFilter:
-    # คำหลักที่เกี่ยวข้องกับพลังงาน
+class EnhancedKeywordFilter:
+    # คำหลักที่เกี่ยวข้องกับพลังงาน (ธุรกิจ)
     ENERGY_KEYWORDS = [
         'พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ค่าไฟฟ้า', 'อัตราค่าไฟฟ้า',
         'ก๊าซ', 'LNG', 'น้ำมัน', 'เชื้อเพลิง', 'พลังงานทดแทน',
@@ -98,28 +98,57 @@ class KeywordFilter:
         'energy policy', 'energy project', 'energy investment'
     ]
     
-    # คำที่ต้องหลีกเลี่ยง
+    # คำที่บ่งบอกถึงธุรกิจ/โครงการ
+    BUSINESS_KEYWORDS = [
+        'โครงการ', 'ลงทุน', 'สัญญา', 'สัมปทาน', 'มูลค่า',
+        'ล้าน', 'พันล้าน', 'ดอลลาร์', 'บาท', 'เหรียญ',
+        'พบ', 'สำรวจ', 'ขุดเจาะ', 'ผลิต', 'ส่งออก', 'นำเข้า',
+        'ประกาศ', 'แถลง', 'รายงาน', 'ผลประกอบการ', 'รายได้',
+        'ขยาย', 'พัฒนา', 'สร้าง', 'ก่อสร้าง', 'ติดตั้ง',
+        'project', 'investment', 'contract', 'agreement', 'deal',
+        'discovery', 'exploration', 'drilling', 'production', 'export',
+        'announce', 'report', 'financial', 'revenue', 'expand',
+        'development', 'construction', 'installation'
+    ]
+    
+    # คำที่ต้องหลีกเลี่ยง (ข่าวสังคม)
     EXCLUDE_KEYWORDS = [
         'ตลาดรถยนต์', 'รถยนต์', 'รถ', 'รถใหม่', 'รถยนต์ใหม่',
         'ยานยนต์', 'อุตสาหกรรมยานยนต์',
+        'ดารา', 'ศิลปิน', 'นักแสดง', 'นักร้อง', 'คนดัง',
+        'ร่วมบุญ', 'การกุศล', 'จิตอาสา', 'มอบ', 'ให้', 'ช่วยเหลือ',
+        'หู', 'สะเด็ด', 'จา พนม', 'ชวน', 'มอบพลังงาน', 'ให้คนไทย',
+        'celebrity', 'actor', 'singer', 'donation', 'charity', 'philanthropy',
         'car', 'automotive', 'vehicle', 'automobile'
     ]
     
+    # คำหลักสำหรับตรวจสอบข่าวซ้ำ
+    MAIN_KEYWORDS_FOR_GROUPING = [
+        'murphy', 'shell', 'แบร็ค อิลส์', 'black hills',
+        'appraisal', 'oil field', 'LNG', 'terminal', 'supplier',
+        'ไฟฟ้า', 'ลงทุน', 'investment', 'discovery', 'found'
+    ]
+    
     @classmethod
-    def is_energy_related(cls, text: str) -> bool:
-        """Check if text is energy related"""
+    def is_valid_energy_news(cls, text: str) -> bool:
+        """ตรวจสอบว่าเป็นข่าวพลังงานที่เกี่ยวข้องกับธุรกิจหรือไม่"""
         text_lower = text.lower()
         
-        # ตรวจสอบว่าไม่มีคำที่ต้องหลีกเลี่ยง
+        # 1. ตรวจสอบว่าเป็นข่าวสังคมหรือไม่
         for exclude in cls.EXCLUDE_KEYWORDS:
             if exclude.lower() in text_lower:
-                # ถ้ามีคำที่ต้องหลีกเลี่ยง ตรวจสอบว่ามีคำพลังงานร่วมด้วยหรือไม่
-                has_energy = any(keyword.lower() in text_lower for keyword in cls.ENERGY_KEYWORDS)
-                if not has_energy:
-                    return False
+                print(f"  ✗ ข่าวสังคม: {exclude}")
+                return False
         
-        # ตรวจสอบว่ามีคำที่เกี่ยวข้องกับพลังงาน
-        return any(keyword.lower() in text_lower for keyword in cls.ENERGY_KEYWORDS)
+        # 2. ตรวจสอบว่ามีคำที่เกี่ยวข้องกับพลังงาน
+        has_energy = any(keyword.lower() in text_lower for keyword in cls.ENERGY_KEYWORDS)
+        if not has_energy:
+            return False
+        
+        # 3. ตรวจสอบว่ามีคำที่บ่งบอกถึงธุรกิจ/โครงการ
+        has_business = any(keyword.lower() in text_lower for keyword in cls.BUSINESS_KEYWORDS)
+        
+        return has_business
     
     @classmethod
     def detect_country(cls, text: str) -> str:
@@ -151,18 +180,14 @@ def gnews_rss(q: str, hl="en", gl="US", ceid="US:en") -> str:
 
 FEEDS = [
     ("GoogleNewsTH", "thai", gnews_rss(
-        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "สัมปทาน") -"รถยนต์" -"ตลาดรถ"',
+        '(พลังงาน OR "ค่าไฟ" OR ก๊าซ OR LNG OR น้ำมัน OR ไฟฟ้า OR "โรงไฟฟ้า" OR "พลังงานทดแทน" OR "สัมปทาน") -"รถยนต์" -"ตลาดรถ" -"ดารา" -"นักแสดง"',
         hl="th", gl="TH", ceid="TH:th"
     )),
     ("GoogleNewsEN", "international", gnews_rss(
-        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia) -car -automotive',
+        '(energy OR electricity OR power OR oil OR gas OR "power plant" OR "energy project") AND (Thailand OR Vietnam OR Malaysia OR Indonesia) -car -automotive -celebrity',
         hl="en", gl="US", ceid="US:en"
     )),
-    # ✅ เพิ่ม feed จากเว็บโดยตรง
     ("EnergyNewsCenter", "direct", "https://www.energynewscenter.com/feed/"),
-    # ลองเพิ่ม RSS feed URLs อื่นๆ ที่เป็นไปได้
-    ("EnergyNewsCenter RSS2", "direct", "https://www.energynewscenter.com/rss/"),
-    ("EnergyNewsCenter RSS3", "direct", "https://www.energynewscenter.com/feed/rss/"),
 ]
 
 # =============================================================================
@@ -284,22 +309,21 @@ def create_simple_summary(text: str, max_length: int = 150) -> str:
 # =============================================================================
 # RSS PARSING
 # =============================================================================
-def fetch_feed(name: str, section: str, url: str):
-    """ดึง RSS feed จาก URL"""
-    print(f"[FEED] ดึงข้อมูลจาก {name} ({url})...")
-    try:
-        d = feedparser.parse(url)
-        entries = d.entries or []
-        print(f"[FEED] {name}: พบ {len(entries)} entries")
-        
-        # แสดงตัวอย่าง entries (สำหรับ debug)
-        if entries and len(entries) > 0:
-            print(f"[FEED] ตัวอย่างข่าวแรก: {entries[0].title[:50]}...")
-        
-        return entries
-    except Exception as e:
-        print(f"[FEED] {name}: เกิดข้อผิดพลาด - {str(e)}")
-        return []
+def fetch_feed_with_retry(name: str, url: str, retries: int = 3):
+    """ดึง feed พร้อมระบบ retry"""
+    for attempt in range(retries):
+        try:
+            print(f"[FEED] ดึงข้อมูลจาก {name} (ครั้งที่ {attempt+1}/{retries})...")
+            d = feedparser.parse(url)
+            entries = d.entries or []
+            print(f"[FEED] {name}: พบ {len(entries)} entries")
+            return entries
+        except Exception as e:
+            print(f"[FEED] {name}: เกิดข้อผิดพลาด - {str(e)}")
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff
+            else:
+                return []
 
 def parse_entry(e, feed_name: str, section: str):
     title = (getattr(e, "title", "") or "").strip()
@@ -426,9 +450,9 @@ class LLMAnalyzer:
         }
 
 # =============================================================================
-# NEWS PROCESSOR
+# ENHANCED NEWS PROCESSOR (แก้ไขปัญหาข่าวซ้ำ)
 # =============================================================================
-class NewsProcessor:
+class EnhancedNewsProcessor:
     def __init__(self):
         self.sent_links = read_sent_links()
         self.llm_analyzer = LLMAnalyzer(GROQ_API_KEY, GROQ_MODEL, GROQ_ENDPOINT) if GROQ_API_KEY else None
@@ -452,10 +476,13 @@ class NewsProcessor:
             'sanook.com': 'สนุกดอทคอม',
             'kapook.com': 'กะปุก',
             'manager.co.th': 'ผู้จัดการ',
-            # ✅ เพิ่มแหล่งข่าวพลังงานโดยเฉพาะ
-            'energynewscenter.com': 'Energy News Center',  # เพิ่มเว็บตรง
-            # เพิ่มแหล่งข่าวอื่นๆ ตามต้องการ
+            'energynewscenter.com': 'Energy News Center',
         }
+        
+        # Cache สำหรับป้องกันข่าวซ้ำใน session เดียวกัน
+        self._title_cache = []
+        self._processed_items = []
+        self._group_cache = set()
     
     def get_source_name(self, url: str) -> str:
         """ดึงชื่อเว็บข่าวจาก URL"""
@@ -471,6 +498,59 @@ class NewsProcessor:
         # หากไม่เจอ ให้ใช้ domain เป็นชื่อ
         return domain
     
+    def _is_similar_title(self, title1: str, title2: str, threshold: float = 0.8) -> bool:
+        """ตรวจสอบความคล้ายคลึงของหัวข้อข่าว"""
+        similarity = SequenceMatcher(None, title1, title2).ratio()
+        return similarity > threshold
+    
+    def _create_group_key(self, item: dict) -> str:
+        """สร้าง key สำหรับจัดกลุ่มข่าว (ป้องกันข่าวซ้ำ)"""
+        title_lower = item.get('title', '').lower()
+        country = item.get('country', '')
+        
+        # หาคีย์เวิร์ดหลักในข่าว
+        for keyword in EnhancedKeywordFilter.MAIN_KEYWORDS_FOR_GROUPING:
+            if keyword.lower() in title_lower:
+                return f"{country}_{keyword}"
+        
+        # ถ้าไม่เจอคีย์เวิร์ดเฉพาะ ให้ใช้ 3 คำแรกของหัวข้อ
+        words = title_lower.split()[:3]
+        return f"{country}_{'_'.join(words)}"
+    
+    def _score_news_item(self, item: dict) -> int:
+        """ให้คะแนนข่าวตามคุณภาพ"""
+        score = 0
+        
+        # มี URL จริง (ไม่ใช่ google news)
+        canon_url = item.get('canon_url') or ''
+        if 'news.google.com' not in canon_url and canon_url:
+            score += 10
+        
+        # มี summary ยาว
+        if len(item.get('summary', '')) > 50:
+            score += 5
+        
+        # มีวันที่ชัดเจน
+        if item.get('published_dt'):
+            score += 3
+        
+        # มาจากเว็บข่าวที่เชื่อถือได้
+        domain = extract_domain(canon_url)
+        if domain in ['reuters.com', 'bloomberg.com', 'bangkokpost.com']:
+            score += 5
+        
+        return score
+    
+    def _select_better_news(self, item1: dict, item2: dict) -> dict:
+        """เลือกข่าวที่ดีกว่าจากข่าวที่คล้ายกัน"""
+        score1 = self._score_news_item(item1)
+        score2 = self._score_news_item(item2)
+        
+        print(f"  [DEDUP] ข่าว 1: {score1} คะแนน | ข่าว 2: {score2} คะแนน")
+        
+        # เลือกข่าวที่มีคะแนนสูงกว่า
+        return item1 if score1 >= score2 else item2
+    
     def fetch_and_filter_news(self):
         """Fetch and filter news from all feeds"""
         all_news = []
@@ -479,7 +559,7 @@ class NewsProcessor:
             print(f"\n[Fetching] {feed_name} ({feed_type})...")
             
             try:
-                entries = fetch_feed(feed_name, feed_type, feed_url)
+                entries = fetch_feed_with_retry(feed_name, feed_url)
                 
                 # สำหรับเว็บตรง ไม่ต้องกรอง MAX_PER_FEED มากเกินไป
                 limit = 20 if feed_type == "direct" else MAX_PER_FEED
@@ -492,6 +572,9 @@ class NewsProcessor:
                         
             except Exception as e:
                 print(f"  ✗ Error: {str(e)}")
+        
+        # Step 1.5: Remove group duplicates
+        all_news = self._remove_group_duplicates(all_news)
         
         # Sort by date (ใหม่ที่สุดก่อน)
         all_news.sort(key=lambda x: -((x.get('published_dt') or datetime.min).timestamp()))
@@ -515,26 +598,22 @@ class NewsProcessor:
             return None
         
         # สำหรับเว็บตรง (direct) ไม่ต้องตรวจสอบ ALLOWED_NEWS_SOURCES
-        # เพราะเราต้องการข่าวจากเว็บตรงทุกข่าว
         if feed_type != "direct":
             # ตรวจสอบว่า URL นี้มาจากเว็บข่าวที่อนุญาตหรือไม่
             display_url = item["canon_url"] or item["url"]
             if not is_allowed_source(display_url):
-                # print(f"  ✗ ข้ามข่าวจาก {extract_domain(display_url)} (ไม่อยู่ในรายการที่อนุญาต)")
                 return None
         
         # Combine text for analysis
         full_text = f"{item['title']} {item['summary']}"
         
-        # Step 1: Keyword filtering
-        # สำหรับเว็บพลังงานโดยตรง อาจไม่ต้องกรองเข้มงวด
-        if not KeywordFilter.is_energy_related(full_text):
-            # ถ้าเป็นเว็บพลังงานโดยตรง ให้ผ่อนปรนการกรอง
-            if feed_type != "direct":
-                return None
+        # Step 1: Enhanced keyword filtering
+        if not EnhancedKeywordFilter.is_valid_energy_news(full_text):
+            print(f"  ✗ ไม่ผ่านการกรอง: {item['title'][:40]}...")
+            return None
         
-        # Step 2: Detect country (แต่เว็บพลังงานอาจไม่จำเป็นต้องมีประเทศเสมอ)
-        country = KeywordFilter.detect_country(full_text)
+        # Step 2: Detect country
+        country = EnhancedKeywordFilter.detect_country(full_text)
         if not country:
             # สำหรับเว็บพลังงานโดยตรง ให้ใช้ Thailand เป็น default
             if feed_type == "direct":
@@ -542,7 +621,21 @@ class NewsProcessor:
             else:
                 return None
         
-        # Step 3: LLM analysis (สำหรับสรุปข่าวเท่านั้น)
+        # Step 3: ตรวจสอบข่าวซ้ำใน session เดียวกัน
+        title_lower = item['title'].lower()
+        for existing_title in self._title_cache:
+            if self._is_similar_title(title_lower, existing_title, threshold=0.7):
+                print(f"  ✗ ข่าวซ้ำใน session: {item['title'][:40]}...")
+                return None
+        self._title_cache.append(title_lower)
+        
+        # Step 4: Check for similar existing news
+        existing_item = self._find_similar_news(item, country)
+        if existing_item:
+            print(f"  ! พบข่าวคล้ายกัน: {item['title'][:40]}...")
+            return self._select_better_news(item, existing_item)
+        
+        # Step 5: LLM analysis (สำหรับสรุปข่าวเท่านั้น)
         llm_summary = ""
         if USE_LLM_SUMMARY and self.llm_analyzer:
             llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
@@ -563,7 +656,7 @@ class NewsProcessor:
         source_name = self.get_source_name(display_url)
         
         # Build final news item
-        return {
+        final_item = {
             'title': item['title'][:100],
             'url': item['url'],
             'canon_url': item['canon_url'],
@@ -578,11 +671,52 @@ class NewsProcessor:
             'feed_type': feed_type,
             'simple_summary': create_simple_summary(full_text, 100)
         }
+        
+        # เก็บไว้ใน processed items
+        self._processed_items.append(final_item)
+        
+        return final_item
+    
+    def _find_similar_news(self, new_item: dict, country: str):
+        """ค้นหาข่าวที่คล้ายกัน"""
+        for existing in self._processed_items:
+            # ตรวจสอบประเทศเดียวกัน
+            if existing.get('country') != country:
+                continue
+            
+            # ตรวจสอบหัวข้อคล้ายกัน
+            title_similarity = self._is_similar_title(
+                new_item['title'].lower(),
+                existing['title'].lower(),
+                threshold=0.7
+            )
+            
+            # ถ้าคล้ายกันมาก
+            if title_similarity:
+                return existing
+        
+        return None
+    
+    def _remove_group_duplicates(self, news_items):
+        """ลบข่าวซ้ำที่มาจากเหตุการณ์เดียวกัน"""
+        unique_items = []
+        
+        for item in news_items:
+            group_key = self._create_group_key(item)
+            
+            if group_key in self._group_cache:
+                continue
+            
+            self._group_cache.add(group_key)
+            unique_items.append(item)
+        
+        print(f"[DEDUP] หลังจากลบข่าวซ้ำ: {len(news_items)} -> {len(unique_items)} ข่าว")
+        return unique_items
 
 # =============================================================================
-# LINE MESSAGE BUILDER
+# ENHANCED LINE MESSAGE BUILDER
 # =============================================================================
-class LineMessageBuilder:
+class EnhancedLineMessageBuilder:
     @staticmethod
     def create_flex_bubble(news_item):
         """Create a LINE Flex Bubble for a news item"""
@@ -592,15 +726,39 @@ class LineMessageBuilder:
         pub_dt = news_item.get('published_dt')
         time_str = pub_dt.strftime("%d/%m/%Y %H:%M") if pub_dt else ""
         
+        # สีตามประเทศ
+        colors = {
+            "Thailand": "#FF6B6B",
+            "Vietnam": "#4ECDC4",
+            "Myanmar": "#FFD166",
+            "Malaysia": "#06D6A0",
+            "Indonesia": "#118AB2",
+            "UAE": "#9D4EDD",
+            "Oman": "#F15BB5",
+            "Kazakhstan": "#00BBF9",
+            "International": "#888888"
+        }
+        
+        color = colors.get(news_item.get('country', 'International'), "#888888")
+        
         # Build bubble contents
         contents = [
             {
-                "type": "text",
-                "text": title,
-                "weight": "bold",
-                "size": "md",
-                "wrap": True,
-                "margin": "md"
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": title,
+                        "weight": "bold",
+                        "size": "md",
+                        "wrap": True,
+                        "color": "#FFFFFF"
+                    }
+                ],
+                "backgroundColor": color,
+                "paddingAll": "12px",
+                "cornerRadius": "8px"
             }
         ]
         
@@ -646,7 +804,8 @@ class LineMessageBuilder:
             "text": f"ประเทศ: {news_item.get('country', 'N/A')}",
             "size": "sm",
             "margin": "xs",
-            "color": "#666666"
+            "color": color,
+            "weight": "bold"
         })
         
         # Add project hints
@@ -697,7 +856,8 @@ class LineMessageBuilder:
                 "type": "box",
                 "layout": "vertical",
                 "contents": contents,
-                "paddingAll": "12px"
+                "paddingAll": "12px",
+                "spacing": "sm"
             }
         }
         
@@ -730,7 +890,7 @@ class LineMessageBuilder:
         bubbles = []
         
         for item in news_items[:BUBBLES_PER_CAROUSEL]:
-            bubble = LineMessageBuilder.create_flex_bubble(item)
+            bubble = EnhancedLineMessageBuilder.create_flex_bubble(item)
             if bubble:
                 bubbles.append(bubble)
         
@@ -769,6 +929,7 @@ class LineSender:
                 body_contents = bubble.get('body', {}).get('contents', [])
                 title = ""
                 source = ""
+                country = ""
                 
                 for content in body_contents:
                     if content.get('type') == 'text':
@@ -777,13 +938,17 @@ class LineSender:
                             title = text[:60]
                         elif '📰' in text or '🌐' in text:
                             source = text
-                            break
+                        elif text.startswith("ประเทศ:"):
+                            country = text.replace("ประเทศ: ", "")
                 
                 print(f"{i+1}. {title}")
+                if country:
+                    print(f"   ประเทศ: {country}")
                 if source:
-                    print(f"   Source: {source}")
+                    print(f"   แหล่งข่าว: {source}")
+                print()
             
-            print(f"\nTotal: {len(contents)} news items")
+            print(f"Total: {len(contents)} news items")
             return True
         
         url = "https://api.line.me/v2/bot/message/broadcast"
@@ -812,7 +977,7 @@ class LineSender:
 # =============================================================================
 def main():
     print("="*60)
-    print("ระบบติดตามข่าวพลังงาน")
+    print("ระบบติดตามข่าวพลังงาน - แก้ไขปัญหาข่าวซ้ำและข่าวไม่เกี่ยวข้อง")
     print("="*60)
     
     # Configuration check
@@ -832,7 +997,7 @@ def main():
     print(f"[CONFIG] Feed รายการ: {[f[0] for f in FEEDS]}")
     
     # Initialize components
-    processor = NewsProcessor()
+    processor = EnhancedNewsProcessor()
     line_sender = LineSender(LINE_CHANNEL_ACCESS_TOKEN)
     
     # Step 1: Fetch and filter news
@@ -851,19 +1016,26 @@ def main():
     
     # นับจำนวนข่าวแยกตามแหล่งข่าว
     source_counts = {}
+    country_counts = {}
     for item in news_items:
         source = item.get('source_name') or item.get('domain', 'Unknown')
         source_counts[source] = source_counts.get(source, 0) + 1
+        
+        country = item.get('country', 'Unknown')
+        country_counts[country] = country_counts.get(country, 0) + 1
     
     print(f"   - สรุปด้วย AI: {llm_summary_count} ข่าว")
     print(f"   - ข่าวจากเว็บตรง: {direct_count} ข่าว")
     print(f"   - แหล่งข่าวที่พบ:")
     for source, count in sorted(source_counts.items()):
         print(f"     • {source}: {count} ข่าว")
+    print(f"   - แบ่งตามประเทศ:")
+    for country, count in sorted(country_counts.items()):
+        print(f"     • {country}: {count} ข่าว")
     
     # Step 2: Create LINE message
     print("\n[3] กำลังสร้างข้อความ LINE...")
-    line_message = LineMessageBuilder.create_carousel_message(news_items)
+    line_message = EnhancedLineMessageBuilder.create_carousel_message(news_items)
     
     if not line_message:
         print("[ERROR] ไม่สามารถสร้างข้อความได้")
