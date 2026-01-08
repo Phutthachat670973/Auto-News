@@ -1,8 +1,8 @@
-name: Daily News Bot
+name: Daily Energy News & WTI Futures Bot
 
 on:
   schedule:
-    - cron: "0 23 * * *"  # 06:00 ไทย = 23:00 UTC
+    - cron: "0 23 * * *"  # 06:00 Bangkok (UTC+7) = 23:00 UTC
   workflow_dispatch:
 
 permissions:
@@ -12,67 +12,80 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 35
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+      
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
+      
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirement.txt
-
+      
       - name: Syntax check
         run: python -m py_compile news.py
-
-      - name: Run news.py
+      
+      - name: news.py
         env:
+          # LINE Configuration
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          
+          # Groq LLM Configuration
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GROQ_MODEL_NAME: llama-3.1-8b-instant
-          OILPRICE_API_KEY: ${{ secrets.OILPRICE_API_KEY }}
-          GOOGLE_NEWS_QUERY: 'energy OR LNG OR oil OR "electricity tariff" OR nuclear OR sanctions OR geopolitics'
-          GOOGLE_NEWS_HL: "en"
-          GOOGLE_NEWS_GL: "US"
-          GOOGLE_NEWS_CEID: "US:en"
-
-          SELECT_LIMIT: "40"
-          SEND_LIMIT: "10"
-
-          MAX_RETRIES: "10"
-          SLEEP_MIN: "6"
-          SLEEP_MAX: "10"
-
-          THEME_BATCH_SIZE: "6"
-          SUMMARY_CLIP: "220"
-          MAX_PROMPT_CHARS: "17000"
-
-          SCORE_THEME_MIN: "60"
-          SCORE_STRICT: "70"
-          SCORE_RELAXED: "50"
-          BONUS_HIT: "10"
-
-          SEED_NEWS_FILE: "seed_news.txt"
-          PROJECT_LIST_FILE: "project_list.txt"
-          PARTNER_LIST_FILE: "partner_list.txt"
-
-          DEFAULT_HERO_URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/News_icon.png/640px-News_icon.png"
-          TRACK_DIR: "sent_links"
+          GROQ_MODEL: "llama-3.1-8b-instant"
+          GROQ_ENDPOINT: "https://api.groq.com/openai/v1/chat/completions"
+          USE_LLM_SUMMARY: "1"
+          
+          # Time & Feed Configuration
+          TZ: "Asia/Bangkok"
+          WINDOW_HOURS: "48"
+          MAX_PER_FEED: "30"
+          BUBBLES_PER_CAROUSEL: "10"
+          
+          # News Source Filter (optional - leave empty for all sources)
+          # Example: "reuters.com,bloomberg.com,bangkokpost.com"
+          ALLOWED_NEWS_SOURCES: ""
+          
+          # Tracking
+          SENT_DIR: "sent_links"
+          
+          # Debug & Testing
+          DEBUG_FILTERING: "1"
           DRY_RUN: "false"
-
+          
         run: |
+          echo "=========================================="
+          echo "Starting Energy News & WTI Futures Bot"
+          echo "Time: $(date +'%Y-%m-%d %H:%M:%S %Z')"
+          echo "=========================================="
           python -u news.py
-
+      
       - name: Commit and push sent_links
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Add sent_links directory
           git add sent_links/ || true
-          git commit -m "Update sent links for $(date +'%Y-%m-%d')" || echo "No changes to commit"
-          git push || echo "Push skipped"
+          
+          # Commit with timestamp
+          git commit -m "📰 Update sent links - $(date +'%Y-%m-%d %H:%M:%S')" || echo "No changes to commit"
+          
+          # Push changes
+          git push || echo "Push skipped (no changes)"
+      
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-logs-${{ github.run_number }}
+          path: |
+            *.log
+            sent_links/
+          retention-days: 7
