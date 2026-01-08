@@ -1008,15 +1008,15 @@ class LineSender:
 class WTIFuturesFetcher:
     """ดึงข้อมูลราคา WTI Futures จาก OilPriceAPI.com เท่านั้น"""
     
-    def __init__(self, api_key: str):
+def __init__(self, api_key: str):
         """Initialize WTI Futures Fetcher"""
         if not api_key or not api_key.strip():
             raise ValueError("OILPRICE_API_KEY is required!")
         
         self.api_key = api_key.strip()
         self.base_url = "https://api.oilpriceapi.com/v1"
-        
-def fetch_current_wti_price(self) -> float:
+    
+    def fetch_current_wti_price(self) -> float:
         """ดึงราคา WTI ปัจจุบันจาก OilPriceAPI.com"""
         # ระบุให้ดึงเฉพาะราคา WTI
         url = f"{self.base_url}/prices/latest?by_code=WTI_USD"
