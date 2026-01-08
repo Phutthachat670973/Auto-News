@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Enhanced News Aggregator with WTI Futures
-ระบบรวบรวมข่าวพลังงาน + ราคา WTI Futures แบบเรียลไทม์
+Enhanced News Aggregator with WTI Futures (OilPriceAPI Only)
+ระบบรวบรวมข่าวพลังงาน + ราคา WTI Futures จาก OilPriceAPI.com
 """
 
 import os
@@ -40,8 +40,10 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
 GROQ_ENDPOINT = os.getenv("GROQ_ENDPOINT", "https://api.groq.com/openai/v1/chat/completions").strip()
 USE_LLM_SUMMARY = os.getenv("USE_LLM_SUMMARY", "1").strip().lower() in ["1", "true", "yes", "y"]
 
-# Oil Price API (Optional)
+# Oil Price API (Required!)
 OILPRICE_API_KEY = os.getenv("OILPRICE_API_KEY", "").strip()
+if not OILPRICE_API_KEY:
+    raise RuntimeError("Missing OILPRICE_API_KEY - Get one from https://www.oilpriceapi.com")
 
 WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "48"))
 MAX_PER_FEED = int(os.getenv("MAX_PER_FEED", "30"))
@@ -1001,51 +1003,81 @@ class LineSender:
             return False
 
 # =============================================================================
-# WTI FUTURES MODULE
+# WTI FUTURES MODULE - OilPriceAPI.com Only
 # =============================================================================
 class WTIFuturesFetcher:
-    """ดึงข้อมูลราคา WTI Futures จาก API จริง"""
+    """ดึงข้อมูลราคา WTI Futures จาก OilPriceAPI.com เท่านั้น"""
     
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key
-    
+    def __init__(self, api_key: str):
+        """Initialize WTI Futures Fetcher"""
+        if not api_key or not api_key.strip():
+            raise ValueError("OILPRICE_API_KEY is required!")
+        
+        self.api_key = api_key.strip()
+        self.base_url = "https://api.oilpriceapi.com/v1"
+        
     def fetch_current_wti_price(self) -> float:
-        """ดึงราคา WTI ปัจจุบันจาก API"""
+        """ดึงราคา WTI ปัจจุบันจาก OilPriceAPI.com"""
+        url = f"{self.base_url}/prices/latest"
+        headers = {
+            "Authorization": f"Token {self.api_key}",
+            "Content-Type": "application/json"
+        }
         
-        apis_to_try = [
-            self._fetch_from_yahoo_finance,
-            self._fetch_from_investing_scrape
-        ]
-        
-        for api_func in apis_to_try:
-            try:
-                price = api_func()
-                if price and price > 0:
-                    print(f"[WTI] ✓ ดึงราคาสำเร็จ: ${price:.2f}")
-                    return price
-            except Exception as e:
-                print(f"[WTI] ✗ {api_func.__name__}: {e}")
-                continue
-        
-        default_price = 73.25
-        print(f"[WTI] ⚠ ใช้ราคาเริ่มต้น: ${default_price:.2f}")
-        return default_price
-    
-    def _fetch_from_yahoo_finance(self) -> Optional[float]:
-        """ดึงจาก Yahoo Finance (ไม่ต้องใช้ API key)"""
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/CL=F"
-        params = {"interval": "1d", "range": "1d"}
-        
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        
-        data = response.json()
-        price = data['chart']['result'][0]['meta']['regularMarketPrice']
-        return float(price)
-    
-    def _fetch_from_investing_scrape(self) -> Optional[float]:
-        """Alternative method - placeholder"""
-        return None
+        try:
+            print(f"[WTI] กำลังดึงราคาจาก OilPriceAPI.com...")
+            response = requests.get(url, headers=headers, timeout=15)
+            
+            if response.status_code == 401:
+                raise Exception("❌ API Key ไม่ถูกต้องหรือหมดอายุ - ตรวจสอบที่ oilpriceapi.com")
+            elif response.status_code == 429:
+                raise Exception("❌ เกิน rate limit - รอสักครู่แล้วลองใหม่")
+            elif response.status_code == 403:
+                raise Exception("❌ ไม่มีสิทธิ์เข้าถึง - ตรวจสอบ subscription plan")
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            price = None
+            
+            if isinstance(data.get('data'), dict) and 'price' in data['data']:
+                price = float(data['data']['price'])
+                print(f"[WTI] ✓ พบราคาจาก data.price")
+            elif isinstance(data.get('data'), dict) and 'WTI' in data['data']:
+                price = float(data['data']['WTI'])
+                print(f"[WTI] ✓ พบราคาจาก data.WTI")
+            elif isinstance(data.get('data'), list):
+                for item in data['data']:
+                    if isinstance(item, dict):
+                        name = str(item.get('name', '')).upper()
+                        if 'WTI' in name or 'CRUDE' in name:
+                            price = float(item.get('price', 0))
+                            print(f"[WTI] ✓ พบราคาจาก {item.get('name')}")
+                            break
+            elif 'price' in data:
+                price = float(data['price'])
+                print(f"[WTI] ✓ พบราคาจาก price")
+            
+            if price and price > 0:
+                print(f"[WTI] ✓ ดึงราคาสำเร็จ: ${price:.2f}/barrel")
+                return price
+            else:
+                print(f"[WTI] ⚠ ไม่พบราคา WTI ใน response")
+                print(f"[WTI] Response structure: {list(data.keys())}")
+                raise Exception("ไม่พบข้อมูลราคา WTI ใน API response")
+                
+        except requests.exceptions.Timeout:
+            raise Exception("❌ API timeout - ลองใหม่อีกครั้ง")
+        except requests.exceptions.ConnectionError:
+            raise Exception("❌ ไม่สามารถเชื่อมต่อ API ได้ - ตรวจสอบ internet connection")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"❌ Request error: {str(e)}")
+        except ValueError as e:
+            raise Exception(f"❌ ข้อมูลไม่ถูกต้อง: {str(e)}")
+        except Exception as e:
+            if "API Key" in str(e) or "rate limit" in str(e):
+                raise
+            raise Exception(f"❌ เกิดข้อผิดพลาด: {str(e)}")
     
     def calculate_futures_prices(self, current_price: float) -> List[Dict]:
         """คำนวณราคา futures 12 เดือนข้างหน้า"""
@@ -1053,21 +1085,30 @@ class WTIFuturesFetcher:
         now = datetime.now(TZ)
         
         base_premium = 0.25
+        seasonal_factor = 0.15
         
         for i in range(12):
             future_date = now + timedelta(days=30 * (i + 1))
+            month_num = future_date.month
             
             if i < 3:
-                premium = i * base_premium * 0.8
+                time_premium = i * base_premium * 0.8
             elif i < 6:
-                premium = i * base_premium * 1.0
+                time_premium = i * base_premium * 1.0
             else:
-                premium = i * base_premium * 1.2
+                time_premium = i * base_premium * 1.2
+            
+            if month_num in [12, 1, 2]:
+                seasonal_adj = seasonal_factor * 1.5
+            elif month_num in [6, 7, 8]:
+                seasonal_adj = seasonal_factor * 1.2
+            else:
+                seasonal_adj = seasonal_factor * 0.8
             
             import random
             volatility = random.uniform(-0.005, 0.005) * current_price
             
-            future_price = current_price + premium + volatility
+            future_price = current_price + time_premium + seasonal_adj + volatility
             
             futures_data.append({
                 "month": future_date.strftime("%b %Y"),
@@ -1081,19 +1122,19 @@ class WTIFuturesFetcher:
     
     def get_current_and_futures(self) -> Dict:
         """ดึงข้อมูลราคาปัจจุบันและ futures ครบ 12 เดือน"""
-        print("[WTI] กำลังดึงข้อมูลราคา...")
+        print("[WTI] กำลังดึงข้อมูลราคา WTI...")
         
         current_price = self.fetch_current_wti_price()
         
         current_data = {
-            "source": "Yahoo Finance / Live Data",
+            "source": "OilPriceAPI.com",
             "current_price": current_price,
             "timestamp": datetime.now(TZ).isoformat(),
             "currency": "USD/barrel"
         }
         
+        print(f"[WTI] กำลังคำนวณราคา futures 12 เดือน...")
         futures_data = self.calculate_futures_prices(current_price)
-        
         print(f"[WTI] ✓ สร้างข้อมูล futures {len(futures_data)} เดือน")
         
         return {
@@ -1265,6 +1306,14 @@ class WTIFlexMessageBuilder:
                     "color": "#8B8B8B",
                     "align": "center",
                     "margin": "md"
+                },
+                {
+                    "type": "text",
+                    "text": "📡 ข้อมูลจาก OilPriceAPI.com",
+                    "size": "xxs",
+                    "color": "#8B8B8B",
+                    "align": "center",
+                    "margin": "xs"
                 }
             ]
         }
@@ -1297,11 +1346,16 @@ class WTIFlexMessageBuilder:
 # =============================================================================
 def main():
     print("="*60)
-    print("ระบบติดตามข่าวพลังงาน + WTI Futures")
+    print("ระบบติดตามข่าวพลังงาน + WTI Futures (OilPriceAPI Only)")
     print("="*60)
     
     if not LINE_CHANNEL_ACCESS_TOKEN:
         print("[ERROR] LINE_CHANNEL_ACCESS_TOKEN is required")
+        return
+    
+    if not OILPRICE_API_KEY:
+        print("[ERROR] OILPRICE_API_KEY is required")
+        print("        Get one from: https://www.oilpriceapi.com")
         return
     
     if USE_LLM_SUMMARY and not GROQ_API_KEY:
@@ -1312,6 +1366,7 @@ def main():
     print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
     print(f"[CONFIG] Debug filtering: {'Yes' if DEBUG_FILTERING else 'No'}")
+    print(f"[CONFIG] Oil Price API: OilPriceAPI.com")
     
     processor = NewsProcessor()
     line_sender = LineSender(LINE_CHANNEL_ACCESS_TOKEN)
@@ -1365,11 +1420,16 @@ def main():
             success_news = False
     
     print("\n[5] กำลังส่งข้อมูล WTI Futures...")
-    wti_fetcher = WTIFuturesFetcher(api_key=OILPRICE_API_KEY if OILPRICE_API_KEY else None)
-    wti_data = wti_fetcher.get_current_and_futures()
-    wti_message = WTIFlexMessageBuilder.create_wti_futures_message(wti_data)
-    
-    success_wti = line_sender.send_message(wti_message)
+    try:
+        wti_fetcher = WTIFuturesFetcher(api_key=OILPRICE_API_KEY)
+        wti_data = wti_fetcher.get_current_and_futures()
+        wti_message = WTIFlexMessageBuilder.create_wti_futures_message(wti_data)
+        
+        success_wti = line_sender.send_message(wti_message)
+        
+    except Exception as e:
+        print(f"[WTI ERROR] {str(e)}")
+        success_wti = False
     
     if news_items and not DRY_RUN:
         for item in news_items:
