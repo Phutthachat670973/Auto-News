@@ -35,7 +35,7 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL_NAME: llama-3.1-8b-instant
-
+          OILPRICE_API_KEY: ${{ secrets.OILPRICE_API_KEY }}
           GOOGLE_NEWS_QUERY: 'energy OR LNG OR oil OR "electricity tariff" OR nuclear OR sanctions OR geopolitics'
           GOOGLE_NEWS_HL: "en"
           GOOGLE_NEWS_GL: "US"
