@@ -89,6 +89,7 @@ PROJECTS_BY_COUNTRY = {
     "Oman": ["Oman Block 61", "Block 61", "Oman Block 6", "PDO"],
     "UAE": ["Abu Dhabi Offshore 1", "Abu Dhabi Offshore 2", "Abu Dhabi Offshore 3"],
 }
+
 # =============================================================================
 # ENHANCED DEDUPLICATION SYSTEM (FIXED - Less Aggressive)
 # =============================================================================
@@ -678,9 +679,6 @@ def parse_entry(e, feed_name: str, section: str):
     }
 
 # =============================================================================
-# LLM ANALYZER
-# =============================================================================
-# =============================================================================
 # LLM ANALYZER (ปรับปรุงด้วย Few-Shot Learning)
 # =============================================================================
 class LLMAnalyzer:
@@ -791,6 +789,7 @@ class LLMAnalyzer:
             "topics": [],
             "confidence": 0.5
         }
+
 # =============================================================================
 # NEWS PROCESSOR
 # =============================================================================
@@ -873,8 +872,8 @@ class NewsProcessor:
         
         return all_news
     
-     def _process_entry(self, entry, feed_name: str, feed_type: str):
-        """Process individual news entry"""
+    def _process_entry(self, entry, feed_name: str, feed_type: str):
+        """Process individual news entry - FIXED VERSION"""
         item = parse_entry(entry, feed_name, feed_type)
         
         if not item["title"]:
@@ -889,32 +888,73 @@ class NewsProcessor:
             self.filter_stats['filtered_by']['already_sent'] += 1
             return None, f"ส่งแล้ว: {item['title'][:30]}..."
         
-        if item["published_dt"] and not in_time_windo
-project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
-    display_url = item["canon_url"] or item["url"]
-    source_name = self.get_source_name(display_url)
-    
-    final_item = {
-        'title': item['title'][:100],
-        'url': item['url'],
-        'canon_url': item['canon_url'],
-        'source_name': source_name,
-        'domain': extract_domain(display_url),
-        'summary': item['summary'][:200],
-        'published_dt': item['published_dt'],
-        'country': country,
-        'project_hints': project_hints,
-        'llm_summary': llm_summary,
-        'feed': feed_name,
-        'feed_type': feed_type,
-        'simple_summary': create_simple_summary(full_text, 100)
-    }
-    
-    if not self.dedup.add_item(final_item):
-        self.filter_stats['filtered_by']['duplicate'] += 1
-        return None, f"ข่าวซ้ำ: {item['title'][:30]}..."
-    
-    return final_item, None
+        if item["published_dt"] and not in_time_window(item["published_dt"], WINDOW_HOURS):
+            self.filter_stats['filtered_by']['out_of_window'] += 1
+            return None, f"เกินเวลา: {item['title'][:30]}..."
+        
+        if feed_type != "direct":
+            display_url = item["canon_url"] or item["url"]
+            if not is_allowed_source(display_url):
+                self.filter_stats['filtered_by']['not_allowed_source'] += 1
+                return None, f"แหล่งข่าวไม่อนุญาต: {extract_domain(display_url)}"
+        
+        full_text = f"{item['title']} {item['summary']}"
+        is_valid, reason, details = KeywordFilter.check_valid_energy_news(full_text)
+        
+        if not is_valid:
+            self.filter_stats['filtered_by']['invalid_energy_news'] += 1
+            return None, f"{reason}: {item['title'][:30]}..."
+        
+        country = KeywordFilter.detect_country(full_text)
+        if not country:
+            if feed_type == "direct":
+                country = "Thailand"
+            else:
+                self.filter_stats['filtered_by']['no_country'] += 1
+                return None, f"ไม่พบประเทศ: {item['title'][:30]}..."
+        
+        # ✅ FIXED: ส่วนนี้แก้ไขแล้ว - เพิ่มโค้ดที่ขาดหายไป
+        llm_summary = ""
+        if USE_LLM_SUMMARY and self.llm_analyzer:
+            llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
+            
+            # ✨ เช็คว่า LLM บอกว่าไม่เกี่ยวข้อง
+            if not llm_analysis.get('relevant', True):
+                confidence = llm_analysis.get('confidence', 0.5)
+                if confidence >= 0.7:  # มั่นใจว่าไม่เกี่ยวข้อง
+                    self.filter_stats['filtered_by']['invalid_energy_news'] += 1
+                    return None, f"LLM ระบุว่าไม่เกี่ยวข้องกับพลังงาน (confidence: {confidence:.0%})"
+            
+            # ถ้าเกี่ยวข้อง ให้ใช้ summary
+            llm_summary = llm_analysis.get('summary_th', '')
+            if not country and llm_analysis.get('country'):
+                country = llm_analysis['country']
+        
+        project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
+        display_url = item["canon_url"] or item["url"]
+        source_name = self.get_source_name(display_url)
+        
+        final_item = {
+            'title': item['title'][:100],
+            'url': item['url'],
+            'canon_url': item['canon_url'],
+            'source_name': source_name,
+            'domain': extract_domain(display_url),
+            'summary': item['summary'][:200],
+            'published_dt': item['published_dt'],
+            'country': country,
+            'project_hints': project_hints,
+            'llm_summary': llm_summary,
+            'feed': feed_name,
+            'feed_type': feed_type,
+            'simple_summary': create_simple_summary(full_text, 100)
+        }
+        
+        if not self.dedup.add_item(final_item):
+            self.filter_stats['filtered_by']['duplicate'] += 1
+            return None, f"ข่าวซ้ำ: {item['title'][:30]}..."
+        
+        return final_item, None
 # =============================================================================
 # LINE MESSAGE BUILDER
 # =============================================================================
