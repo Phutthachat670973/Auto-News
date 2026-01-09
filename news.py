@@ -18,7 +18,7 @@ import requests
 import feedparser
 import pytz
 from dateutil import parser as dateutil_parser
-
+from news_examples import get_few_shot_examples
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -680,31 +680,53 @@ def parse_entry(e, feed_name: str, section: str):
 # =============================================================================
 # LLM ANALYZER
 # =============================================================================
+# =============================================================================
+# LLM ANALYZER (ปรับปรุงด้วย Few-Shot Learning)
+# =============================================================================
 class LLMAnalyzer:
+    """วิเคราะห์ข่าวด้วย LLM พร้อม Few-Shot Learning"""
+    
     def __init__(self, api_key: str, model: str, endpoint: str):
         self.api_key = api_key
         self.model = model
         self.endpoint = endpoint
+        # ✨ โหลดตัวอย่างข่าวสำหรับ Few-Shot Learning
+        self.example_news = get_few_shot_examples()
+        print(f"[LLM] โหลดตัวอย่างข่าวสำหรับ Few-Shot Learning สำเร็จ")
     
     def analyze_news(self, title: str, summary: str) -> dict:
-        """Analyze news using LLM"""
+        """วิเคราะห์ข่าวด้วย LLM + Few-Shot Learning"""
         if not self.api_key:
             return self._get_default_analysis(title, summary)
         
-        system_prompt = """คุณเป็นผู้ช่วยสรุปข่าวพลังงาน
-        ตอบกลับเป็น JSON เท่านั้นตามรูปแบบนี้:
-        {
-            "relevant": true/false,
-            "country": "ชื่อประเทศหรือค่าว่าง",
-            "summary_th": "สรุปภาษาไทยสั้นๆ 1 ประโยค",
-            "topics": ["หัวข้อ1", "หัวข้อ2"]
-        }"""
+        # ✨ System Prompt แบบใหม่ที่มีตัวอย่าง
+        system_prompt = f"""คุณเป็นผู้เชี่ยวชาญด้านข่าวธุรกิจพลังงาน วิเคราะห์ข่าวตามตัวอย่างเหล่านี้:
+
+{self.example_news}
+
+กฎการตัดสิน:
+- ข่าวต้องเกี่ยวกับ: การสำรวจ, การผลิต, การลงทุน, ราคาตลาด, นโยบาย, โครงการพลังงาน
+- รวมถึงข่าวภูมิรัฐศาสตร์ที่ส่งผลต่อตลาดพลังงาน (อิหร่าน, รัสเซีย, เวเนซุเอลา, OPEC)
+- ไม่รับ: ข่าวยานยนต์, ข่าวบันเทิง, ข่าวสังคม, ข่าวการกุศล
+
+ตอบกลับเป็น JSON เท่านั้น:
+{{
+    "relevant": true/false,
+    "country": "ชื่อประเทศภาษาอังกฤษ (Thailand/Vietnam/Malaysia/etc) หรือค่าว่าง",
+    "summary_th": "สรุปภาษาไทยสั้นๆ 1 ประโยค",
+    "topics": ["หัวข้อ1", "หัวข้อ2"],
+    "confidence": 0.0-1.0
+}}"""
         
-        user_prompt = f"""ข่าว: {title}
-        
-        เนื้อหา: {summary[:500]}
-        
-        โปรดสรุปข่าวนี้เป็นภาษาไทยสั้นๆ 1 ประโยค:"""
+        user_prompt = f"""วิเคราะห์ข่าวนี้:
+
+หัวข้อ: {title}
+เนื้อหา: {summary[:500]}
+
+คำถาม:
+1. ข่าวนี้เกี่ยวข้องกับธุรกิจพลังงานหรือไม่?
+2. เกี่ยวกับประเทศไหน?
+3. สรุปเป็นภาษาไทย 1 ประโยค"""
         
         try:
             response = requests.post(
@@ -720,7 +742,7 @@ class LLMAnalyzer:
                         {"role": "user", "content": user_prompt}
                     ],
                     "temperature": 0.1,
-                    "max_tokens": 300
+                    "max_tokens": 400
                 },
                 timeout=30
             )
@@ -736,11 +758,18 @@ class LLMAnalyzer:
             if json_match:
                 analysis = json.loads(json_match.group())
                 
+                confidence = float(analysis.get("confidence", 0.5))
+                relevant = bool(analysis.get("relevant", True))
+                
+                if confidence < 0.7 and DEBUG_FILTERING:
+                    print(f"[LLM] ความมั่นใจต่ำ ({confidence:.2f}): {title[:40]}...")
+                
                 return {
-                    "relevant": bool(analysis.get("relevant", True)),
+                    "relevant": relevant,
                     "country": str(analysis.get("country", "")).strip(),
                     "summary_th": str(analysis.get("summary_th", "")).strip()[:150],
-                    "topics": [str(t).strip() for t in analysis.get("topics", []) if t]
+                    "topics": [str(t).strip() for t in analysis.get("topics", []) if t],
+                    "confidence": confidence
                 }
                 
         except json.JSONDecodeError:
@@ -759,9 +788,9 @@ class LLMAnalyzer:
             "relevant": True,
             "country": "",
             "summary_th": simple_summary if simple_summary else "สรุปข้อมูลไม่พร้อมใช้งาน",
-            "topics": []
+            "topics": [],
+            "confidence": 0.5
         }
-
 # =============================================================================
 # NEWS PROCESSOR
 # =============================================================================
@@ -885,15 +914,15 @@ class NewsProcessor:
                 self.filter_stats['filtered_by']['no_country'] += 1
                 return None, f"ไม่พบประเทศ: {item['title'][:30]}..."
         
+# ✨ ใช้ LLM วิเคราะห์พร้อมเช็ค confidence
         llm_summary = ""
         if USE_LLM_SUMMARY and self.llm_analyzer:
             llm_analysis = self.llm_analyzer.analyze_news(item['title'], item['summary'])
             
-            if llm_analysis['country'] and llm_analysis['country'] in PROJECTS_BY_COUNTRY:
-                country = llm_analysis['country']
-            
-            if llm_analysis.get('summary_th'):
-                llm_summary = llm_analysis['summary_th']
+            # ✨ เช็คว่า LLM บอกว่าไม่เกี่ยวข้อง
+            if not llm_analysis.get('relevant', True):
+                confidence = llm_analysis.get('confidence', 0.5)
+                if confidence >= 0.7:  # มั่นใจ
         
         project_hints = PROJECTS_BY_COUNTRY.get(country, [])[:2]
         display_url = item["canon_url"] or item["url"]
