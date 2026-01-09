@@ -182,114 +182,109 @@ class EnhancedDeduplication:
         
         return SequenceMatcher(None, norm1, norm2).ratio()
     
-    def is_duplicate_url(self, url: str) -> bool:
-        """ตรวจสอบว่า URL นี้เคยประมวลผลแล้วหรือไม่"""
-        url_clean = url.lower().strip()
-        url_clean = re.sub(r'[?&](utm_|ref=|fbclid=)[^&]*', '', url_clean)
+    def is_duplicate_content(self, item: dict) -> Tuple[bool, Optional[str]]:
+        """ตรวจสอบว่าเนื้อหาข่าวซ้ำหรือไม่ (เข้มงวดขึ้น)"""
+        url = item.get('canon_url') or item.get('url', '')
+        if self.is_duplicate_url(url):
+            return True, "URL ซ้ำ"
         
-        if url_clean in self.seen_urls:
-            return True
+        fingerprint = self.create_content_fingerprint(item)
+        if fingerprint in self.seen_fingerprints:
+            return True, "Fingerprint ซ้ำ (เนื้อหาเดียวกัน)"
+        self.seen_fingerprints.add(fingerprint)
         
-        self.seen_urls.add(url_clean)
-        return False
-    
-   def is_duplicate_content(self, item: dict) -> Tuple[bool, Optional[str]]:
-    """ตรวจสอบว่าเนื้อหาข่าวซ้ำหรือไม่ (เข้มงวดขึ้น)"""
-    url = item.get('canon_url') or item.get('url', '')
-    if self.is_duplicate_url(url):
-        return True, "URL ซ้ำ"
-    
-    fingerprint = self.create_content_fingerprint(item)
-    if fingerprint in self.seen_fingerprints:
-        return True, "Fingerprint ซ้ำ (เนื้อหาเดียวกัน)"
-    self.seen_fingerprints.add(fingerprint)
-    
-    title = item.get('title', '')
-    
-    # ✅ เพิ่มการตรวจสอบ: Title ที่คล้ายกันมาก (เข้มงวดขึ้น)
-    for cached_norm_title, cached_orig_title in self.title_cache:
-        similarity = self.calculate_similarity(title, cached_norm_title)
+        title = item.get('title', '')
         
-        # เปลี่ยนจาก 0.90 เป็น 0.75
-        if similarity > 0.75:
-            return True, f"Title คล้ายกันมาก ({similarity:.1%})"
-        
-        # เปลี่ยนจาก 0.75 เป็น 0.65 และไม่เช็คประเทศ
-        if similarity > 0.65:
-            return True, f"Title คล้ายกัน ({similarity:.1%})"
-    
-    # ✅ เพิ่มการตรวจสอบ: Exact keyword matching (เข้มงวดขึ้น)
-    current_keywords = self.extract_keywords(f"{item.get('title', '')} {item.get('summary', '')}")
-    if len(current_keywords) >= 2:  # ลดจาก 3 เป็น 2
-        for existing in self.processed_items:
-            existing_keywords = self.extract_keywords(
-                f"{existing.get('title', '')} {existing.get('summary', '')}"
-            )
+        # ✅ เพิ่มการตรวจสอบ: Title ที่คล้ายกันมาก (ลดเกณฑ์จาก 0.90 เป็น 0.75)
+        for cached_norm_title, cached_orig_title in self.title_cache:
+            similarity = self.calculate_similarity(title, cached_norm_title)
             
-            common_keywords = current_keywords & existing_keywords
-            # เปลี่ยนจาก 0.8 เป็น 0.7
-            if len(common_keywords) >= len(current_keywords) * 0.7:
-                # เช็ค title similarity ด้วย
-                title_sim = self.calculate_similarity(item.get('title', ''), existing.get('title', ''))
-                if title_sim > 0.5:
-                    pub_dt1 = item.get('published_dt')
-                    pub_dt2 = existing.get('published_dt')
-                    if pub_dt1 and pub_dt2:
-                        time_diff = abs((pub_dt1 - pub_dt2).total_seconds() / 3600)
-                        # เปลี่ยนจาก 24 ชม. เป็น 48 ชม.
-                        if time_diff < 48:
-                            return True, f"คำสำคัญตรงกัน {len(common_keywords)} คำ + เวลาใกล้กัน"
+            # เปลี่ยนจาก 0.90 เป็น 0.75
+            if similarity > 0.75:  # ✅ เข้มงวดขึ้น
+                return True, f"Title คล้ายกันมาก ({similarity:.1%})"
+            
+            # เปลี่ยนจาก 0.75 เป็น 0.65
+            if similarity > 0.65:  # ✅ เข้มงวดขึ้น
+                for existing in self.processed_items:
+                    if existing.get('title') == cached_orig_title:
+                        # ไม่ต้องเช็คประเทศ - ถ้าคล้ายกันมากก็ถือว่าซ้ำ
+                        return True, f"Title คล้ายกัน ({similarity:.1%})"
+        
+        # ✅ เพิ่มการตรวจสอบ: Exact keyword matching
+        current_keywords = self.extract_keywords(f"{item.get('title', '')} {item.get('summary', '')}")
+        if len(current_keywords) >= 2:  # ลดจาก 3 เป็น 2
+            for existing in self.processed_items:
+                existing_keywords = self.extract_keywords(
+                    f"{existing.get('title', '')} {existing.get('summary', '')}"
+                )
+                
+                # เปลี่ยนจาก 0.8 เป็น 0.7
+                common_keywords = current_keywords & existing_keywords
+                if len(common_keywords) >= len(current_keywords) * 0.7:  # ✅ เข้มงวดขึ้น
+                    # เช็ค title similarity ด้วย
+                    title_sim = self.calculate_similarity(item.get('title', ''), existing.get('title', ''))
+                    if title_sim > 0.5:  # ✅ เพิ่มเงื่อนไขนี้
+                        pub_dt1 = item.get('published_dt')
+                        pub_dt2 = existing.get('published_dt')
+                        if pub_dt1 and pub_dt2:
+                            time_diff = abs((pub_dt1 - pub_dt2).total_seconds() / 3600)
+                            # เปลี่ยนจาก 24 ชม. เป็น 48 ชม.
+                            if time_diff < 48:  # ✅ เพิ่มช่วงเวลา
+                                return True, f"คำสำคัญตรงกัน {len(common_keywords)} คำ + เวลาใกล้กัน"
+        
+        # ✅ เพิ่มการตรวจสอบ: ชื่อโครงการหรือสถานที่เฉพาะเจาะจง
+        specific_terms = self._extract_specific_terms(title)
+        if specific_terms:
+            for existing in self.processed_items:
+                existing_terms = self._extract_specific_terms(existing.get('title', ''))
+                if specific_terms & existing_terms:  # มีคำเฉพาะเจาะจงตรงกัน
+                    title_sim = self.calculate_similarity(title, existing.get('title', ''))
+                    if title_sim > 0.5:
+                        return True, f"พบคำเฉพาะเจาะจงซ้ำ: {', '.join(specific_terms & existing_terms)}"
+        
+        norm_title = self.normalize_text(title)
+        self.title_cache.append((norm_title, title))
+        
+        return False, None
     
-    # ✅ เพิ่มการตรวจสอบ: ชื่อโครงการหรือสถานที่เฉพาะเจาะจง
-    specific_terms = self._extract_specific_terms(title)
-    if specific_terms:
-        for existing in self.processed_items:
-            existing_terms = self._extract_specific_terms(existing.get('title', ''))
-            if specific_terms & existing_terms:
-                title_sim = self.calculate_similarity(title, existing.get('title', ''))
-                if title_sim > 0.5:
-                    return True, f"พบคำเฉพาะเจาะจงซ้ำ: {', '.join(list(specific_terms & existing_terms)[:2])}"
-    
-    norm_title = self.normalize_text(title)
-    self.title_cache.append((norm_title, title))
-    
-    return False, None
-
-def _extract_specific_terms(self, text: str) -> Set[str]:
-    """ดึงคำเฉพาะเจาะจง เช่น ชื่อโครงการ, สถานที่, วันที่"""
-    text_lower = text.lower()
-    specific_terms = set()
-    
-    # วันที่ในรูปแบบต่างๆ
-    date_patterns = [
-        r'\d{1,2}\s*ม\.ค\.',
-        r'\d{1,2}\s*ก\.พ\.',
-        r'\d{1,2}\s*มี\.ค\.',
-        r'\d{1,2}/\d{1,2}/\d{2,4}',
-        r'วันนี้',
-        r'today'
-    ]
-    
-    for pattern in date_patterns:
-        matches = re.findall(pattern, text_lower)
-        specific_terms.update(matches)
-    
-    # ชื่อโครงการเฉพาะ
-    project_names = [
-        'natuna sea a', 'natuna', 'arthit', 'zawtika', 'yadana',
-        'sk309', 'sk311', 'block h', 'block 61', 'dunga',
-        'จี 1/61', 'จี 2/61', 'เอส 1', 'บี 6/27',
-        'indonesia', 'malaysia', 'vietnam', 'myanmar', 'oman', 'uae',
-        'leighton asia', 'cimic', 'aiib', 'pasuruan',
-        'palm oil', 'biodiesel', 'ราคาน้ำมัน'
-    ]
-    
-    for project in project_names:
-        if project in text_lower:
-            specific_terms.add(project)
-    
-    return specific_terms
-    
+    def _extract_specific_terms(self, text: str) -> Set[str]:
+        """ดึงคำเฉพาะเจาะจง เช่น ชื่อโครงการ, สถานที่, วันที่"""
+        text_lower = text.lower()
+        specific_terms = set()
+        
+        # วันที่ในรูปแบบต่างๆ
+        date_patterns = [
+            r'\d{1,2}\s*ม\.ค\.',
+            r'\d{1,2}\s*ก\.พ\.',
+            r'\d{1,2}\s*มี\.ค\.',
+            r'\d{1,2}/\d{1,2}/\d{2,4}',
+            r'วันนี้',
+            r'today'
+        ]
+        
+        for pattern in date_patterns:
+            matches = re.findall(pattern, text_lower)
+            specific_terms.update(matches)
+        
+        # ชื่อโครงการเฉพาะ
+        project_names = [
+            'natuna sea a', 'natuna', 'arthit', 'zawtika', 'yadana',
+            'sk309', 'sk311', 'block h', 'block 61', 'dunga',
+            'จี 1/61', 'จี 2/61', 'เอส 1', 'บี 6/27',
+            'indonesia', 'malaysia', 'vietnam', 'myanmar', 'oman', 'uae',
+            'leighton asia', 'cimic', 'aiib', 'pasuruan'
+        ]
+        
+        for project in project_names:
+            if project in text_lower:
+                specific_terms.add(project)
+        
+        # ตัวเลขเฉพาะ (ราคา, จำนวนเงิน)
+        number_patterns = re.findall(r'\$\d+|\d+\s*(?:บาท|ดอลลาร์|ล้าน|พันล้าน)', text_lower)
+        specific_terms.update(number_patterns[:2])  # เอาแค่ 2 ตัวแรก
+        
+        return specific_terms
+        
     def add_item(self, item: dict) -> bool:
         """เพิ่มข่าวเข้าระบบ (ถ้าไม่ซ้ำ)"""
         is_dup, reason = self.is_duplicate_content(item)
