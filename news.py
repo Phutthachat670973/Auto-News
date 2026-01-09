@@ -88,6 +88,7 @@ PROJECTS_BY_COUNTRY = {
     "Kazakhstan": ["โครงการดุงกา", "Dunga"],
     "Oman": ["Oman Block 61", "Block 61", "Oman Block 6", "PDO"],
     "UAE": ["Abu Dhabi Offshore 1", "Abu Dhabi Offshore 2", "Abu Dhabi Offshore 3"],
+    "International": ["OPEC", "IEA", "WTI", "Brent", "Global Energy Market"]
 }
 
 # =============================================================================
@@ -478,23 +479,57 @@ class KeywordFilter:
     
     @classmethod
     def detect_country(cls, text: str) -> str:
-        """Detect country from text"""
+        """Detect country from text - รองรับ International สำหรับข่าวพลังงานโลก"""
         text_lower = text.lower()
         
-        country_patterns = {
-            "Thailand": ['ไทย', 'ประเทศไทย', 'thailand', 'bangkok'],
-            "Myanmar": ['เมียนมา', 'myanmar', 'ย่างกุ้ง', 'yangon'],
+        # ประเทศที่เราสนใจเฉพาะเจาะจง (มีโครงการ)
+        primary_countries = {
+            "Thailand": ['ไทย', 'ประเทศไทย', 'thailand', 'bangkok', 'กรุงเทพ'],
+            "Myanmar": ['เมียนมา', 'myanmar', 'ย่างกุ้ง', 'yangon', 'burma'],
             "Malaysia": ['มาเลเซีย', 'malaysia', 'กัวลาลัมเปอร์', 'kuala lumpur'],
-            "Vietnam": ['เวียดนาม', 'vietnam', 'ฮานอย', 'hanoi'],
+            "Vietnam": ['เวียดนาม', 'vietnam', 'ฮานอย', 'hanoi', 'ญวน'],
             "Indonesia": ['อินโดนีเซีย', 'indonesia', 'จาการ์ตา', 'jakarta'],
-            "Kazakhstan": ['คาซัคสถาน', 'kazakhstan', 'astana'],
-            "Oman": ['โอมาน', 'oman', 'muscat'],
-            "UAE": ['ยูเออี', 'uae', 'ดูไบ', 'dubai', 'อาบูดาบี', 'abu dhabi']
+            "Kazakhstan": ['คาซัคสถาน', 'kazakhstan', 'astana', 'kazakh'],
+            "Oman": ['โอมาน', 'oman', 'muscat', 'โอมาน'],
+            "UAE": ['ยูเออี', 'uae', 'ดูไบ', 'dubai', 'อาบูดาบี', 'abu dhabi', 'emirates']
         }
         
-        for country, patterns in country_patterns.items():
+        # ตรวจสอบประเทศหลักก่อน
+        for country, patterns in primary_countries.items():
             if any(pattern in text_lower for pattern in patterns):
                 return country
+        
+        # ✅ เพิ่ม: ข่าวพลังงานระดับโลก/สากล
+        international_keywords = [
+            # ตลาดพลังงานโลก
+            'opec', 'โอเปก', 'iea', 'global oil', 'world energy', 'crude oil',
+            'brent', 'wti', 'oil market', 'gas market', 'energy market',
+            'ตลาดน้ำมันโลก', 'ตลาดพลังงานโลก', 'น้ำมันโลก',
+            
+            # ประเทศผู้ผลิตน้ำมันสำคัญ
+            'saudi', 'russia', 'united states', 'สหรัฐ', 'รัสเซีย', 'ซาอุดีอาระเบีย',
+            'iran', 'iraq', 'venezuela', 'อิหร่าน', 'อิรัก', 'เวเนซุเอลา',
+            'libya', 'nigeria', 'angola', 'ลิเบีย', 'ไนจีเรีย',
+            
+            # องค์กรระหว่างประเทศ
+            'international energy', 'world bank', 'asian development bank',
+            'united nations', 'un energy', 'สหประชาชาติ',
+            
+            # ราคาพลังงานสากล
+            'oil price', 'gas price', 'energy price', 'commodity',
+            'futures', 'trading', 'ราคาน้ำมันดิบ', 'ราคาก๊าซธรรมชาติ',
+            
+            # ภูมิรัฐศาสตร์พลังงาน
+            'sanctions', 'embargo', 'geopolitics', 'energy security',
+            '制裁', 'มาตรการคว่ำบาตร', 'ความมั่นคงด้านพลังงาน',
+            
+            # ข่าวสำคัญระดับโลก
+            'europe', 'european union', 'china', 'japan', 'korea',
+            'ยุโรป', 'จีน', 'ญี่ปุ่น', 'เกาหลี', 'อียู'
+        ]
+        
+        if any(keyword in text_lower for keyword in international_keywords):
+            return "International"
         
         return ""
 
@@ -906,12 +941,15 @@ class NewsProcessor:
             return None, f"{reason}: {item['title'][:30]}..."
         
         country = KeywordFilter.detect_country(full_text)
+        
+        # ✅ FIXED: ยอมรับ International แทนที่จะปฏิเสธ
         if not country:
             if feed_type == "direct":
                 country = "Thailand"
             else:
+                # ถ้าไม่พบประเทศเฉพาะ แต่เป็นข่าวพลังงาน ให้เป็น International
                 self.filter_stats['filtered_by']['no_country'] += 1
-                return None, f"ไม่พบประเทศ: {item['title'][:30]}..."
+                return None, f"ไม่พบประเทศที่เกี่ยวข้อง: {item['title'][:30]}..."
         
         # ✅ FIXED: ส่วนนี้แก้ไขแล้ว - เพิ่มโค้ดที่ขาดหายไป
         llm_summary = ""
