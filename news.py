@@ -1925,8 +1925,7 @@ class LineMessageBuilder:
                 "size": "sm",
                 "wrap": True,
                 "margin": "md",
-                "color": "#424242",
-                "lineHeight": "20px"
+                "color": "#424242"
             })
         
         bubble = {
