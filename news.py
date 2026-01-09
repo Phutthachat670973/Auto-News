@@ -1894,36 +1894,39 @@ class LineMessageBuilder:
                 "margin": "xs"
             })
         
-        # ✅ ปรับการแสดงสรุปข่าว - ให้ชัดเจนขึ้น
+        # ✅ ปรับการแสดงสรุปข่าว - ให้ชัดเจนและเป็นประโยคสมบูรณ์
         summary_text = ""
-        summary_source = ""
         
         if news_item.get('llm_summary'):
             summary_text = news_item['llm_summary']
-            summary_source = "🤖 AI"
         elif news_item.get('simple_summary'):
             summary_text = news_item['simple_summary']
-            summary_source = "📝"
         elif news_item.get('summary'):
-            summary_text = create_simple_summary(news_item['summary'], 150)
-            summary_source = "📝"
+            summary_text = create_simple_summary(news_item['summary'], 200)
         
         # ถ้าไม่มีสรุปเลย ใช้หัวข้อแทน
-        if not summary_text or len(summary_text.strip()) < 10:
-            summary_text = f"{news_item.get('title', 'ข่าวพลังงาน')[:80]}..."
-            summary_source = ""
+        if not summary_text or len(summary_text.strip()) < 15:
+            summary_text = news_item.get('title', 'ข่าวพลังงาน')
         
+        # ✅ ทำให้เป็นประโยคสมบูรณ์ (ขึ้นต้นด้วยตัวพิมพ์ใหญ่ ลงท้ายด้วยจุด)
+        summary_text = summary_text.strip()
         if summary_text:
-            # เพิ่มไอคอนบอกแหล่งที่มาของสรุป
-            display_summary = f"{summary_source} {summary_text}" if summary_source else summary_text
+            # ขึ้นต้นด้วยตัวพิมพ์ใหญ่
+            if summary_text and len(summary_text) > 0:
+                summary_text = summary_text[0].upper() + summary_text[1:]
+            
+            # ลงท้ายด้วยเครื่องหมายวรรคตอน
+            if not summary_text.endswith(('.', '!', '?', '…')):
+                summary_text += '.'
             
             contents.append({
                 "type": "text",
-                "text": cut(display_summary, 150),
+                "text": cut(summary_text, 200),
                 "size": "sm",
                 "wrap": True,
                 "margin": "md",
-                "color": "#424242"
+                "color": "#424242",
+                "lineHeight": "20px"
             })
         
         bubble = {
