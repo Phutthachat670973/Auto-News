@@ -1649,13 +1649,12 @@ class WTIFlexMessageBuilder:
             "altText": f"ราคา WTI Crude Oil Futures: ${current_price:.2f}/barrel",
             "contents": bubble
         }
-
 # =============================================================================
-# MAIN FUNCTION
+# MAIN FUNCTION (MODIFIED - แยกข่าวเป็น 2 กลุ่ม)
 # =============================================================================
 def main():
     print("="*60)
-    print("ระบบติดตามข่าวพลังงาน + WTI Futures (EIA API)")
+    print("ระบบติดตามข่าวพลังงาน + WTI Futures (แยกข่าวประเทศ/โลก)")
     print("="*60)
     
     if not LINE_CHANNEL_ACCESS_TOKEN:
@@ -1675,7 +1674,7 @@ def main():
     print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
     print(f"[CONFIG] Debug filtering: {'Yes' if DEBUG_FILTERING else 'No'}")
-    print(f"[CONFIG] WTI Data Source: EIA (U.S. Energy Information Administration)")
+    print(f"[CONFIG] WTI Data Source: Yahoo Finance + EIA Fallback")
     
     processor = NewsProcessor()
     line_sender = LineSender(LINE_CHANNEL_ACCESS_TOKEN)
@@ -1694,63 +1693,296 @@ def main():
             if reason != 'passed' and count > 0:
                 print(f"    - {reason}: {count} ข่าว")
     
-    success_news = False
-    if not news_items:
-        print("\n[INFO] ไม่พบข่าวใหม่ที่เกี่ยวข้อง")
-    else:
-        print(f"\n[2] พบข่าวที่เกี่ยวข้องทั้งหมด {len(news_items)} ข่าว")
-        
-        llm_summary_count = sum(1 for item in news_items if item.get('llm_summary'))
-        source_counts = {}
+    # ✅ แยกข่าวเป็น 2 กลุ่ม
+    country_news = []  # ข่าวประเทศเฉพาะ
+    international_news = []  # ข่าวระดับโลก
+    
+    for item in news_items:
+        country = item.get('country', '')
+        if country == 'International':
+            international_news.append(item)
+        elif country:  # Thailand, Vietnam, Malaysia, etc.
+            country_news.append(item)
+    
+    print(f"\n[2] แยกข่าวตามประเภท:")
+    print(f"   - ข่าวประเทศเฉพาะ: {len(country_news)} ข่าว")
+    print(f"   - ข่าวระดับโลก (International): {len(international_news)} ข่าว")
+    
+    # แสดงสถิติแบ่งตามประเทศ
+    if country_news:
         country_counts = {}
-        
-        for item in news_items:
-            source = item.get('source_name') or item.get('domain', 'Unknown')
-            source_counts[source] = source_counts.get(source, 0) + 1
-            
+        for item in country_news:
             country = item.get('country', 'Unknown')
             country_counts[country] = country_counts.get(country, 0) + 1
         
-        print(f"   - สรุปด้วย AI: {llm_summary_count} ข่าว")
-        print(f"   - แหล่งข่าวที่พบ:")
-        for source, count in sorted(source_counts.items()):
-            print(f"     • {source}: {count} ข่าว")
-        print(f"   - แบ่งตามประเทศ:")
+        print(f"\n   ข่าวประเทศเฉพาะ แบ่งตาม:")
         for country, count in sorted(country_counts.items()):
             print(f"     • {country}: {count} ข่าว")
-        
-        print("\n[3] กำลังสร้างข้อความ LINE...")
-        line_message = LineMessageBuilder.create_carousel_message(news_items)
-        
-        if line_message:
-            print("\n[4] กำลังส่งข่าวพลังงาน...")
-            success_news = line_sender.send_message(line_message)
-        else:
-            print("[WARNING] ไม่สามารถสร้างข้อความข่าวได้")
     
-    print("\n[5] กำลังส่งข้อมูล WTI Futures...")
-    success_wti = False
+    if international_news:
+        print(f"\n   ข่าวระดับโลก ประกอบด้วย:")
+        for item in international_news[:5]:  # แสดง 5 ข่าวแรก
+            print(f"     • {item.get('title', '')[:60]}...")
+    
+    # ส่งข้อความทั้ง 3 ชุด
+    success_count = 0
+    total_messages = 0
+    
+    # 📨 Message 1: ข่าวประเทศเฉพาะ
+    if country_news:
+        print("\n[3] กำลังสร้างข้อความข่าวประเทศเฉพาะ...")
+        country_message = LineMessageBuilder.create_carousel_message(
+            country_news,
+            title_prefix="📍 ข่าวพลังงานประเทศเฉพาะ"
+        )
+        
+        if country_message:
+            print("\n[4] กำลังส่งข่าวประเทศเฉพาะ...")
+            total_messages += 1
+            if line_sender.send_message(country_message):
+                success_count += 1
+                print("   ✓ ส่งข่าวประเทศเฉพาะสำเร็จ")
+            else:
+                print("   ✗ ส่งข่าวประเทศเฉพาะไม่สำเร็จ")
+    else:
+        print("\n[INFO] ไม่พบข่าวประเทศเฉพาะ")
+    
+    # 📨 Message 2: ข่าว International
+    if international_news:
+        print("\n[5] กำลังสร้างข้อความข่าวระดับโลก...")
+        intl_message = LineMessageBuilder.create_carousel_message(
+            international_news,
+            title_prefix="🌍 ข่าวพลังงานระดับโลก"
+        )
+        
+        if intl_message:
+            print("\n[6] กำลังส่งข่าวระดับโลก...")
+            total_messages += 1
+            if line_sender.send_message(intl_message):
+                success_count += 1
+                print("   ✓ ส่งข่าวระดับโลกสำเร็จ")
+            else:
+                print("   ✗ ส่งข่าวระดับโลกไม่สำเร็จ")
+    else:
+        print("\n[INFO] ไม่พบข่าวระดับโลก")
+    
+    # 📨 Message 3: WTI Futures
+    print("\n[7] กำลังส่งข้อมูล WTI Futures...")
     try:
         wti_fetcher = WTIFuturesFetcher(api_key=EIA_API_KEY)
         wti_data = wti_fetcher.get_current_and_futures()
         wti_message = WTIFlexMessageBuilder.create_wti_futures_message(wti_data)
         
-        success_wti = line_sender.send_message(wti_message)
+        total_messages += 1
+        if line_sender.send_message(wti_message):
+            success_count += 1
+            print("   ✓ ส่ง WTI Futures สำเร็จ")
+        else:
+            print("   ✗ ส่ง WTI Futures ไม่สำเร็จ")
         
     except Exception as e:
-        print(f"[WTI ERROR] {str(e)}")
+        print(f"   ✗ WTI ERROR: {str(e)}")
     
-    if news_items and not DRY_RUN:
-        for item in news_items:
+    # บันทึกข่าวที่ส่งแล้ว
+    if (country_news or international_news) and not DRY_RUN:
+        all_sent_news = country_news + international_news
+        for item in all_sent_news:
             append_sent_link(item.get('canon_url') or item.get('url'))
         print("\n[SUCCESS] อัปเดตฐานข้อมูลข่าวที่ส่งแล้ว")
     
+    # สรุปผล
     print("\n" + "="*60)
-    if news_items:
-        print(f"ดำเนินการเสร็จสิ้น - ส่งข่าว: {'✓' if success_news else '✗'}, ส่ง WTI: {'✓' if success_wti else '✗'}")
-    else:
-        print(f"ดำเนินการเสร็จสิ้น - ไม่มีข่าวใหม่, ส่ง WTI: {'✓' if success_wti else '✗'}")
+    print(f"ดำเนินการเสร็จสิ้น - ส่งสำเร็จ {success_count}/{total_messages} ข้อความ")
+    print(f"  • ข่าวประเทศเฉพาะ: {len(country_news)} ข่าว")
+    print(f"  • ข่าวระดับโลก: {len(international_news)} ข่าว")
+    print(f"  • WTI Futures: 12 เดือน")
     print("="*60)
+
+
+# =============================================================================
+# LINE MESSAGE BUILDER (MODIFIED - รองรับ title_prefix)
+# =============================================================================
+class LineMessageBuilder:
+    @staticmethod
+    def create_flex_bubble(news_item):
+        """Create a LINE Flex Bubble for a news item"""
+        title = cut(news_item.get('title', ''), 80)
+        
+        pub_dt = news_item.get('published_dt')
+        time_str = pub_dt.strftime("%d/%m/%Y %H:%M") if pub_dt else ""
+        
+        colors = {
+            "Thailand": "#FF6B6B",
+            "Vietnam": "#4ECDC4",
+            "Myanmar": "#FFD166",
+            "Malaysia": "#06D6A0",
+            "Indonesia": "#118AB2",
+            "UAE": "#9D4EDD",
+            "Oman": "#F15BB5",
+            "Kazakhstan": "#00BBF9",
+            "International": "#6B7280"  # สีเทาสำหรับข่าวโลก
+        }
+        
+        color = colors.get(news_item.get('country', 'International'), "#888888")
+        
+        contents = [
+            {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": title,
+                        "weight": "bold",
+                        "size": "md",
+                        "wrap": True,
+                        "color": "#FFFFFF"
+                    }
+                ],
+                "backgroundColor": color,
+                "paddingAll": "12px",
+                "cornerRadius": "8px"
+            }
+        ]
+        
+        metadata_parts = []
+        if time_str:
+            metadata_parts.append(time_str)
+        if news_item.get('feed'):
+            metadata_parts.append(news_item['feed'])
+        
+        if metadata_parts:
+            contents.append({
+                "type": "text",
+                "text": " | ".join(metadata_parts),
+                "size": "xs",
+                "color": "#888888",
+                "margin": "sm"
+            })
+        
+        if news_item.get('source_name'):
+            contents.append({
+                "type": "text",
+                "text": f"📰 {news_item['source_name']}",
+                "size": "xs",
+                "color": "#666666",
+                "margin": "sm"
+            })
+        
+        # แสดงประเทศ (มีไอคอนพิเศษสำหรับ International)
+        country = news_item.get('country', 'N/A')
+        country_icon = "🌍" if country == "International" else "📍"
+        
+        contents.append({
+            "type": "text",
+            "text": f"{country_icon} {country}",
+            "size": "sm",
+            "margin": "xs",
+            "color": color,
+            "weight": "bold"
+        })
+        
+        if news_item.get('project_hints'):
+            hints_text = ", ".join(news_item['project_hints'][:2])
+            contents.append({
+                "type": "text",
+                "text": f"โครงการที่เกี่ยวข้อง: {hints_text}",
+                "size": "sm",
+                "color": "#2E7D32",
+                "wrap": True,
+                "margin": "xs"
+            })
+        
+        summary_text = ""
+        if news_item.get('llm_summary'):
+            summary_text = news_item['llm_summary']
+        elif news_item.get('simple_summary'):
+            summary_text = news_item['simple_summary']
+        elif news_item.get('summary'):
+            summary_text = create_simple_summary(news_item['summary'], 120)
+        
+        if not summary_text or len(summary_text.strip()) < 10:
+            summary_text = f"{news_item.get('title', 'ข่าวพลังงาน')[:60]}..."
+        
+        if summary_text:
+            contents.append({
+                "type": "text",
+                "text": cut(summary_text, 120),
+                "size": "sm",
+                "wrap": True,
+                "margin": "md",
+                "color": "#424242"
+            })
+        
+        bubble = {
+            "type": "bubble",
+            "size": "kilo",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": contents,
+                "paddingAll": "12px",
+                "spacing": "sm"
+            }
+        }
+        
+        url = news_item.get('canon_url') or news_item.get('url')
+        if url and len(url) < 1000:
+            bubble["footer"] = {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "height": "sm",
+                        "action": {
+                            "type": "uri",
+                            "label": "อ่านข่าวเต็ม",
+                            "uri": url
+                        }
+                    }
+                ]
+            }
+        
+        return bubble
+    
+    @staticmethod
+    def create_carousel_message(news_items, title_prefix=""):
+        """
+        Create LINE carousel message from news items
+        
+        Args:
+            news_items: รายการข่าว
+            title_prefix: ข้อความหน้า altText (เช่น "📍 ข่าวประเทศเฉพาะ")
+        """
+        bubbles = []
+        
+        for item in news_items[:BUBBLES_PER_CAROUSEL]:
+            bubble = LineMessageBuilder.create_flex_bubble(item)
+            if bubble:
+                bubbles.append(bubble)
+        
+        if not bubbles:
+            return None
+        
+        # สร้าง altText พร้อม prefix
+        date_str = datetime.now(TZ).strftime('%d/%m/%Y')
+        if title_prefix:
+            alt_text = f"{title_prefix} {date_str} ({len(bubbles)} ข่าว)"
+        else:
+            alt_text = f"สรุปข่าวพลังงาน {date_str} ({len(bubbles)} ข่าว)"
+        
+        return {
+            "type": "flex",
+            "altText": alt_text,
+            "contents": {
+                "type": "carousel",
+                "contents": bubbles
+            }
+        }
+
 
 if __name__ == "__main__":
     main()
