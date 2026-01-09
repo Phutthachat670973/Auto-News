@@ -89,12 +89,11 @@ PROJECTS_BY_COUNTRY = {
     "Oman": ["Oman Block 61", "Block 61", "Oman Block 6", "PDO"],
     "UAE": ["Abu Dhabi Offshore 1", "Abu Dhabi Offshore 2", "Abu Dhabi Offshore 3"],
 }
-
 # =============================================================================
-# ENHANCED DEDUPLICATION SYSTEM
+# ENHANCED DEDUPLICATION SYSTEM (FIXED - Less Aggressive)
 # =============================================================================
 class EnhancedDeduplication:
-    """ระบบกันข่าวซ้ำที่ปรับปรุงใหม่"""
+    """ระบบกันข่าวซ้ำที่ปรับปรุงใหม่ - ลดความเข้มงวด"""
     
     THAI_STOP_WORDS = {
         'ที่', 'ใน', 'จาก', 'เป็น', 'การ', 'และ', 'ของ', 'ได้', 'มี', 'ว่า',
@@ -183,7 +182,14 @@ class EnhancedDeduplication:
         return SequenceMatcher(None, norm1, norm2).ratio()
     
     def is_duplicate_content(self, item: dict) -> Tuple[bool, Optional[str]]:
-        """ตรวจสอบว่าเนื้อหาข่าวซ้ำหรือไม่ (เข้มงวดขึ้น)"""
+        """
+        ตรวจสอบว่าเนื้อหาข่าวซ้ำหรือไม่ (ปรับลดความเข้มงวด)
+        
+        FIXED: ลดเกณฑ์การกรอง
+        - Title similarity: 0.75 -> 0.90 (ต้องคล้ายกันมากกว่า 90%)
+        - Keyword matching: 0.70 -> 0.85 (ต้องตรงกัน 85%+)
+        - Time window: 48 -> 24 ชม. (ลดเวลา)
+        """
         url = item.get('canon_url') or item.get('url', '')
         if self.is_duplicate_url(url):
             return True, "URL ซ้ำ"
@@ -195,57 +201,68 @@ class EnhancedDeduplication:
         
         title = item.get('title', '')
         
-        # ✅ เพิ่มการตรวจสอบ: Title ที่คล้ายกันมาก (ลดเกณฑ์จาก 0.90 เป็น 0.75)
+        # ✅ FIX 1: ยกเกณฑ์ title similarity จาก 0.75 -> 0.90
         for cached_norm_title, cached_orig_title in self.title_cache:
             similarity = self.calculate_similarity(title, cached_norm_title)
             
-            # เปลี่ยนจาก 0.90 เป็น 0.75
-            if similarity > 0.75:  # ✅ เข้มงวดขึ้น
-                return True, f"Title คล้ายกันมาก ({similarity:.1%})"
+            # เปลี่ยนจาก 0.75 เป็น 0.90 (ต้องคล้ายกันมากกว่า 90%)
+            if similarity > 0.90:
+                return True, f"Title เหมือนกันเกือบทุกคำ ({similarity:.1%})"
             
-            # เปลี่ยนจาก 0.75 เป็น 0.65
-            if similarity > 0.65:  # ✅ เข้มงวดขึ้น
+            # เปลี่ยนจาก 0.65 เป็น 0.80
+            if similarity > 0.80:
                 for existing in self.processed_items:
                     if existing.get('title') == cached_orig_title:
-                        # ไม่ต้องเช็คประเทศ - ถ้าคล้ายกันมากก็ถือว่าซ้ำ
-                        return True, f"Title คล้ายกัน ({similarity:.1%})"
+                        # เช็คประเทศด้วย - ถ้าต่างประเทศก็ไม่ถือว่าซ้ำ
+                        if existing.get('country') != item.get('country'):
+                            continue
+                        return True, f"Title คล้ายกันมาก + ประเทศเดียวกัน ({similarity:.1%})"
         
-        # ✅ เพิ่มการตรวจสอบ: Exact keyword matching
+        # ✅ FIX 2: เพิ่มเกณฑ์ keyword matching จาก 0.70 -> 0.85
         current_keywords = self.extract_keywords(f"{item.get('title', '')} {item.get('summary', '')}")
-        if len(current_keywords) >= 2:  # ลดจาก 3 เป็น 2
+        if len(current_keywords) >= 3:  # ต้องมีอย่างน้อย 3 keywords
             for existing in self.processed_items:
                 existing_keywords = self.extract_keywords(
                     f"{existing.get('title', '')} {existing.get('summary', '')}"
                 )
                 
-                # เปลี่ยนจาก 0.8 เป็น 0.7
+                # เปลี่ยนจาก 0.7 เป็น 0.85 (ต้องตรงกัน 85%+)
                 common_keywords = current_keywords & existing_keywords
-                if len(common_keywords) >= len(current_keywords) * 0.7:  # ✅ เข้มงวดขึ้น
-                    # เช็ค title similarity ด้วย
+                if len(common_keywords) >= len(current_keywords) * 0.85:
                     title_sim = self.calculate_similarity(item.get('title', ''), existing.get('title', ''))
-                    if title_sim > 0.5:  # ✅ เพิ่มเงื่อนไขนี้
+                    # เปลี่ยนจาก 0.5 เป็น 0.70
+                    if title_sim > 0.70:
                         pub_dt1 = item.get('published_dt')
                         pub_dt2 = existing.get('published_dt')
                         if pub_dt1 and pub_dt2:
                             time_diff = abs((pub_dt1 - pub_dt2).total_seconds() / 3600)
-                            # เปลี่ยนจาก 24 ชม. เป็น 48 ชม.
-                            if time_diff < 48:  # ✅ เพิ่มช่วงเวลา
-                                return True, f"คำสำคัญตรงกัน {len(common_keywords)} คำ + เวลาใกล้กัน"
+                            # เปลี่ยนจาก 48 ชม. เป็น 24 ชม.
+                            if time_diff < 24:
+                                return True, f"คำสำคัญตรงกัน {len(common_keywords)} คำ + title คล้ายกัน + เวลาใกล้กัน"
         
-        # ✅ เพิ่มการตรวจสอบ: ชื่อโครงการหรือสถานที่เฉพาะเจาะจง
+        # ✅ FIX 3: เพิ่มเกณฑ์สำหรับ specific terms
         specific_terms = self._extract_specific_terms(title)
-        if specific_terms:
+        if len(specific_terms) >= 2:  # ต้องมีอย่างน้อย 2 คำเฉพาะเจาะจง
             for existing in self.processed_items:
                 existing_terms = self._extract_specific_terms(existing.get('title', ''))
-                if specific_terms & existing_terms:  # มีคำเฉพาะเจาะจงตรงกัน
+                common_terms = specific_terms & existing_terms
+                if len(common_terms) >= 2:  # ต้องตรงกันอย่างน้อย 2 คำ
                     title_sim = self.calculate_similarity(title, existing.get('title', ''))
-                    if title_sim > 0.5:
-                        return True, f"พบคำเฉพาะเจาะจงซ้ำ: {', '.join(specific_terms & existing_terms)}"
+                    if title_sim > 0.75:  # เปลี่ยนจาก 0.5 -> 0.75
+                        return True, f"พบคำเฉพาะเจาะจงซ้ำ: {', '.join(common_terms)}"
         
         norm_title = self.normalize_text(title)
         self.title_cache.append((norm_title, title))
         
         return False, None
+    
+    def is_duplicate_url(self, url: str) -> bool:
+        """ตรวจสอบ URL ซ้ำ"""
+        normalized = normalize_url(url)
+        if normalized in self.seen_urls:
+            return True
+        self.seen_urls.add(normalized)
+        return False
     
     def _extract_specific_terms(self, text: str) -> Set[str]:
         """ดึงคำเฉพาะเจาะจง เช่น ชื่อโครงการ, สถานที่, วันที่"""
@@ -297,11 +314,12 @@ class EnhancedDeduplication:
         self.processed_items.append(item)
         return True
 
+
 # =============================================================================
-# KEYWORD FILTER
+# KEYWORD FILTER (FIXED - Less Strict)
 # =============================================================================
 class KeywordFilter:
-    """กรองข่าวตามคำสำคัญ"""
+    """กรองข่าวตามคำสำคัญ - ปรับให้ผ่อนปรนมากขึ้น"""
     
     ENERGY_KEYWORDS = [
         'พลังงาน', 'ไฟฟ้า', 'ค่าไฟ', 'ค่าไฟฟ้า', 'อัตราค่าไฟฟ้า',
@@ -316,17 +334,23 @@ class KeywordFilter:
         'ลงทุนพลังงาน', 'การลงทุนพลังงาน',
         'energy', 'electricity', 'power', 'gas', 'oil', 'fuel',
         'power plant', 'renewable', 'solar', 'wind', 'biomass',
-        'energy policy', 'energy project', 'energy investment'
+        'energy policy', 'energy project', 'energy investment',
+        # ✅ เพิ่มคำที่เกี่ยวข้อง
+        'crude', 'petroleum', 'brent', 'wti', 'opec',
+        'น้ำมันดิบ', 'ปิโตรเลียม', 'โอเปก'
     ]
     
     ENERGY_MARKET_KEYWORDS = [
         'ราคา', 'ราคาน้ำมัน', 'ราคาก๊าซ', 'ราคาไฟฟ้า', 'ค่าไฟ',
         'ตลาด', 'ตลาดพลังงาน', 'ตลาดน้ำมัน', 'ตลาดก๊าซ',
-        'โลก', 'โลกาว', 'ต่างประเทศ', 'สหรัฐ', 'เวเนซุเอลา',
+        'โลก', 'โลกา', 'ต่างประเทศ', 'สหรัฐ', 'เวเนซุเอลา',
         'ร่วง', 'ปรับขึ้น', 'ปรับลด', 'ผันผวน', 'ตก', 'เพิ่ม',
         'ดอลลาร์', 'บาร์เรล', 'ตลาดหุ้น', 'ตลาดโลก',
         'price', 'market', 'global', 'crude', 'brent', 'wti',
-        'increase', 'decrease', 'drop', 'rise', 'fall'
+        'increase', 'decrease', 'drop', 'rise', 'fall',
+        # ✅ เพิ่มคำที่เกี่ยวข้อง
+        'trading', 'futures', 'commodity', 'barrel',
+        'ซื้อขาย', 'ล่วงหน้า', 'สินค้าโภคภัณฑ์'
     ]
     
     BUSINESS_KEYWORDS = [
@@ -342,7 +366,10 @@ class KeywordFilter:
         'discovery', 'exploration', 'drilling', 'production', 'export',
         'announce', 'report', 'financial', 'revenue', 'expand',
         'development', 'construction', 'installation',
-        'market', 'trading', 'stock', 'exchange', 'global'
+        'market', 'trading', 'stock', 'exchange', 'global',
+        # ✅ เพิ่มคำที่เกี่ยวข้อง
+        'growth', 'decline', 'forecast', 'outlook', 'trend',
+        'เติบโต', 'ลดลง', 'คาดการณ์', 'แนวโน้ม', 'วิเคราะห์'
     ]
     
     EXCLUDE_KEYWORDS = [
@@ -356,10 +383,18 @@ class KeywordFilter:
     
     @classmethod
     def check_valid_energy_news(cls, text: str) -> tuple:
-        """ตรวจสอบว่าเป็นข่าวพลังงานที่เกี่ยวข้องกับธุรกิจหรือไม่"""
+        """
+        ตรวจสอบว่าเป็นข่าวพลังงานที่เกี่ยวข้องกับธุรกิจหรือไม่
+        
+        FIXED: ลดความเข้มงวด
+        - ถ้ามีคำพลังงาน + ราคา/ตลาด = ผ่านทันที (ไม่ต้องมีคำธุรกิจ)
+        - ถ้ามีคำพลังงาน + คำธุรกิจ = ผ่าน
+        - ถ้ามีแค่คำพลังงาน + ประเทศ = ผ่าน
+        """
         text_lower = text.lower()
         reasons = []
         
+        # เช็คคำต้องห้ามก่อน
         for exclude in cls.EXCLUDE_KEYWORDS:
             if exclude.lower() in text_lower:
                 reasons.append(f"มีคำต้องห้าม: '{exclude}'")
@@ -367,7 +402,9 @@ class KeywordFilter:
         
         found_energy_keywords = [kw for kw in cls.ENERGY_KEYWORDS if kw.lower() in text_lower]
         found_market_keywords = [kw for kw in cls.ENERGY_MARKET_KEYWORDS if kw.lower() in text_lower]
+        found_business_keywords = [kw for kw in cls.BUSINESS_KEYWORDS if kw.lower() in text_lower]
         
+        # ถ้าไม่มีคำพลังงานเลย
         if not found_energy_keywords and not found_market_keywords:
             reasons.append("ไม่มีคำที่เกี่ยวข้องกับพลังงาน")
             return False, "ไม่เกี่ยวข้องกับพลังงาน", reasons
@@ -376,24 +413,44 @@ class KeywordFilter:
             reasons.append(f"พบคำพลังงาน: {', '.join(found_energy_keywords[:3])}")
         if found_market_keywords:
             reasons.append(f"พบคำตลาดพลังงาน: {', '.join(found_market_keywords[:3])}")
+        if found_business_keywords:
+            reasons.append(f"พบคำธุรกิจ: {', '.join(found_business_keywords[:3])}")
         
-        found_business_keywords = [kw for kw in cls.BUSINESS_KEYWORDS if kw.lower() in text_lower]
+        # ✅ FIX: ผ่อนปรนเงื่อนไข
         
-        is_market_news = any(word in text_lower for word in ['ราคา', 'ตลาด', 'price', 'market'])
-        has_energy_keywords = bool(found_energy_keywords)
-        
-        if is_market_news and has_energy_keywords:
+        # 1. มีคำพลังงาน + ราคา/ตลาด = ผ่านทันที
+        if found_energy_keywords and found_market_keywords:
             reasons.append("เป็นข่าวราคา/ตลาดพลังงาน")
             return True, "ผ่าน", reasons
-        elif found_business_keywords:
-            reasons.append(f"พบคำธุรกิจ: {', '.join(found_business_keywords[:3])}")
+        
+        # 2. มีคำพลังงาน + คำธุรกิจ = ผ่าน
+        if found_energy_keywords and found_business_keywords:
+            reasons.append("มีคำพลังงาน + คำธุรกิจ")
             return True, "ผ่าน", reasons
-        elif has_energy_keywords and any(word in text_lower for word in ['สำคัญ', 'ใหญ่', 'หลัก', 'โลก', 'global']):
+        
+        # 3. มีคำพลังงาน + ชื่อประเทศ = ผ่าน
+        country_keywords = ['thailand', 'vietnam', 'malaysia', 'indonesia', 'myanmar', 
+                           'oman', 'uae', 'kazakhstan', 'ไทย', 'เวียดนาม', 'มาเลเซีย', 
+                           'อินโดนีเซีย', 'เมียนมา', 'โอมาน', 'ยูเออี', 'คาซัคสถาน']
+        if found_energy_keywords and any(country in text_lower for country in country_keywords):
+            reasons.append("มีคำพลังงาน + ชื่อประเทศ")
+            return True, "ผ่าน", reasons
+        
+        # 4. มีคำพลังงาน + คำสำคัญ (ใหญ่, สำคัญ, หลัก, ฯลฯ) = ผ่าน
+        if found_energy_keywords and any(word in text_lower for word in 
+                                         ['สำคัญ', 'ใหญ่', 'หลัก', 'โลก', 'global', 
+                                          'major', 'significant', 'important', 'key']):
             reasons.append("เป็นข่าวพลังงานสำคัญ")
             return True, "ผ่าน", reasons
-        else:
-            reasons.append("ไม่มีคำบ่งบอกธุรกิจ/ตลาด")
-            return False, "ไม่ใช่ข่าวธุรกิจ", reasons
+        
+        # 5. ถ้ามีแค่คำพลังงาน แต่มีรายละเอียดมากพอ = ผ่าน
+        if found_energy_keywords and len(text) > 100:  # ข่าวยาวกว่า 100 ตัวอักษร
+            reasons.append("มีคำพลังงาน + ข่าวยาวพอสมควร")
+            return True, "ผ่าน", reasons
+        
+        # ถ้าไม่ผ่านเงื่อนไขใดเลย
+        reasons.append("ไม่มีคำบ่งบอกธุรกิจ/ตลาด/ประเทศ")
+        return False, "ไม่ใช่ข่าวธุรกิจ", reasons
     
     @classmethod
     def detect_country(cls, text: str) -> str:
