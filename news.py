@@ -1807,6 +1807,7 @@ class LineMessageBuilder:
     def create_flex_bubble(news_item):
         """Create a LINE Flex Bubble for a news item"""
         title = cut(news_item.get('title', ''), 80)
+        country = news_item.get('country', 'N/A')
         
         pub_dt = news_item.get('published_dt')
         time_str = pub_dt.strftime("%d/%m/%Y %H:%M") if pub_dt else ""
@@ -1823,7 +1824,7 @@ class LineMessageBuilder:
             "International": "#6B7280"  # สีเทาสำหรับข่าวโลก
         }
         
-        color = colors.get(news_item.get('country', 'International'), "#888888")
+        color = colors.get(country, "#888888")
         
         contents = [
             {
@@ -1870,7 +1871,6 @@ class LineMessageBuilder:
             })
         
         # แสดงประเทศ (มีไอคอนพิเศษสำหรับ International)
-        country = news_item.get('country', 'N/A')
         country_icon = "🌍" if country == "International" else "📍"
         
         contents.append({
@@ -1882,32 +1882,44 @@ class LineMessageBuilder:
             "weight": "bold"
         })
         
-        if news_item.get('project_hints'):
+        # ✅ แสดงโครงการที่เกี่ยวข้องเฉพาะข่าวประเทศเท่านั้น (ไม่แสดงสำหรับ International)
+        if country != "International" and news_item.get('project_hints'):
             hints_text = ", ".join(news_item['project_hints'][:2])
             contents.append({
                 "type": "text",
-                "text": f"โครงการที่เกี่ยวข้อง: {hints_text}",
+                "text": f"💼 โครงการ: {hints_text}",
                 "size": "sm",
                 "color": "#2E7D32",
                 "wrap": True,
                 "margin": "xs"
             })
         
+        # ✅ ปรับการแสดงสรุปข่าว - ให้ชัดเจนขึ้น
         summary_text = ""
+        summary_source = ""
+        
         if news_item.get('llm_summary'):
             summary_text = news_item['llm_summary']
+            summary_source = "🤖 AI"
         elif news_item.get('simple_summary'):
             summary_text = news_item['simple_summary']
+            summary_source = "📝"
         elif news_item.get('summary'):
-            summary_text = create_simple_summary(news_item['summary'], 120)
+            summary_text = create_simple_summary(news_item['summary'], 150)
+            summary_source = "📝"
         
+        # ถ้าไม่มีสรุปเลย ใช้หัวข้อแทน
         if not summary_text or len(summary_text.strip()) < 10:
-            summary_text = f"{news_item.get('title', 'ข่าวพลังงาน')[:60]}..."
+            summary_text = f"{news_item.get('title', 'ข่าวพลังงาน')[:80]}..."
+            summary_source = ""
         
         if summary_text:
+            # เพิ่มไอคอนบอกแหล่งที่มาของสรุป
+            display_summary = f"{summary_source} {summary_text}" if summary_source else summary_text
+            
             contents.append({
                 "type": "text",
-                "text": cut(summary_text, 120),
+                "text": cut(display_summary, 150),
                 "size": "sm",
                 "wrap": True,
                 "margin": "md",
