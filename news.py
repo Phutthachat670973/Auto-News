@@ -1649,7 +1649,7 @@ class WTIFlexMessageBuilder:
             "altText": f"ราคา WTI Crude Oil Futures: ${current_price:.2f}/barrel",
             "contents": bubble
         }
-        # =============================================================================
+       # =============================================================================
 # WTI PRICE ALERT SYSTEM - เพิ่มใน enhanced_news_aggregator.py
 # =============================================================================
 
@@ -1959,10 +1959,7 @@ def main():
     # STEP 3: ส่งข่าวประเทศเฉพาะ
     if country_news:
         print("\n[4] กำลังส่งข่าวประเทศเฉพาะ...")
-        country_message = LineMessageBuilder.create_carousel_message(
-            country_news,
-            title_prefix="📍 ข่าวพลังงานประเทศเฉพาะ"
-        )
+        country_message = LineMessageBuilder.create_carousel_message(country_news)
         
         if country_message:
             total_messages += 1
@@ -1973,10 +1970,7 @@ def main():
     # STEP 4: ส่งข่าว International
     if international_news:
         print("\n[5] กำลังส่งข่าวระดับโลก...")
-        intl_message = LineMessageBuilder.create_carousel_message(
-            international_news,
-            title_prefix="🌍 ข่าวพลังงานระดับโลก"
-        )
+        intl_message = LineMessageBuilder.create_carousel_message(international_news)
         
         if intl_message:
             total_messages += 1
