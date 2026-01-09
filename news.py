@@ -1649,12 +1649,238 @@ class WTIFlexMessageBuilder:
             "altText": f"ราคา WTI Crude Oil Futures: ${current_price:.2f}/barrel",
             "contents": bubble
         }
+        # =============================================================================
+# WTI PRICE ALERT SYSTEM - เพิ่มใน enhanced_news_aggregator.py
 # =============================================================================
-# MAIN FUNCTION (MODIFIED - แยกข่าวเป็น 2 กลุ่ม)
+
+class WTIPriceAlert:
+    """ระบบแจ้งเตือนราคา WTI ต่ำกว่าระดับที่กำหนด"""
+    
+    # ⚙️ Configuration
+    ALERT_THRESHOLD = float(os.getenv("WTI_ALERT_THRESHOLD", "58.0"))  # $/barrel
+    ALERT_ENABLED = os.getenv("WTI_ALERT_ENABLED", "1").strip().lower() in ["1", "true", "yes", "y"]
+    
+    @staticmethod
+    def should_send_alert(current_price: float) -> bool:
+        """ตรวจสอบว่าควรส่งการแจ้งเตือนหรือไม่"""
+        if not WTIPriceAlert.ALERT_ENABLED:
+            return False
+        
+        if current_price <= 0:
+            return False
+        
+        return current_price < WTIPriceAlert.ALERT_THRESHOLD
+    
+    @staticmethod
+    def create_alert_message(data: dict) -> dict:
+        """สร้าง LINE Flex Message สำหรับการแจ้งเตือนราคาต่ำ"""
+        current = data.get("current", {})
+        current_price = current.get("current_price", 0)
+        source = current.get("source", "Unknown")
+        updated_at = data.get("updated_at", "")
+        
+        # คำนวณความต่างจาก threshold
+        diff = WTIPriceAlert.ALERT_THRESHOLD - current_price
+        diff_pct = (diff / WTIPriceAlert.ALERT_THRESHOLD) * 100
+        
+        # สร้าง Flex Message
+        bubble = {
+            "type": "bubble",
+            "size": "mega",
+            "header": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": "⚠️ WTI PRICE ALERT",
+                        "weight": "bold",
+                        "size": "xl",
+                        "color": "#FFFFFF",
+                        "align": "center"
+                    },
+                    {
+                        "type": "text",
+                        "text": "ราคาต่ำกว่าระดับกำหนด",
+                        "size": "sm",
+                        "color": "#FFFFFF",
+                        "align": "center",
+                        "margin": "xs"
+                    }
+                ],
+                "backgroundColor": "#DC2626",
+                "paddingAll": "20px"
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    # Current Price Box
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": "ราคาปัจจุบัน",
+                                "size": "sm",
+                                "color": "#888888",
+                                "align": "center"
+                            },
+                            {
+                                "type": "text",
+                                "text": f"${current_price:.2f}",
+                                "size": "xxl",
+                                "weight": "bold",
+                                "color": "#DC2626",
+                                "align": "center",
+                                "margin": "md"
+                            },
+                            {
+                                "type": "text",
+                                "text": "per barrel",
+                                "size": "xs",
+                                "color": "#888888",
+                                "align": "center"
+                            }
+                        ],
+                        "backgroundColor": "#FEE2E2",
+                        "cornerRadius": "10px",
+                        "paddingAll": "20px",
+                        "margin": "md"
+                    },
+                    
+                    # Comparison Box
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "contents": [
+                            {
+                                "type": "box",
+                                "layout": "horizontal",
+                                "contents": [
+                                    {
+                                        "type": "text",
+                                        "text": "ระดับแจ้งเตือน:",
+                                        "size": "sm",
+                                        "color": "#666666",
+                                        "flex": 3
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": f"${WTIPriceAlert.ALERT_THRESHOLD:.2f}",
+                                        "size": "sm",
+                                        "color": "#333333",
+                                        "weight": "bold",
+                                        "align": "end",
+                                        "flex": 2
+                                    }
+                                ]
+                            },
+                            {
+                                "type": "box",
+                                "layout": "horizontal",
+                                "contents": [
+                                    {
+                                        "type": "text",
+                                        "text": "ต่ำกว่า:",
+                                        "size": "sm",
+                                        "color": "#666666",
+                                        "flex": 3
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": f"${diff:.2f} ({diff_pct:.1f}%)",
+                                        "size": "sm",
+                                        "color": "#DC2626",
+                                        "weight": "bold",
+                                        "align": "end",
+                                        "flex": 2
+                                    }
+                                ],
+                                "margin": "md"
+                            }
+                        ],
+                        "backgroundColor": "#F9FAFB",
+                        "cornerRadius": "10px",
+                        "paddingAll": "15px",
+                        "margin": "lg"
+                    },
+                    
+                    # Alert Message
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": "🔔 การแจ้งเตือน",
+                                "size": "sm",
+                                "color": "#DC2626",
+                                "weight": "bold"
+                            },
+                            {
+                                "type": "text",
+                                "text": f"ราคา WTI Crude Oil ปัจจุบันอยู่ที่ ${current_price:.2f}/barrel ซึ่งต่ำกว่าระดับแจ้งเตือนที่ ${WTIPriceAlert.ALERT_THRESHOLD:.2f}/barrel",
+                                "size": "xs",
+                                "color": "#666666",
+                                "wrap": True,
+                                "margin": "sm"
+                            }
+                        ],
+                        "backgroundColor": "#FEF3C7",
+                        "cornerRadius": "8px",
+                        "paddingAll": "12px",
+                        "margin": "lg"
+                    },
+                    
+                    # Separator
+                    {
+                        "type": "separator",
+                        "margin": "lg"
+                    },
+                    
+                    # Footer Info
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": f"อัปเดต: {updated_at}",
+                                "size": "xs",
+                                "color": "#888888",
+                                "align": "center"
+                            },
+                            {
+                                "type": "text",
+                                "text": f"📡 ข้อมูลจาก {source}",
+                                "size": "xxs",
+                                "color": "#888888",
+                                "align": "center",
+                                "margin": "xs"
+                            }
+                        ],
+                        "margin": "md"
+                    }
+                ],
+                "paddingAll": "20px"
+            }
+        }
+        
+        return {
+            "type": "flex",
+            "altText": f"⚠️ WTI Price Alert: ${current_price:.2f}/barrel (ต่ำกว่า ${WTIPriceAlert.ALERT_THRESHOLD:.2f})",
+            "contents": bubble
+        }
+
+
+# =============================================================================
+# MODIFIED MAIN FUNCTION - เพิ่มการตรวจสอบและส่ง Alert
 # =============================================================================
 def main():
     print("="*60)
-    print("ระบบติดตามข่าวพลังงาน + WTI Futures (แยกข่าวประเทศ/โลก)")
+    print("ระบบติดตามข่าวพลังงาน + WTI Futures + Price Alert")
     print("="*60)
     
     if not LINE_CHANNEL_ACCESS_TOKEN:
@@ -1666,120 +1892,112 @@ def main():
         print("        Get one from: https://www.eia.gov/opendata/")
         return
     
-    if USE_LLM_SUMMARY and not GROQ_API_KEY:
-        print("[WARNING] LLM summary enabled but no GROQ_API_KEY provided")
-        print("[INFO] Will use simple summary for all news")
-    
     print(f"\n[CONFIG] Use LLM: {'Yes' if USE_LLM_SUMMARY and GROQ_API_KEY else 'No'}")
     print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
-    print(f"[CONFIG] Debug filtering: {'Yes' if DEBUG_FILTERING else 'No'}")
-    print(f"[CONFIG] WTI Data Source: Yahoo Finance + EIA Fallback")
+    print(f"[CONFIG] WTI Alert Threshold: ${WTIPriceAlert.ALERT_THRESHOLD:.2f}/barrel")
+    print(f"[CONFIG] WTI Alert Enabled: {'Yes' if WTIPriceAlert.ALERT_ENABLED else 'No'}")
     
     processor = NewsProcessor()
     line_sender = LineSender(LINE_CHANNEL_ACCESS_TOKEN)
     
-    print("\n[1] กำลังดึงและกรองข่าว...")
+    # ✨ STEP 1: ตรวจสอบราคา WTI และส่ง Alert ก่อน (ถ้าจำเป็น)
+    print("\n[1] กำลังตรวจสอบราคา WTI...")
+    wti_alert_sent = False
+    
+    try:
+        wti_fetcher = WTIFuturesFetcher(api_key=EIA_API_KEY)
+        wti_data = wti_fetcher.get_current_and_futures()
+        current_price = wti_data.get("current", {}).get("current_price", 0)
+        
+        print(f"[WTI] ราคาปัจจุบัน: ${current_price:.2f}/barrel")
+        
+        # ตรวจสอบว่าควรส่ง Alert หรือไม่
+        if WTIPriceAlert.should_send_alert(current_price):
+            print(f"[ALERT] ⚠️ ราคาต่ำกว่า ${WTIPriceAlert.ALERT_THRESHOLD:.2f}! กำลังส่งการแจ้งเตือน...")
+            
+            alert_message = WTIPriceAlert.create_alert_message(wti_data)
+            
+            if line_sender.send_message(alert_message):
+                wti_alert_sent = True
+                print("[ALERT] ✓ ส่งการแจ้งเตือนสำเร็จ")
+            else:
+                print("[ALERT] ✗ ส่งการแจ้งเตือนไม่สำเร็จ")
+        else:
+            print(f"[ALERT] ✓ ราคาปกติ (${current_price:.2f} >= ${WTIPriceAlert.ALERT_THRESHOLD:.2f})")
+    
+    except Exception as e:
+        print(f"[ALERT] ✗ ตรวจสอบราคาไม่สำเร็จ: {str(e)}")
+    
+    # STEP 2: ดึงและกรองข่าว
+    print("\n[2] กำลังดึงและกรองข่าว...")
     news_items = processor.fetch_and_filter_news()
     
     print(f"\n[FILTER STATISTICS]")
     print(f"  รวมข่าวที่ประมวลผล: {processor.filter_stats['total_processed']}")
     print(f"  ผ่านการกรอง: {processor.filter_stats['filtered_by']['passed']}")
-    print(f"  ไม่ผ่านการกรอง: {processor.filter_stats['total_processed'] - processor.filter_stats['filtered_by']['passed']}")
     
-    if processor.filter_stats['total_processed'] - processor.filter_stats['filtered_by']['passed'] > 0:
-        print(f"\n  รายละเอียดการกรอง:")
-        for reason, count in processor.filter_stats['filtered_by'].items():
-            if reason != 'passed' and count > 0:
-                print(f"    - {reason}: {count} ข่าว")
-    
-    # ✅ แยกข่าวเป็น 2 กลุ่ม
-    country_news = []  # ข่าวประเทศเฉพาะ
-    international_news = []  # ข่าวระดับโลก
+    # แยกข่าวเป็น 2 กลุ่ม
+    country_news = []
+    international_news = []
     
     for item in news_items:
         country = item.get('country', '')
         if country == 'International':
             international_news.append(item)
-        elif country:  # Thailand, Vietnam, Malaysia, etc.
+        elif country:
             country_news.append(item)
     
-    print(f"\n[2] แยกข่าวตามประเภท:")
+    print(f"\n[3] แยกข่าวตามประเภท:")
     print(f"   - ข่าวประเทศเฉพาะ: {len(country_news)} ข่าว")
-    print(f"   - ข่าวระดับโลก (International): {len(international_news)} ข่าว")
+    print(f"   - ข่าวระดับโลก: {len(international_news)} ข่าว")
     
-    # แสดงสถิติแบ่งตามประเทศ
+    # นับจำนวนข้อความที่ส่ง
+    success_count = 1 if wti_alert_sent else 0
+    total_messages = 1 if wti_alert_sent else 0
+    
+    # STEP 3: ส่งข่าวประเทศเฉพาะ
     if country_news:
-        country_counts = {}
-        for item in country_news:
-            country = item.get('country', 'Unknown')
-            country_counts[country] = country_counts.get(country, 0) + 1
-        
-        print(f"\n   ข่าวประเทศเฉพาะ แบ่งตาม:")
-        for country, count in sorted(country_counts.items()):
-            print(f"     • {country}: {count} ข่าว")
-    
-    if international_news:
-        print(f"\n   ข่าวระดับโลก ประกอบด้วย:")
-        for item in international_news[:5]:  # แสดง 5 ข่าวแรก
-            print(f"     • {item.get('title', '')[:60]}...")
-    
-    # ส่งข้อความทั้ง 3 ชุด
-    success_count = 0
-    total_messages = 0
-    
-    # 📨 Message 1: ข่าวประเทศเฉพาะ
-    if country_news:
-        print("\n[3] กำลังสร้างข้อความข่าวประเทศเฉพาะ...")
+        print("\n[4] กำลังส่งข่าวประเทศเฉพาะ...")
         country_message = LineMessageBuilder.create_carousel_message(
             country_news,
             title_prefix="📍 ข่าวพลังงานประเทศเฉพาะ"
         )
         
         if country_message:
-            print("\n[4] กำลังส่งข่าวประเทศเฉพาะ...")
             total_messages += 1
             if line_sender.send_message(country_message):
                 success_count += 1
                 print("   ✓ ส่งข่าวประเทศเฉพาะสำเร็จ")
-            else:
-                print("   ✗ ส่งข่าวประเทศเฉพาะไม่สำเร็จ")
-    else:
-        print("\n[INFO] ไม่พบข่าวประเทศเฉพาะ")
     
-    # 📨 Message 2: ข่าว International
+    # STEP 4: ส่งข่าว International
     if international_news:
-        print("\n[5] กำลังสร้างข้อความข่าวระดับโลก...")
+        print("\n[5] กำลังส่งข่าวระดับโลก...")
         intl_message = LineMessageBuilder.create_carousel_message(
             international_news,
             title_prefix="🌍 ข่าวพลังงานระดับโลก"
         )
         
         if intl_message:
-            print("\n[6] กำลังส่งข่าวระดับโลก...")
             total_messages += 1
             if line_sender.send_message(intl_message):
                 success_count += 1
                 print("   ✓ ส่งข่าวระดับโลกสำเร็จ")
-            else:
-                print("   ✗ ส่งข่าวระดับโลกไม่สำเร็จ")
-    else:
-        print("\n[INFO] ไม่พบข่าวระดับโลก")
     
-    # 📨 Message 3: WTI Futures
-    print("\n[7] กำลังส่งข้อมูล WTI Futures...")
+    # STEP 5: ส่งข้อมูล WTI Futures ปกติ
+    print("\n[6] กำลังส่งข้อมูล WTI Futures...")
     try:
-        wti_fetcher = WTIFuturesFetcher(api_key=EIA_API_KEY)
-        wti_data = wti_fetcher.get_current_and_futures()
+        if not wti_data:
+            wti_fetcher = WTIFuturesFetcher(api_key=EIA_API_KEY)
+            wti_data = wti_fetcher.get_current_and_futures()
+        
         wti_message = WTIFlexMessageBuilder.create_wti_futures_message(wti_data)
         
         total_messages += 1
         if line_sender.send_message(wti_message):
             success_count += 1
             print("   ✓ ส่ง WTI Futures สำเร็จ")
-        else:
-            print("   ✗ ส่ง WTI Futures ไม่สำเร็จ")
-        
+    
     except Exception as e:
         print(f"   ✗ WTI ERROR: {str(e)}")
     
@@ -1793,209 +2011,12 @@ def main():
     # สรุปผล
     print("\n" + "="*60)
     print(f"ดำเนินการเสร็จสิ้น - ส่งสำเร็จ {success_count}/{total_messages} ข้อความ")
+    if wti_alert_sent:
+        print(f"  ⚠️ WTI Price Alert: ส่งแล้ว")
     print(f"  • ข่าวประเทศเฉพาะ: {len(country_news)} ข่าว")
     print(f"  • ข่าวระดับโลก: {len(international_news)} ข่าว")
     print(f"  • WTI Futures: 12 เดือน")
     print("="*60)
-
-
-# =============================================================================
-# LINE MESSAGE BUILDER (MODIFIED - รองรับ title_prefix)
-# =============================================================================
-class LineMessageBuilder:
-    @staticmethod
-    def create_flex_bubble(news_item):
-        """Create a LINE Flex Bubble for a news item"""
-        title = cut(news_item.get('title', ''), 80)
-        country = news_item.get('country', 'N/A')
-        
-        pub_dt = news_item.get('published_dt')
-        time_str = pub_dt.strftime("%d/%m/%Y %H:%M") if pub_dt else ""
-        
-        colors = {
-            "Thailand": "#FF6B6B",
-            "Vietnam": "#4ECDC4",
-            "Myanmar": "#FFD166",
-            "Malaysia": "#06D6A0",
-            "Indonesia": "#118AB2",
-            "UAE": "#9D4EDD",
-            "Oman": "#F15BB5",
-            "Kazakhstan": "#00BBF9",
-            "International": "#6B7280"  # สีเทาสำหรับข่าวโลก
-        }
-        
-        color = colors.get(country, "#888888")
-        
-        contents = [
-            {
-                "type": "box",
-                "layout": "vertical",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": title,
-                        "weight": "bold",
-                        "size": "md",
-                        "wrap": True,
-                        "color": "#FFFFFF"
-                    }
-                ],
-                "backgroundColor": color,
-                "paddingAll": "12px",
-                "cornerRadius": "8px"
-            }
-        ]
-        
-        metadata_parts = []
-        if time_str:
-            metadata_parts.append(time_str)
-        if news_item.get('feed'):
-            metadata_parts.append(news_item['feed'])
-        
-        if metadata_parts:
-            contents.append({
-                "type": "text",
-                "text": " | ".join(metadata_parts),
-                "size": "xs",
-                "color": "#888888",
-                "margin": "sm"
-            })
-        
-        if news_item.get('source_name'):
-            contents.append({
-                "type": "text",
-                "text": f"📰 {news_item['source_name']}",
-                "size": "xs",
-                "color": "#666666",
-                "margin": "sm"
-            })
-        
-        # แสดงประเทศ (มีไอคอนพิเศษสำหรับ International)
-        country_icon = "🌍" if country == "International" else "📍"
-        
-        contents.append({
-            "type": "text",
-            "text": f"{country_icon} {country}",
-            "size": "sm",
-            "margin": "xs",
-            "color": color,
-            "weight": "bold"
-        })
-        
-        # ✅ แสดงโครงการที่เกี่ยวข้องเฉพาะข่าวประเทศเท่านั้น (ไม่แสดงสำหรับ International)
-        if country != "International" and news_item.get('project_hints'):
-            hints_text = ", ".join(news_item['project_hints'][:2])
-            contents.append({
-                "type": "text",
-                "text": f"💼 โครงการ: {hints_text}",
-                "size": "sm",
-                "color": "#2E7D32",
-                "wrap": True,
-                "margin": "xs"
-            })
-        
-        # ✅ ปรับการแสดงสรุปข่าว - ให้ชัดเจนและเป็นประโยคสมบูรณ์
-        summary_text = ""
-        
-        if news_item.get('llm_summary'):
-            summary_text = news_item['llm_summary']
-        elif news_item.get('simple_summary'):
-            summary_text = news_item['simple_summary']
-        elif news_item.get('summary'):
-            summary_text = create_simple_summary(news_item['summary'], 200)
-        
-        # ถ้าไม่มีสรุปเลย ใช้หัวข้อแทน
-        if not summary_text or len(summary_text.strip()) < 15:
-            summary_text = news_item.get('title', 'ข่าวพลังงาน')
-        
-        # ✅ ทำให้เป็นประโยคสมบูรณ์ (ขึ้นต้นด้วยตัวพิมพ์ใหญ่ ลงท้ายด้วยจุด)
-        summary_text = summary_text.strip()
-        if summary_text:
-            # ขึ้นต้นด้วยตัวพิมพ์ใหญ่
-            if summary_text and len(summary_text) > 0:
-                summary_text = summary_text[0].upper() + summary_text[1:]
-            
-            # ลงท้ายด้วยเครื่องหมายวรรคตอน
-            if not summary_text.endswith(('.', '!', '?', '…')):
-                summary_text += '.'
-            
-            contents.append({
-                "type": "text",
-                "text": cut(summary_text, 200),
-                "size": "sm",
-                "wrap": True,
-                "margin": "md",
-                "color": "#424242"
-            })
-        
-        bubble = {
-            "type": "bubble",
-            "size": "kilo",
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "contents": contents,
-                "paddingAll": "12px",
-                "spacing": "sm"
-            }
-        }
-        
-        url = news_item.get('canon_url') or news_item.get('url')
-        if url and len(url) < 1000:
-            bubble["footer"] = {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "sm",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "primary",
-                        "height": "sm",
-                        "action": {
-                            "type": "uri",
-                            "label": "อ่านข่าวเต็ม",
-                            "uri": url
-                        }
-                    }
-                ]
-            }
-        
-        return bubble
-    
-    @staticmethod
-    def create_carousel_message(news_items, title_prefix=""):
-        """
-        Create LINE carousel message from news items
-        
-        Args:
-            news_items: รายการข่าว
-            title_prefix: ข้อความหน้า altText (เช่น "📍 ข่าวประเทศเฉพาะ")
-        """
-        bubbles = []
-        
-        for item in news_items[:BUBBLES_PER_CAROUSEL]:
-            bubble = LineMessageBuilder.create_flex_bubble(item)
-            if bubble:
-                bubbles.append(bubble)
-        
-        if not bubbles:
-            return None
-        
-        # สร้าง altText พร้อม prefix
-        date_str = datetime.now(TZ).strftime('%d/%m/%Y')
-        if title_prefix:
-            alt_text = f"{title_prefix} {date_str} ({len(bubbles)} ข่าว)"
-        else:
-            alt_text = f"สรุปข่าวพลังงาน {date_str} ({len(bubbles)} ข่าว)"
-        
-        return {
-            "type": "flex",
-            "altText": alt_text,
-            "contents": {
-                "type": "carousel",
-                "contents": bubbles
-            }
-        }
 
 
 if __name__ == "__main__":
