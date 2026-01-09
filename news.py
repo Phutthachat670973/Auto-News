@@ -162,13 +162,23 @@ class EnhancedDeduplication:
         return found_keywords
     
     def create_content_fingerprint(self, item: dict) -> str:
-        """สร้าง fingerprint จากเนื้อหาข่าว"""
+        """
+        สร้าง fingerprint จากเนื้อหาข่าว
+        
+        ✅ FIX: ใช้ title ทั้งหมด + ตัดเลขออก เพื่อจับข่าวที่แทบจะเหมือนกัน
+        """
         title = self.normalize_text(item.get('title', ''))
+        
+        # ✅ เพิ่ม: ตัด source และเวลาออก เพื่อจับข่าวที่เนื้อหาเดียวกัน
+        # เช่น "9 หุ้นพลังงานกอดคอบวก SPRC-OR น่าคุ้ม 3.91%" จาก 2 แหล่ง
+        title_clean = re.sub(r'\s+', ' ', title).strip()
+        
         country = item.get('country', '')
         keywords = self.extract_keywords(f"{item.get('title', '')} {item.get('summary', '')}")
         keywords_str = '|'.join(sorted(keywords))
         
-        content = f"{title[:100]}|{country}|{keywords_str}"
+        # ใช้ title ที่ทำความสะอาดแล้ว แทนที่จะตัดเหลือ 100 ตัวอักษร
+        content = f"{title_clean}|{country}|{keywords_str}"
         return hashlib.md5(content.encode('utf-8')).hexdigest()
     
     def calculate_similarity(self, text1: str, text2: str) -> float:
@@ -193,6 +203,19 @@ class EnhancedDeduplication:
         url = item.get('canon_url') or item.get('url', '')
         if self.is_duplicate_url(url):
             return True, "URL ซ้ำ"
+        
+        # ✅ FIX: เช็ค Exact Title Match ก่อน (สำหรับกรณีข่าวเหมือนกันทุกอย่าง)
+        title = item.get('title', '')
+        for existing in self.processed_items:
+            existing_title = existing.get('title', '')
+            # ถ้า title เหมือนกัน 100% = ซ้ำแน่นอน
+            if title == existing_title:
+                return True, "Title เหมือนกันทุกตัวอักษร"
+            
+            # ถ้า title คล้ายกันมากกว่า 95% (แทบจะเหมือนกัน)
+            similarity = self.calculate_similarity(title, existing_title)
+            if similarity > 0.95:
+                return True, f"Title เหมือนกันเกือบทุกคำ ({similarity:.1%})"
         
         fingerprint = self.create_content_fingerprint(item)
         if fingerprint in self.seen_fingerprints:
