@@ -1005,152 +1005,25 @@ class LineSender:
 # =============================================================================
 # WTI FUTURES MODULE - Real Market Data (NYMEX via Public APIs)
 # =============================================================================
+# =============================================================================
+# WTI FUTURES MODULE - Yahoo Finance Primary Source (FIXED)
+# =============================================================================
 class WTIFuturesFetcher:
-    """ดึงข้อมูลราคา WTI Futures จากข้อมูลตลาดจริง (NYMEX)"""
+    """ดึงข้อมูลราคา WTI Futures จาก Yahoo Finance (Primary) + EIA (Fallback)"""
     
     def __init__(self, api_key: str = None):
         """Initialize WTI Futures Fetcher"""
         self.eia_api_key = api_key
         self.eia_base_url = "https://api.eia.gov/v2"
-        
-    def fetch_current_wti_price(self) -> Tuple[float, str]:
-        """ดึงราคา WTI Spot Price จาก EIA (ใช้เป็น fallback)"""
-        if not self.eia_api_key:
-            return None, None
-            
-        url = f"{self.eia_base_url}/petroleum/pri/spt/data/"
-        params = {
-            "api_key": self.eia_api_key,
-            "frequency": "daily",
-            "data[0]": "value",
-            "facets[product][]": "EPCWTI",
-            "sort[0][column]": "period",
-            "sort[0][direction]": "desc",
-            "length": 1
-        }
-        
-        try:
-            print(f"[WTI/EIA] กำลังดึงราคา WTI Spot Price...")
-            response = requests.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            
-            response_data = data['response']['data']
-            if response_data:
-                price = float(response_data[0]['value'])
-                period = response_data[0].get('period', '')
-                print(f"[WTI/EIA] ✓ Spot Price: ${price:.2f}/barrel ({period})")
-                return price, period
-                
-        except Exception as e:
-            print(f"[WTI/EIA] Warning: {str(e)}")
-        
-        return None, None
     
-    def fetch_real_futures_from_investing(self) -> List[Dict]:
-        """ดึงข้อมูล WTI Futures จริงจาก Investing.com API (Public)"""
-        try:
-            print("[WTI/Investing] กำลังดึงข้อมูล Futures จาก Investing.com...")
-            
-            # Investing.com public API endpoint for WTI Futures
-            url = "https://api.investing.com/api/financialdata/8849/historical/chart/"
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/json'
-            }
-            
-            params = {
-                'period': 'P1M',  # 1 month
-                'interval': 'P1D'  # Daily
-            }
-            
-            response = requests.get(url, headers=headers, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if 'data' in data and len(data['data']) > 0:
-                    latest = data['data'][-1]
-                    return latest.get('last', None)
-            
-        except Exception as e:
-            print(f"[WTI/Investing] ไม่สามารถดึงข้อมูลได้: {str(e)}")
-        
-        return None
-    
-    def fetch_futures_from_barchart(self) -> List[Dict]:
-        """ดึงข้อมูล WTI Futures จาก Barchart (Free API)"""
-        try:
-            print("[WTI/Barchart] กำลังดึงข้อมูล Futures จาก Barchart...")
-            
-            # Barchart WTI Crude Oil Futures symbols
-            contracts = ['CLG26', 'CLH26', 'CLJ26', 'CLK26', 'CLM26', 'CLN26', 
-                        'CLQ26', 'CLU26', 'CLV26', 'CLX26', 'CLZ26', 'CLF27']
-            
-            url = "https://marketdata.websol.barchart.com/getQuote.json"
-            
-            futures_data = []
-            
-            for contract in contracts[:12]:
-                try:
-                    params = {
-                        'apikey': 'a17fab99476a82430b55c02fa4a94612',  # Free tier key
-                        'symbols': contract,
-                        'fields': 'symbol,lastPrice,percentChange'
-                    }
-                    
-                    response = requests.get(url, params=params, timeout=5)
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        if 'results' in data and len(data['results']) > 0:
-                            result = data['results'][0]
-                            
-                            # แปลง contract symbol เป็นเดือน
-                            month_map = {
-                                'G': 'Feb', 'H': 'Mar', 'J': 'Apr', 'K': 'May',
-                                'M': 'Jun', 'N': 'Jul', 'Q': 'Aug', 'U': 'Sep',
-                                'V': 'Oct', 'X': 'Nov', 'Z': 'Dec', 'F': 'Jan'
-                            }
-                            
-                            month_code = contract[2]
-                            year = '20' + contract[3:5]
-                            month_name = month_map.get(month_code, 'Unknown')
-                            
-                            price = result.get('lastPrice', 0)
-                            change_pct = result.get('percentChange', 0)
-                            
-                            if price > 0:
-                                futures_data.append({
-                                    "month": f"{month_name} {year}",
-                                    "contract": contract,
-                                    "price": round(price, 2),
-                                    "change_pct": round(change_pct, 2)
-                                })
-                    
-                    time.sleep(0.1)  # Rate limiting
-                    
-                except Exception as e:
-                    print(f"[WTI/Barchart] Error for {contract}: {str(e)}")
-                    continue
-            
-            if futures_data:
-                print(f"[WTI/Barchart] ✓ ดึงข้อมูล {len(futures_data)} สัญญา")
-                return futures_data
-                
-        except Exception as e:
-            print(f"[WTI/Barchart] Error: {str(e)}")
-        
-        return []
-    
-    def fetch_futures_from_yahoo(self) -> List[Dict]:
-        """ดึงข้อมูล WTI Futures จาก Yahoo Finance (Free API)"""
+    def fetch_futures_from_yahoo(self) -> Tuple[List[Dict], float]:
+        """ดึงข้อมูล WTI Futures จาก Yahoo Finance (Primary Method)"""
         try:
             print("[WTI/Yahoo] กำลังดึงข้อมูล Futures จาก Yahoo Finance...")
             
             # Yahoo Finance WTI Futures symbols (NYMEX)
             contracts = {
-                'CL=F': 'Front Month',  # Front month contract
+                'CL=F': 'Front Month',
                 'CLG26.NYM': 'Feb 2026',
                 'CLH26.NYM': 'Mar 2026',
                 'CLJ26.NYM': 'Apr 2026',
@@ -1161,7 +1034,8 @@ class WTIFuturesFetcher:
                 'CLU26.NYM': 'Sep 2026',
                 'CLV26.NYM': 'Oct 2026',
                 'CLX26.NYM': 'Nov 2026',
-                'CLZ26.NYM': 'Dec 2026'
+                'CLZ26.NYM': 'Dec 2026',
+                'CLF27.NYM': 'Jan 2027'
             }
             
             futures_data = []
@@ -1179,27 +1053,31 @@ class WTIFuturesFetcher:
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                     }
                     
-                    response = requests.get(url, params=params, headers=headers, timeout=5)
+                    response = requests.get(url, params=params, headers=headers, timeout=10)
                     
                     if response.status_code == 200:
                         data = response.json()
                         
-                        if 'chart' in data and 'result' in data['chart']:
+                        if 'chart' in data and 'result' in data['chart'] and data['chart']['result']:
                             result = data['chart']['result'][0]
                             
                             if 'meta' in result and 'regularMarketPrice' in result['meta']:
                                 price = result['meta']['regularMarketPrice']
                                 
                                 if symbol == 'CL=F':
+                                    # บันทึกราคา Front Month เป็น base
                                     base_price = price
                                     print(f"[WTI/Yahoo] ✓ Current Price: ${price:.2f}/barrel")
                                 else:
-                                    change = 0
-                                    change_pct = 0
-                                    
+                                    # คำนวณ change จาก Front Month (base_price) ไม่ใช่ previous close
                                     if base_price:
                                         change = price - base_price
                                         change_pct = (change / base_price) * 100
+                                    else:
+                                        # ถ้ายังไม่มี base ให้ใช้ previous close
+                                        prev_close = result['meta'].get('chartPreviousClose', price)
+                                        change = price - prev_close
+                                        change_pct = (change / prev_close) * 100 if prev_close else 0
                                     
                                     futures_data.append({
                                         "month": month_label,
@@ -1215,73 +1093,65 @@ class WTIFuturesFetcher:
                     print(f"[WTI/Yahoo] Warning for {symbol}: {str(e)}")
                     continue
             
-            if futures_data:
+            if futures_data and base_price:
                 print(f"[WTI/Yahoo] ✓ ดึงข้อมูล {len(futures_data)} สัญญา")
                 return futures_data, base_price
+            
+            return [], None
                 
         except Exception as e:
             print(f"[WTI/Yahoo] Error: {str(e)}")
-        
-        return [], None
+            return [], None
     
-    def get_current_and_futures(self) -> Dict:
-        """ดึงข้อมูลราคาปัจจุบันและ futures จากข้อมูลตลาดจริง"""
-        print("\n[WTI] กำลังดึงข้อมูลราคา WTI Futures จากตลาด...")
-        
-        # พยายามดึงข้อมูลจาก Yahoo Finance ก่อน (มีข้อมูลครบที่สุด)
-        futures_data, current_price = self.fetch_futures_from_yahoo()
-        data_source = "Yahoo Finance (NYMEX)"
-        is_estimated = False
-        
-        # ถ้า Yahoo ไม่ได้ ลอง Barchart
-        if not futures_data:
-            print("[WTI] Yahoo Finance ไม่สำเร็จ กำลังลอง Barchart...")
-            futures_data = self.fetch_futures_from_barchart()
-            if futures_data:
-                current_price = futures_data[0]['price']
-                data_source = "Barchart (NYMEX)"
-                is_estimated = False
-        
-        # ถ้ายังไม่ได้ ใช้ EIA + คำนวณ
-        if not futures_data:
-            print("[WTI] ไม่สามารถดึง Futures ได้ กำลังใช้ EIA Spot Price...")
-            spot_price, spot_date = self.fetch_current_wti_price()
+    def fetch_current_wti_price(self) -> Tuple[float, str]:
+        """ดึงราคา WTI Spot Price จาก EIA (Fallback only)"""
+        if not self.eia_api_key:
+            return None, None
             
-            if spot_price:
-                current_price = spot_price
-                futures_data = self._estimate_futures_from_spot(spot_price)
-                data_source = f"EIA Spot Price ({spot_date})"
-                is_estimated = True
-            else:
-                raise Exception("ไม่สามารถดึงข้อมูลราคา WTI ได้จากทุกแหล่ง")
-        
-        current_data = {
-            "source": data_source,
-            "current_price": current_price,
-            "timestamp": datetime.now(TZ).isoformat(),
-            "currency": "USD/barrel",
-            "commodity": "WTI Crude Oil (NYMEX)"
+        url = f"{self.eia_base_url}/petroleum/pri/spt/data/"
+        params = {
+            "api_key": self.eia_api_key,
+            "frequency": "daily",
+            "data[0]": "value",
+            "facets[product][]": "EPCWTI",
+            "sort[0][column]": "period",
+            "sort[0][direction]": "desc",
+            "length": 1
         }
         
-        return {
-            "current": current_data,
-            "futures": futures_data[:12],  # เอาแค่ 12 เดือน
-            "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
-            "is_estimated": is_estimated,
-            "method": "Real market data from NYMEX" if not is_estimated else "EIA spot + estimation"
-        }
+        try:
+            print(f"[WTI/EIA] กำลังดึงราคา WTI Spot Price (Fallback)...")
+            response = requests.get(url, params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            
+            response_data = data['response']['data']
+            if response_data:
+                price = float(response_data[0]['value'])
+                period = response_data[0].get('period', '')
+                print(f"[WTI/EIA] ✓ Spot Price: ${price:.2f}/barrel ({period})")
+                return price, period
+                
+        except Exception as e:
+            print(f"[WTI/EIA] Warning: {str(e)}")
+        
+        return None, None
     
     def _estimate_futures_from_spot(self, spot_price: float) -> List[Dict]:
-        """สำรอง: คำนวณ futures จาก spot price (ใช้เมื่อดึงข้อมูลจริงไม่ได้)"""
+        """คำนวณ futures จาก spot price (Emergency fallback)"""
         futures_data = []
         now = datetime.now(TZ)
+        
+        # Contango curve based on historical patterns
+        # WTI typically shows ~$0.25-0.50 per month contango
+        monthly_premium = 0.35
         
         for i in range(12):
             months_ahead = i + 1
             future_date = now + timedelta(days=30 * months_ahead)
             
-            # Contango curve แบบง่าย
-            premium = months_ahead * 0.25
+            # Simple contango calculation
+            premium = months_ahead * monthly_premium
             future_price = spot_price + premium
             
             futures_data.append({
@@ -1294,69 +1164,70 @@ class WTIFuturesFetcher:
         
         return futures_data
     
-def get_current_and_futures(self) -> Dict:
-    """ดึงข้อมูลราคาปัจจุบันและ futures (Yahoo Finance First)"""
-    print("\n[WTI] กำลังดึงข้อมูลราคา WTI Futures...")
-    
-    # Strategy 1: Try Yahoo Finance first (Best quality, real-time data)
-    futures_data, current_price = self.fetch_futures_from_yahoo()
-    
-    if futures_data and current_price:
-        print(f"[WTI] ✓ ใช้ข้อมูลจาก Yahoo Finance - {len(futures_data)} สัญญา")
+    def get_current_and_futures(self) -> Dict:
+        """ดึงข้อมูลราคาปัจจุบันและ futures (Yahoo Finance First)"""
+        print("\n[WTI] กำลังดึงข้อมูลราคา WTI Futures...")
+        
+        # Strategy 1: Try Yahoo Finance first (Best quality, real-time data)
+        futures_data, current_price = self.fetch_futures_from_yahoo()
+        
+        if futures_data and current_price:
+            print(f"[WTI] ✓ ใช้ข้อมูลจาก Yahoo Finance - {len(futures_data)} สัญญา")
+            
+            return {
+                "current": {
+                    "source": "Yahoo Finance (NYMEX)",
+                    "current_price": current_price,
+                    "timestamp": datetime.now(TZ).isoformat(),
+                    "currency": "USD/barrel",
+                    "commodity": "WTI Crude Oil Futures"
+                },
+                "futures": futures_data[:12],
+                "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
+                "is_estimated": False,
+                "method": "Real-time data from Yahoo Finance (NYMEX)"
+            }
+        
+        # Strategy 2: Fallback to EIA Spot + Estimation
+        print("[WTI] Yahoo Finance ไม่สำเร็จ กำลังใช้ EIA Spot Price...")
+        spot_price, spot_date = self.fetch_current_wti_price()
+        
+        if spot_price:
+            print(f"[WTI] ✓ ใช้ EIA Spot Price + คำนวณ Futures")
+            futures_data = self._estimate_futures_from_spot(spot_price)
+            
+            return {
+                "current": {
+                    "source": f"U.S. EIA Spot Price ({spot_date})",
+                    "current_price": spot_price,
+                    "timestamp": datetime.now(TZ).isoformat(),
+                    "currency": "USD/barrel",
+                    "commodity": "WTI Crude Oil (Cushing, OK)"
+                },
+                "futures": futures_data,
+                "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
+                "is_estimated": True,
+                "method": "EIA spot price + statistical estimation"
+            }
+        
+        # Strategy 3: Use default fallback
+        print("[WTI] ⚠️ ทุกแหล่งล้มเหลว ใช้ค่าเริ่มต้น")
+        default_price = 75.00
         
         return {
             "current": {
-                "source": "Yahoo Finance (NYMEX)",
-                "current_price": current_price,
+                "source": "Default Estimate",
+                "current_price": default_price,
                 "timestamp": datetime.now(TZ).isoformat(),
                 "currency": "USD/barrel",
-                "commodity": "WTI Crude Oil Futures"
+                "commodity": "WTI Crude Oil"
             },
-            "futures": futures_data[:12],
-            "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
-            "is_estimated": False,
-            "method": "Real-time data from Yahoo Finance (NYMEX)"
-        }
-    
-    # Strategy 2: Fallback to EIA Spot + Estimation
-    print("[WTI] Yahoo Finance ไม่สำเร็จ กำลังใช้ EIA Spot Price...")
-    spot_price, spot_date = self.fetch_current_wti_price()
-    
-    if spot_price:
-        print(f"[WTI] ✓ ใช้ EIA Spot Price + คำนวณ Futures")
-        futures_data = self._estimate_futures_from_spot(spot_price)
-        
-        return {
-            "current": {
-                "source": f"U.S. EIA Spot Price ({spot_date})",
-                "current_price": spot_price,
-                "timestamp": datetime.now(TZ).isoformat(),
-                "currency": "USD/barrel",
-                "commodity": "WTI Crude Oil (Cushing, OK)"
-            },
-            "futures": futures_data,
+            "futures": self._estimate_futures_from_spot(default_price),
             "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
             "is_estimated": True,
-            "method": "EIA spot price + statistical estimation"
+            "method": "Emergency fallback (all sources failed)"
         }
-    
-    # Strategy 3: Use default fallback
-    print("[WTI] ⚠️ ทุกแหล่งล้มเหลว ใช้ค่าเริ่มต้น")
-    default_price = 75.00
-    
-    return {
-        "current": {
-            "source": "Default Estimate",
-            "current_price": default_price,
-            "timestamp": datetime.now(TZ).isoformat(),
-            "currency": "USD/barrel",
-            "commodity": "WTI Crude Oil"
-        },
-        "futures": self._estimate_futures_from_spot(default_price),
-        "updated_at": datetime.now(TZ).strftime("%d/%m/%Y %H:%M"),
-        "is_estimated": True,
-        "method": "Emergency fallback (all sources failed)"
-    }
+
 
 class WTIFlexMessageBuilder:
     """สร้าง LINE Flex Message สำหรับแสดงราคา WTI Futures"""
@@ -1370,6 +1241,7 @@ class WTIFlexMessageBuilder:
         current_price = current.get("current_price", 0)
         is_estimated = data.get("is_estimated", True)
         method = data.get("method", "")
+        source = current.get("source", "Unknown")
         
         header_contents = {
             "type": "box",
@@ -1400,7 +1272,7 @@ class WTIFlexMessageBuilder:
             "contents": [
                 {
                     "type": "text",
-                    "text": "ราคาปัจจุบัน (WTI Cushing)",
+                    "text": "ราคาปัจจุบัน (Front Month)",
                     "size": "sm",
                     "color": "#8B8B8B",
                     "weight": "bold"
@@ -1523,7 +1395,7 @@ class WTIFlexMessageBuilder:
             },
             {
                 "type": "text",
-                "text": "📡 ข้อมูลจาก U.S. EIA",
+                "text": f"📡 ข้อมูลจาก {source}",
                 "size": "xxs",
                 "color": "#8B8B8B",
                 "align": "center",
@@ -1537,6 +1409,15 @@ class WTIFlexMessageBuilder:
                 "text": "⚠️ ราคา Futures เป็นการประมาณการ",
                 "size": "xxs",
                 "color": "#F59E0B",
+                "align": "center",
+                "margin": "xs"
+            })
+        else:
+            footer_contents.append({
+                "type": "text",
+                "text": "✅ ราคาจริงจากตลาด NYMEX",
+                "size": "xxs",
+                "color": "#16A34A",
                 "align": "center",
                 "margin": "xs"
             })
