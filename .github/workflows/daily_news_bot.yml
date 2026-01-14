@@ -1,10 +1,13 @@
 name: Daily Energy News & WTI Futures Bot (EIA)
+
 on:
   schedule:
     - cron: "0 23 * * *"  # 06:00 Bangkok (UTC+7) = 23:00 UTC
   workflow_dispatch:
+
 permissions:
   contents: write
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -22,12 +25,32 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirement.txt
+          pip install -r requirements.txt
+      
+      - name: Verify project structure
+        run: |
+          echo "Checking project structure..."
+          ls -la
+          echo "---"
+          echo "Config folder:"
+          ls -la config/ || echo "config/ not found"
+          echo "---"
+          echo "Services folder:"
+          ls -la services/ || echo "services/ not found"
+          echo "---"
+          echo "Checking main.py:"
+          test -f main.py && echo "✓ main.py exists" || echo "✗ main.py missing"
       
       - name: Syntax check
-        run: python -m py_compile news.py
+        run: |
+          echo "Checking Python syntax..."
+          python -m py_compile main.py
+          python -m py_compile config/settings.py || true
+          python -m py_compile services/news_processor.py || true
+          python -m py_compile services/wti_fetcher.py || true
+          python -m py_compile services/line_sender.py || true
       
-      - name: Run news.py
+      - name: Run main.py
         env:
           # LINE Configuration
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
@@ -51,20 +74,25 @@ jobs:
           # Example: "reuters.com,bloomberg.com,bangkokpost.com"
           ALLOWED_NEWS_SOURCES: ""
           
+          # WTI Price Alert Configuration
+          WTI_ALERT_ENABLED: "1"
+          WTI_ALERT_THRESHOLD: "58.0"
+          
           # Tracking
           SENT_DIR: "sent_links"
           
           # Debug & Testing
           DEBUG_FILTERING: "1"
-          DRY_RUN: "false"
+          DRY_RUN: "0"
           
         run: |
           echo "=========================================="
           echo "Starting Energy News & WTI Futures Bot"
           echo "Time: $(date +'%Y-%m-%d %H:%M:%S %Z')"
-          echo "Data Source: U.S. EIA"
+          echo "Data Source: Yahoo Finance (NYMEX) + U.S. EIA"
+          echo "WTI Alert Threshold: \$58.00/barrel"
           echo "=========================================="
-          python -u news.py
+          python -u main.py
       
       - name: Commit and push sent_links
         if: always()
