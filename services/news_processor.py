@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 News Processor Service
-ประมวลผลและกรองข่าว
+ประมวลผลและกรองข่าว (แก้ไข HTML entities)
 """
 
 import time
@@ -20,6 +20,7 @@ from filters.deduplication import EnhancedDeduplication
 from utils.storage import read_sent_links
 from utils.url_utils import normalize_url, shorten_google_news_url, extract_domain
 from utils.text_utils import create_simple_summary
+from utils.html_utils import clean_google_news_text  # ← เพิ่มบรรทัดนี้
 
 # News sources mapping
 NEWS_SOURCES = {
@@ -173,9 +174,10 @@ class NewsProcessor:
     
     def _parse_entry(self, e, feed_name: str, section: str):
         """แปลง feedparser entry เป็น dict"""
-        title = (getattr(e, "title", "") or "").strip()
+        # ← แก้ไขส่วนนี้: ทำความสะอาด HTML entities
+        title = clean_google_news_text(getattr(e, "title", "") or "")
         link = (getattr(e, "link", "") or "").strip()
-        summary = (getattr(e, "summary", "") or "").strip()
+        summary = clean_google_news_text(getattr(e, "summary", "") or "")
         published = getattr(e, "published", None) or getattr(e, "updated", None)
 
         if not published and hasattr(e, 'published_parsed'):
