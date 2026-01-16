@@ -3,7 +3,7 @@ name: WTI Price Alert Monitor (Real-time)
 on:
   schedule:
     # ทำงานทุก 30 นาที (48 ครั้ง/วัน) - ตรวจสอบบ่อยๆ
-    - cron: "*/30 * * * *"
+    - cron: "*/2 * * * *"
     
     # หรือทุก 15 นาที (96 ครั้ง/วัน) - ถ้าต้องการ real-time มากขึ้น
     # - cron: "*/15 * * * *"
