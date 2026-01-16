@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Enhanced News Aggregator - Main Entry Point
-ระบบรวบรวมข่าวพลังงาน + ราคา WTI Futures + Price Alert
+ระบบรวบรวมข่าวพลังงาน + ราคา WTI Futures + Dynamic Price Alert
 """
 
 from config.settings import (
@@ -18,12 +18,13 @@ from services.line_sender import LineSender
 from builders.news_message import NewsMessageBuilder
 from builders.wti_message import WTIMessageBuilder
 from builders.alert_message import WTIPriceAlert
+from builders.alert_config import AlertConfig  # ← เพิ่มบรรทัดนี้
 from utils.storage import append_sent_link
 
 def main():
     """Main function"""
     print("="*60)
-    print("ระบบติดตามข่าวพลังงาน + WTI Futures + Price Alert")
+    print("ระบบติดตามข่าวพลังงาน + WTI Futures + Dynamic Price Alert")
     print("="*60)
     
     # ตรวจสอบ configuration
@@ -36,11 +37,12 @@ def main():
         print("        Get one from: https://www.eia.gov/opendata/")
         return
     
+    # ← เพิ่มส่วนนี้: โหลด Alert Config
+    alert_config = AlertConfig()
     print(f"\n[CONFIG] Use LLM: {'Yes' if USE_LLM_SUMMARY and GROQ_API_KEY else 'No'}")
     print(f"[CONFIG] Time window: {WINDOW_HOURS} hours")
     print(f"[CONFIG] Dry run: {'Yes' if DRY_RUN else 'No'}")
-    print(f"[CONFIG] WTI Alert Threshold: ${WTIPriceAlert.ALERT_THRESHOLD:.2f}/barrel")
-    print(f"[CONFIG] WTI Alert Enabled: {'Yes' if WTIPriceAlert.ALERT_ENABLED else 'No'}")
+    print(f"\n{alert_config.get_alert_summary()}")
     
     # Initialize services
     processor = NewsProcessor()
@@ -58,19 +60,27 @@ def main():
         
         print(f"[WTI] ราคาปัจจุบัน: ${current_price:.2f}/barrel")
         
-        # ตรวจสอบว่าควรส่ง Alert หรือไม่
-        if WTIPriceAlert.should_send_alert(current_price):
-            print(f"[ALERT] ⚠️ ราคาต่ำกว่า ${WTIPriceAlert.ALERT_THRESHOLD:.2f}! กำลังส่งการแจ้งเตือน...")
+        # ← แก้ไขส่วนนี้: ใช้ AlertConfig แทน
+        should_send, triggered_alert, reason = alert_config.should_send_alert(current_price)
+        
+        if should_send:
+            print(f"[ALERT] {triggered_alert['emoji']} {triggered_alert['name']} triggered!")
+            print(f"[ALERT] Reason: {reason}")
             
-            alert_message = WTIPriceAlert.create_alert_message(wti_data)
+            # สร้างข้อความ alert พร้อม config
+            alert_message = WTIPriceAlert.create_alert_message(wti_data, triggered_alert)
             
             if line_sender.send_message(alert_message):
                 wti_alert_sent = True
-                print("[ALERT] ✓ ส่งการแจ้งเตือนสำเร็จ")
+                
+                # บันทึกว่าส่ง alert แล้ว
+                alert_config.record_alert_sent(triggered_alert["name"], current_price)
+                
+                print(f"[ALERT] ✓ ส่งการแจ้งเตือนสำเร็จ")
             else:
                 print("[ALERT] ✗ ส่งการแจ้งเตือนไม่สำเร็จ")
         else:
-            print(f"[ALERT] ✓ ราคาปกติ (${current_price:.2f} >= ${WTIPriceAlert.ALERT_THRESHOLD:.2f})")
+            print(f"[ALERT] ✓ ราคาปกติ - {reason}")
     
     except Exception as e:
         print(f"[ALERT] ✗ ตรวจสอบราคาไม่สำเร็จ: {str(e)}")
