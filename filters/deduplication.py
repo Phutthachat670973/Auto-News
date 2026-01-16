@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Enhanced Deduplication System
-ระบบกันข่าวซ้ำที่ปรับปรุงแล้ว
+ระบบกันข่าวซ้ำที่ปรับปรุงแล้ว + Event-based Deduplication
 """
 
 import re
@@ -42,11 +42,28 @@ class EnhancedDeduplication:
         'ลงทุน', 'สัญญา', 'ซื้อ', 'ขาย'
     }
     
+    # ← เพิ่มส่วนนี้: Event Signature Keywords
+    EVENT_SIGNATURES = {
+        'congress': ['congress', 'ประชุม', 'national congress', 'พรรค', 'การประชุม'],
+        'election': ['election', 'เลือกตั้ง', 'vote', 'ballot'],
+        'summit': ['summit', 'การประชุมสุดยอด', 'meeting'],
+        'conference': ['conference', 'งานประชุม', 'expo', 'exhibition'],
+        'deal': ['deal', 'agreement', 'contract', 'สัญญา', 'ข้อตกลง'],
+        'acquisition': ['acquisition', 'merger', 'takeover', 'ซื้อกิจการ', 'เข้าซื้อ'],
+        'lawsuit': ['lawsuit', 'court', 'legal', 'ฟ้อง', 'คดี', 'ศาล'],
+        'regulation': ['regulation', 'rules', 'policy', 'กฎหมาย', 'ระเบียบ'],
+        'appointment': ['appoint', 'resign', 'แต่งตั้ง', 'ลาออก', 'ceo', 'chairman'],
+        'project': ['project', 'development', 'construction', 'โครงการ', 'ก่อสร้าง'],
+        'incident': ['accident', 'fire', 'explosion', 'เหตุการณ์', 'อุบัติเหตุ'],
+        'price_change': ['price', 'surge', 'drop', 'ราคา', 'ปรับขึ้น', 'ปรับลด'],
+    }
+    
     def __init__(self):
         self.seen_urls: Set[str] = set()
         self.seen_fingerprints: Set[str] = set()
         self.processed_items: List[dict] = []
         self.title_cache: List[Tuple[str, str]] = []
+        self.event_signatures: Dict[str, List[dict]] = {}  # ← เพิ่ม: เก็บ event signatures
     
     def normalize_text(self, text: str) -> str:
         """Normalize text สำหรับการเปรียบเทียบ"""
@@ -80,6 +97,75 @@ class EnhancedDeduplication:
         
         return found_keywords
     
+    # ← เพิ่มฟังก์ชันนี้: ตรวจจับ Event Type
+    def detect_event_type(self, text: str) -> Optional[str]:
+        """
+        ตรวจจับประเภทของเหตุการณ์
+        
+        Returns:
+            event_type (str) หรือ None ถ้าไม่พบ
+        """
+        text_lower = text.lower()
+        
+        for event_type, keywords in self.EVENT_SIGNATURES.items():
+            for keyword in keywords:
+                if keyword in text_lower:
+                    return event_type
+        
+        return None
+    
+    # ← เพิ่มฟังก์ชันนี้: สร้าง Event Signature
+    def create_event_signature(self, item: dict) -> Optional[str]:
+        """
+        สร้าง signature สำหรับเหตุการณ์
+        
+        สำหรับข่าวที่พูดถึงเหตุการณ์เดียวกัน เช่น:
+        - "Vietnam's 14th National Congress"
+        - "มงสการประชุมใหญ่พรรดคจังที่ 14"
+        
+        จะได้ signature เดียวกัน
+        """
+        full_text = f"{item.get('title', '')} {item.get('summary', '')}".lower()
+        
+        # 1. ตรวจจับประเภทเหตุการณ์
+        event_type = self.detect_event_type(full_text)
+        if not event_type:
+            return None
+        
+        # 2. ดึงข้อมูลเฉพาะ
+        country = item.get('country', '')
+        
+        # 3. ดึงตัวเลขสำคัญ (เช่น "14th", "2026")
+        numbers = re.findall(r'\b\d+(?:st|nd|rd|th)?\b', full_text)
+        numbers_str = '|'.join(sorted(set(numbers))[:3])  # เอาแค่ 3 ตัวแรก
+        
+        # 4. ดึงชื่อองค์กร/โครงการสำคัญ
+        important_entities = self._extract_entities(full_text)
+        entities_str = '|'.join(sorted(important_entities)[:2])
+        
+        # 5. สร้าง signature
+        signature = f"{event_type}|{country}|{numbers_str}|{entities_str}"
+        
+        return hashlib.md5(signature.encode('utf-8')).hexdigest()
+    
+    def _extract_entities(self, text: str) -> Set[str]:
+        """ดึงชื่อองค์กร/โครงการที่สำคัญ"""
+        entities = set()
+        
+        # รายชื่อองค์กรสำคัญ
+        organizations = [
+            'pttep', 'ปตท', 'chevron', 'shell', 'exxon', 'total', 'bp',
+            'petrovietnam', 'petronas', 'pertamina', 'celcomdigi',
+            'egat', 'กฟผ', 'ptt', 'irpc', 'bangchak', 'บางจาก',
+            'congress', 'parliament', 'government', 'รัฐบาล'
+        ]
+        
+        for org in organizations:
+            if org in text:
+                entities.add(org)
+        
+        return entities
+    
     def create_content_fingerprint(self, item: dict) -> str:
         """สร้าง fingerprint จากเนื้อหาข่าว"""
         title = self.normalize_text(item.get('title', ''))
@@ -104,10 +190,30 @@ class EnhancedDeduplication:
     
     def is_duplicate_content(self, item: dict) -> Tuple[bool, Optional[str]]:
         """ตรวจสอบว่าเนื้อหาข่าวซ้ำหรือไม่"""
+        # Check 0: URL ซ้ำ
         url = item.get('canon_url') or item.get('url', '')
         if self.is_duplicate_url(url):
             return True, "URL ซ้ำ"
         
+        # ← เพิ่ม Check 0.5: Event Signature (ตรวจสอบก่อนอื่นหมด)
+        event_sig = self.create_event_signature(item)
+        if event_sig:
+            # ตรวจสอบว่ามี event นี้อยู่แล้วหรือไม่
+            if event_sig in self.event_signatures:
+                existing_items = self.event_signatures[event_sig]
+                
+                # ถ้ามีข่าวที่พูดถึง event เดียวกันแล้ว
+                for existing in existing_items:
+                    time_diff = abs((item.get('published_dt') - existing.get('published_dt')).total_seconds() / 3600)
+                    
+                    # ถ้าเผยแพร่ห่างกันไม่เกิน 24 ชั่วโมง = เหตุการณ์เดียวกัน
+                    if time_diff <= 24:
+                        return True, f"เป็นข่าวเหตุการณ์เดียวกันกับ '{existing.get('title', '')[:40]}...'"
+            else:
+                # สร้าง list ใหม่สำหรับ event นี้
+                self.event_signatures[event_sig] = []
+        
+        # Check 1: Title เหมือนกันทุกตัวอักษร
         title = item.get('title', '')
         for existing in self.processed_items:
             existing_title = existing.get('title', '')
@@ -118,11 +224,13 @@ class EnhancedDeduplication:
             if similarity > 0.95:
                 return True, f"Title เหมือนกันเกือบทุกคำ ({similarity:.1%})"
         
+        # Check 2: Fingerprint ซ้ำ
         fingerprint = self.create_content_fingerprint(item)
         if fingerprint in self.seen_fingerprints:
             return True, "Fingerprint ซ้ำ (เนื้อหาเดียวกัน)"
         self.seen_fingerprints.add(fingerprint)
         
+        # Check 3: Title คล้ายกันมาก
         for cached_norm_title, cached_orig_title in self.title_cache:
             similarity = self.calculate_similarity(title, cached_norm_title)
             
@@ -136,6 +244,7 @@ class EnhancedDeduplication:
                             continue
                         return True, f"Title คล้ายกันมาก + ประเทศเดียวกัน ({similarity:.1%})"
         
+        # Check 4: คำสำคัญตรงกันมาก
         current_keywords = self.extract_keywords(f"{item.get('title', '')} {item.get('summary', '')}")
         if len(current_keywords) >= 3:
             for existing in self.processed_items:
@@ -154,6 +263,7 @@ class EnhancedDeduplication:
                             if time_diff < 24:
                                 return True, f"คำสำคัญตรงกัน {len(common_keywords)} คำ + title คล้ายกัน + เวลาใกล้กัน"
         
+        # Check 5: คำเฉพาะเจาะจงซ้ำ
         specific_terms = self._extract_specific_terms(title)
         if len(specific_terms) >= 2:
             for existing in self.processed_items:
@@ -164,6 +274,11 @@ class EnhancedDeduplication:
                     if title_sim > 0.75:
                         return True, f"พบคำเฉพาะเจาะจงซ้ำ: {', '.join(common_terms)}"
         
+        # ← เพิ่มข่าวเข้า event signature (ถ้ามี)
+        if event_sig:
+            self.event_signatures[event_sig].append(item)
+        
+        # เพิ่มข้อมูลลง cache
         norm_title = self.normalize_text(title)
         self.title_cache.append((norm_title, title))
         
