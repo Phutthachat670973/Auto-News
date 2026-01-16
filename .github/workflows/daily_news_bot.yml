@@ -76,7 +76,7 @@ jobs:
           
           # WTI Price Alert Configuration
           WTI_ALERT_ENABLED: "1"
-          WTI_ALERT_THRESHOLD: "58.0"
+          WTI_ALERT_THRESHOLD: "60.0"
           
           # Tracking
           SENT_DIR: "sent_links"
